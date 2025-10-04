@@ -19,7 +19,7 @@ and enables downstream analysis with local and vector-backed AI tooling.
 
 ```text
 ├── data/            # Persistent manifest and vector database artifacts
-├── scripts/         # Standalone maintenance or automation scripts
+├── scripts/         # Standalone maintenance or automation scripts (e.g., search_archive.py)
 └── src/
     ├── ai_analyzer.py          # AI analysis (LLM text/financial/image)
     ├── content_extractor.py    # Shared extraction and OCR helpers
