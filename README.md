@@ -19,6 +19,7 @@ and enables downstream analysis with local and vector-backed AI tooling.
 
 ```text
 ├── data/            # Persistent manifest and vector database artifacts
+├── main.py          # Main orchestrator script for the full pipeline
 ├── scripts/         # Standalone maintenance or automation scripts (e.g., search_archive.py)
 └── src/
     ├── ai_analyzer.py          # AI analysis (LLM text/financial/image)
@@ -61,6 +62,18 @@ various file types:
 
 These functions are designed to be called from the main CLI or standalone
 scripts for content processing.
+
+## Running the full pipeline
+
+To run the complete cataloging and analysis pipeline:
+
+```bash
+uv run python main.py
+```
+
+This script loads the manifest, processes each file through extraction and AI
+analysis stages, updates the database, and saves progress incrementally for
+resumability.
 
 ## Development notes
 
