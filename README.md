@@ -94,6 +94,8 @@ resumability.
   automatically if needed.
 - Ollama must be running for AI analysis features. Run `make setup-ollama` to
   start Ollama and download required models (llama3, deepseek-coder, llava).
+- To reset the project and start fresh, run `make clean` to remove the manifest
+  file and ChromaDB database.
 - Torch and transformers may require additional system packages depending on
   your hardware. Consult their documentation for accelerated backends.
 - Add standalone scripts to the `scripts/` directory when workflows need bespoke

@@ -46,3 +46,7 @@ setup-ollama: start-ollama pull-models
 
 run:
 	uv run streamlit run app.py
+
+clean:
+	rm -f data/manifest.json
+	rm -rf data/chromadb
