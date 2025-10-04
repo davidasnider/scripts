@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import cv2
 import numpy as np
 from PIL import Image
@@ -76,3 +78,43 @@ def extract_content_from_image(file_path: str) -> str:
     processed_image = preprocess_for_ocr(image)
     text = pytesseract.image_to_string(processed_image)
     return text
+
+
+def extract_content_from_pdf(file_path: str) -> str:
+    """Extract text from a PDF using a hybrid digital/OCR strategy.
+
+    For each page, attempts digital text extraction first. If the extracted
+    text is short (<100 characters), assumes it's a scanned page and performs
+    OCR after converting to a high-DPI image.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the PDF file.
+
+    Returns
+    -------
+    str
+        The extracted text from all pages.
+    """
+    import fitz  # PyMuPDF
+    import pytesseract
+
+    doc = fitz.open(file_path)
+    all_text = []
+
+    try:
+        for page in doc:
+            text = page.get_text()
+            if len(text.strip()) < 100:
+                # Assume scanned page, perform OCR
+                pix = page.get_pixmap(dpi=300)
+                img_bytes = pix.tobytes()
+                img = Image.open(io.BytesIO(img_bytes))
+                processed_img = preprocess_for_ocr(img)
+                text = pytesseract.image_to_string(processed_img)
+            all_text.append(text)
+    finally:
+        doc.close()
+
+    return "\n".join(all_text)

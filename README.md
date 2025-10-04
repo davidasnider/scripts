@@ -37,6 +37,7 @@ The `src/content_extractor.py` module provides helpers for pulling text from var
 - `preprocess_for_ocr(image)`: Prepares a PIL image for OCR by converting to grayscale and applying binary thresholding.
 - `extract_content_from_docx(file_path)`: Extracts all text from a .docx file using python-docx.
 - `extract_content_from_image(file_path)`: Opens an image with Pillow, preprocesses it for OCR, and extracts text using pytesseract.
+- `extract_content_from_pdf(file_path)`: Extracts text from PDFs using a hybrid approach: digital text first, OCR for scanned pages (detected by low text length).
 
 These functions are designed to be called from the main CLI or standalone scripts for content processing.
 
