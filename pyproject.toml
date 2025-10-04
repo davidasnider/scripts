@@ -1,0 +1,59 @@
+[project]
+name = "file-catalog"
+version = "0.1.0"
+description = "Command-line application for cataloging and analyzing files"
+authors = [
+    {name = "David Snider", email = "david@davidsnider.org"}
+]
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "numpy>=2.0,<2.3",
+    "python-magic>=0.4.27,<0.5.0",
+    "pymupdf>=1.26.4,<2.0.0",
+    "python-docx>=1.2.0,<2.0.0",
+    "pytesseract>=0.3.13,<0.4.0",
+    "pdf2image>=1.17.0,<2.0.0",
+    "pillow>=11.3.0,<12.0.0",
+    "opencv-python>=4.12.0.88,<5.0.0.0",
+    "ollama>=0.6.0,<0.7.0",
+    "chromadb>=1.1.0,<2.0.0",
+    "transformers>=4.57.0,<5.0.0",
+    "torch>=2.8.0,<3.0.0"
+]
+
+[project.scripts]
+"file-catalog" = "file_catalog.__main__:main"
+
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "black>=25.9.0",
+    "pre-commit>=4.3.0",
+    "ruff>=0.13.3",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py313"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
