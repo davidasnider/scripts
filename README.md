@@ -21,10 +21,12 @@ and enables downstream analysis with local and vector-backed AI tooling.
 ├── data/            # Persistent manifest and vector database artifacts
 ├── scripts/         # Standalone maintenance or automation scripts
 └── src/
-    ├── content_extractor.py # Shared extraction and OCR helpers
-    ├── discover_files.py   # Standalone manifest builder script
+    ├── ai_analyzer.py          # AI-powered analysis utilities (LLM text analysis)
+    ├── content_extractor.py    # Shared extraction and OCR helpers
+    ├── discover_files.py       # Standalone manifest builder script
+    ├── nsfw_classifier.py      # NSFW detection for images
     └── file_catalog/
-        └── __main__.py  # CLI entry point
+        └── __main__.py         # CLI entry point
 ```
 
 ## Getting started
