@@ -69,7 +69,7 @@ for message in st.session_state.messages:
 
 # Initialize ChromaDB client
 try:
-    chroma_client = chromadb.PersistentClient(path="./chroma_db")
+    chroma_client = chromadb.PersistentClient(path="./data/chromadb")
     collection = chroma_client.get_collection(name="digital_archive")
 except Exception as e:
     st.error(f"Failed to connect to ChromaDB: {e}")
