@@ -1,4 +1,4 @@
-.PHONY: check-tesseract install-tesseract install start-ollama pull-models setup-ollama
+.PHONY: check-tesseract install-tesseract check-ollama install-ollama install start-ollama pull-models setup-ollama
 
 check-tesseract:
 	@if command -v tesseract > /dev/null 2>&1; then \
@@ -11,8 +11,22 @@ check-tesseract:
 install-tesseract:
 	brew install tesseract tesseract-lang
 
+check-ollama:
+	@if command -v ollama > /dev/null 2>&1; then \
+		echo "Ollama is already installed."; \
+	else \
+		echo "Ollama not found. Installing..."; \
+		$(MAKE) install-ollama; \
+	fi
+
+install-ollama:
+	brew install ollama
+
 install:
 	uv sync
+	$(MAKE) check-tesseract
+	$(MAKE) check-ollama
+	$(MAKE) setup-ollama
 
 start-ollama:
 	@if pgrep -x "ollama" > /dev/null; then \
