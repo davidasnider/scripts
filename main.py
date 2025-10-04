@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -15,6 +16,15 @@ from content_extractor import (
 )
 from database_manager import add_file_to_db, initialize_db
 from nsfw_classifier import NSFWClassifier
+
+
+@dataclasses.dataclass
+class DataPacket:
+    correlation_id: str
+    payload: dict
+    metadata: dict = dataclasses.field(default_factory=dict)
+    error_info: dict | None = None
+
 
 # Constants
 MANIFEST_PATH = Path("data/manifest.json")
