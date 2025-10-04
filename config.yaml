@@ -1,0 +1,13 @@
+# File Catalog Pipeline Configuration
+
+# Maximum workers for each processing stage
+max_workers:
+  ingestion: 4
+  validation: 2
+  analysis: 2
+  loading: 1
+
+# File paths
+paths:
+  manifest: "data/manifest.json"
+  database: "data/chromadb"

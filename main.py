@@ -11,6 +11,11 @@ import queue
 from pathlib import Path
 
 try:
+    import yaml
+except ImportError:
+    yaml = None
+
+try:
     from pythonjsonlogger import jsonlogger
 except ImportError:
     jsonlogger = None
@@ -68,8 +73,20 @@ def setup_logging() -> logging.handlers.QueueListener:
     return listener
 
 
+def load_config(path: str = "config.yaml") -> dict:
+    """Load configuration from YAML file."""
+    if yaml is None:
+        raise ImportError("PyYAML is required for configuration loading")
+
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+
+    with config_path.open("r") as f:
+        return yaml.safe_load(f)
+
+
 # Constants
-MANIFEST_PATH = Path("data/manifest.json")
 DB_PATH = Path("data/chromadb")
 
 # Status constants
@@ -78,18 +95,20 @@ PENDING_ANALYSIS = "pending_analysis"
 COMPLETE = "complete"
 
 
-def load_manifest() -> list[dict]:
+def load_manifest(config: dict) -> list[dict]:
     """Load the manifest from JSON file."""
-    if not MANIFEST_PATH.exists():
+    manifest_path = Path(config["paths"]["manifest"])
+    if not manifest_path.exists():
         return []
-    with MANIFEST_PATH.open() as f:
+    with manifest_path.open() as f:
         return json.load(f)
 
 
-def save_manifest(manifest: list[dict]) -> None:
+def save_manifest(manifest: list[dict], config: dict) -> None:
     """Save the manifest to JSON file."""
-    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with MANIFEST_PATH.open("w") as f:
+    manifest_path = Path(config["paths"]["manifest"])
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with manifest_path.open("w") as f:
         json.dump(manifest, f, indent=2)
 
 
@@ -169,6 +188,9 @@ def analyze_content(file_data: dict, log: logging.Logger, correlation_id: str) -
 
 def main() -> int:
     """Run the main pipeline."""
+    # Load configuration
+    config = load_config()
+
     # Set up logging
     log_listener = setup_logging()
     log = logging.getLogger(__name__)
@@ -176,10 +198,11 @@ def main() -> int:
     log.info("Starting file catalog pipeline", extra={"correlation_id": "system"})
 
     # Initialize DB
-    collection = initialize_db(str(DB_PATH))
+    db_path = config["paths"]["database"]
+    collection = initialize_db(db_path)
 
     # Load manifest
-    manifest = load_manifest()
+    manifest = load_manifest(config)
     log.info(
         f"Loaded {len(manifest)} files from manifest",
         extra={"correlation_id": "system"},
@@ -198,7 +221,7 @@ def main() -> int:
         if status == PENDING_EXTRACTION:
             extract_content(file_data, log, correlation_id)
             file_data["status"] = PENDING_ANALYSIS
-            save_manifest(manifest)
+            save_manifest(manifest, config)
             log.info(
                 f"Extraction complete for {file_path}",
                 extra={"correlation_id": correlation_id},
@@ -208,7 +231,7 @@ def main() -> int:
             analyze_content(file_data, log, correlation_id)
             add_file_to_db(file_data, collection)
             file_data["status"] = COMPLETE
-            save_manifest(manifest)
+            save_manifest(manifest, config)
             log.info(
                 f"Analysis and DB addition complete for {file_path}",
                 extra={"correlation_id": correlation_id},
