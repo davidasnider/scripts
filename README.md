@@ -21,7 +21,7 @@ and enables downstream analysis with local and vector-backed AI tooling.
 ├── data/            # Persistent manifest and vector database artifacts
 ├── scripts/         # Standalone maintenance or automation scripts
 └── src/
-    ├── ai_analyzer.py          # AI-powered analysis utilities (LLM text analysis)
+    ├── ai_analyzer.py          # AI analysis (LLM text/financial/image)
     ├── content_extractor.py    # Shared extraction and OCR helpers
     ├── discover_files.py       # Standalone manifest builder script
     ├── nsfw_classifier.py      # NSFW detection for images
