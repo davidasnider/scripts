@@ -15,6 +15,7 @@ Command-line application for cataloging and analyzing files. The tool builds a m
 ├── data/            # Persistent manifest and vector database artifacts
 ├── scripts/         # Standalone maintenance or automation scripts
 └── src/
+    ├── content_extractor.py # Shared extraction and OCR helpers
     ├── discover_files.py   # Standalone manifest builder script
     └── file_catalog/
         └── __main__.py  # CLI entry point
