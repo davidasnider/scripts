@@ -34,7 +34,7 @@ and enables downstream analysis with local and vector-backed AI tooling.
 ## Getting started
 
 ```bash
-uv sync --python 3.13
+make install
 uv run python -m file_catalog --help
 ```
 
@@ -78,7 +78,8 @@ resumability.
 ## Development notes
 
 - Ensure system dependencies for OCR are installed (Tesseract, poppler for
-  `pdf2image`, etc.).
+  `pdf2image`, etc.). On macOS, run `make check-tesseract` to install
+  automatically if needed.
 - Torch and transformers may require additional system packages depending on
   your hardware. Consult their documentation for accelerated backends.
 - Add standalone scripts to the `scripts/` directory when workflows need bespoke

@@ -75,10 +75,17 @@ def extract_content_from_image(file_path: str) -> str:
     """
     import pytesseract
 
-    image = Image.open(file_path)
-    processed_image = preprocess_for_ocr(image)
-    text = pytesseract.image_to_string(processed_image)
-    return text
+    try:
+        image = Image.open(file_path)
+        processed_image = preprocess_for_ocr(image)
+        text = pytesseract.image_to_string(processed_image)
+        return text
+    except pytesseract.TesseractNotFoundError:
+        print(f"Warning: Tesseract not found. Skipping OCR for {file_path}")
+        return ""
+    except Exception as e:
+        print(f"Error processing image {file_path}: {e}")
+        return ""
 
 
 def extract_content_from_pdf(file_path: str) -> str:
