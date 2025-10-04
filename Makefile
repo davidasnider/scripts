@@ -50,3 +50,4 @@ run:
 clean:
 	rm -f data/manifest.json
 	rm -rf data/chromadb
+	rm -rf data/frames
