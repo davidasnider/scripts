@@ -8,7 +8,12 @@ import json
 import logging
 from pathlib import Path
 
-from ai_analyzer import analyze_financial_document, analyze_text_content, describe_image
+from ai_analyzer import (
+    analyze_financial_document,
+    analyze_text_content,
+    describe_image,
+    summarize_video_frames,
+)
 from content_extractor import (
     extract_content_from_docx,
     extract_content_from_image,
@@ -113,6 +118,32 @@ def analyze_content(file_data: dict) -> None:
         classifier = NSFWClassifier()
         nsfw_result = classifier.classify_image(file_path)
         file_data["is_nsfw"] = nsfw_result["label"].lower() == "nsfw"
+
+    # Video frame analysis
+    elif mime_type.startswith("video/"):
+        frames = file_data.get("extracted_frames", [])
+        if frames:
+            frame_descriptions = []
+            classifier = NSFWClassifier()
+            for frame_path in frames:
+                try:
+                    description = describe_image(frame_path)
+                    frame_descriptions.append(description)
+
+                    # Check NSFW for each frame
+                    nsfw_result = classifier.classify_image(frame_path)
+                    if nsfw_result["label"].lower() == "nsfw":
+                        file_data["is_nsfw"] = True
+                except Exception as e:
+                    logger.warning("Failed to analyze frame %s: %s", frame_path, e)
+                    continue
+
+            # Combine frame descriptions into video summary
+            if frame_descriptions:
+                video_summary = summarize_video_frames(frame_descriptions)
+                file_data["description"] = video_summary
+            else:
+                file_data["description"] = "Video frame analysis unavailable"
 
     # Financial analysis if text looks financial
     if text and ("financial" in text.lower() or "account" in text.lower()):

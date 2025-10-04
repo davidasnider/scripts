@@ -435,3 +435,57 @@ def describe_image(image_path: str) -> str:
     except Exception as e:
         logger.warning("Failed to describe image with Ollama: %s", e)
         return "Image description unavailable - Ollama not accessible"
+
+
+def summarize_video_frames(frame_descriptions: list[str]) -> str:
+    """Summarize multiple frame descriptions into a cohesive video summary.
+
+    Parameters
+    ----------
+    frame_descriptions : list[str]
+        List of descriptions for each video frame.
+
+    Returns
+    -------
+    str
+        A summary of the video content based on frame descriptions.
+    """
+    logger.debug(
+        "Starting video frame summarization for %d frames", len(frame_descriptions)
+    )
+
+    if not frame_descriptions:
+        return "No frame descriptions available"
+
+    if len(frame_descriptions) == 1:
+        return frame_descriptions[0]
+
+    # Combine frame descriptions
+    combined_descriptions = "\n\n".join(
+        f"Frame {i+1}: {desc}" for i, desc in enumerate(frame_descriptions)
+    )
+
+    prompt = (
+        "You are a video analyst. Analyze the following frame descriptions from a "
+        "video and provide a cohesive summary of the video's content. Focus on the "
+        "main subjects, activities, and overall narrative shown in the frames.\n\n"
+        f"Frame descriptions:\n{combined_descriptions}\n\n"
+        "Provide a concise paragraph summarizing the video content."
+    )
+
+    try:
+        logger.debug(
+            "Sending Ollama request for video summarization, prompt length: %d",
+            len(prompt),
+        )
+        response = ollama.chat(
+            model="llama3:70b-instruct",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        logger.debug("Received Ollama response for video summarization")
+        logger.debug("Completed video frame summarization")
+        return response["message"]["content"]
+    except Exception as e:
+        logger.warning("Failed to summarize video frames with Ollama: %s", e)
+        # Fallback: return a simple concatenation
+        return "Video summary: " + " ".join(frame_descriptions[:3]) + "..."
