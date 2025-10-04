@@ -46,6 +46,30 @@ digital archive.
 
 The project also includes command-line utilities for batch processing:
 
+### File Discovery
+
+Create a manifest of files in a directory:
+
+```bash
+uv run python src/discover_files.py /path/to/directory
+```
+
+This generates `data/manifest.json` with file metadata including paths, MIME
+types, and sizes.
+
+### Main Processing Pipeline
+
+Run the complete extraction and analysis pipeline:
+
+```bash
+uv run python main.py
+```
+
+This processes files from the manifest, extracts content, generates embeddings,
+and stores them in ChromaDB.
+
+### Legacy CLI (file_catalog)
+
 ```bash
 uv run python -m file_catalog --help
 ```
