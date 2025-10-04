@@ -9,6 +9,32 @@ from typing import Any
 import ollama
 
 
+def _clean_json_response(response_text: str) -> str:
+    """Clean JSON response by removing code block markers if present.
+
+    Parameters
+    ----------
+    response_text : str
+        The raw response text from the LLM.
+
+    Returns
+    -------
+    str
+        Cleaned JSON string.
+    """
+    # Remove code block markers
+    response_text = response_text.strip()
+    if response_text.startswith("```json"):
+        response_text = response_text[7:]
+    elif response_text.startswith("```"):
+        response_text = response_text[3:]
+
+    if response_text.endswith("```"):
+        response_text = response_text[:-3]
+
+    return response_text.strip()
+
+
 def _chunk_text(text: str, max_bytes: int = 3000) -> list[str]:
     """Split text into chunks that fit within the byte limit.
 
@@ -99,7 +125,8 @@ def analyze_text_content(text: str) -> dict[str, Any]:
             "text.\n"
             '- "mentioned_people": a list of names of people mentioned in the text.\n\n'
             f"Text: {text}\n\n"
-            "Respond only with valid JSON."
+            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
+            "backticks. Return only the raw JSON object."
         )
 
         try:
@@ -108,7 +135,7 @@ def analyze_text_content(text: str) -> dict[str, Any]:
                 messages=[{"role": "user", "content": prompt}],
             )
             json_str = response["message"]["content"]
-            return json.loads(json_str)
+            return json.loads(_clean_json_response(json_str))
         except Exception as e:
             print(f"Warning: Failed to analyze text content with Ollama: {e}")
             return {
@@ -130,7 +157,8 @@ def analyze_text_content(text: str) -> dict[str, Any]:
             '- "mentioned_people": a list of names of people mentioned in this '
             "chunk.\n\n"
             f"Text chunk: {chunk}\n\n"
-            "Respond only with valid JSON."
+            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
+            "backticks. Return only the raw JSON object."
         )
 
         try:
@@ -139,7 +167,7 @@ def analyze_text_content(text: str) -> dict[str, Any]:
                 messages=[{"role": "user", "content": prompt}],
             )
             json_str = response["message"]["content"]
-            chunk_result = json.loads(json_str)
+            chunk_result = json.loads(_clean_json_response(json_str))
             all_summaries.append(chunk_result.get("summary", ""))
             all_people.update(chunk_result.get("mentioned_people", []))
         except Exception as e:
@@ -207,16 +235,18 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
             '- "confidence_score": a numerical score from 0 to 100 indicating '
             "confidence in the analysis.\n\n"
             f"Text: {text}\n\n"
-            "Respond only with valid JSON."
+            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
+            "backticks. Return only the raw JSON object."
         )
 
         try:
             response = ollama.chat(
                 model="deepseek-coder-v2:latest",
                 messages=[{"role": "user", "content": prompt}],
+                options={"raw": True},
             )
             json_str = response["message"]["content"]
-            return json.loads(json_str)
+            return json.loads(_clean_json_response(json_str))
         except Exception as e:
             print(f"Warning: Failed to analyze financial document with Ollama: {e}")
             return {
@@ -246,16 +276,18 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
             '- "confidence_score": a numerical score from 0 to 100 indicating '
             "confidence in the analysis of this chunk.\n\n"
             f"Text chunk: {chunk}\n\n"
-            "Respond only with valid JSON."
+            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
+            "backticks. Return only the raw JSON object."
         )
 
         try:
             response = ollama.chat(
                 model="deepseek-coder-v2:latest",
                 messages=[{"role": "user", "content": prompt}],
+                options={"raw": True},
             )
             json_str = response["message"]["content"]
-            chunk_result = json.loads(json_str)
+            chunk_result = json.loads(_clean_json_response(json_str))
             all_summaries.append(chunk_result.get("summary", ""))
             all_red_flags.update(chunk_result.get("potential_red_flags", []))
             all_incriminating.update(chunk_result.get("incriminating_items", []))
@@ -283,6 +315,7 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
             response = ollama.chat(
                 model="deepseek-coder-v2:latest",
                 messages=[{"role": "user", "content": combined_summary_prompt}],
+                options={"raw": True},
             )
             final_summary = response["message"]["content"]
         except Exception as e:

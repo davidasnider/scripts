@@ -140,11 +140,9 @@ def main() -> int:
         if status == PENDING_EXTRACTION:
             extract_content(file_data)
             file_data["status"] = PENDING_ANALYSIS
+            status = PENDING_ANALYSIS
             save_manifest(manifest)
             print(f"Extraction complete for {file_path}")
-
-        # Reload status in case of concurrent updates
-        status = file_data.get("status", PENDING_EXTRACTION)
 
         if status == PENDING_ANALYSIS:
             analyze_content(file_data)
