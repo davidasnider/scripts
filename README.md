@@ -23,6 +23,7 @@ and enables downstream analysis with local and vector-backed AI tooling.
 └── src/
     ├── ai_analyzer.py          # AI analysis (LLM text/financial/image)
     ├── content_extractor.py    # Shared extraction and OCR helpers
+    ├── database_manager.py     # ChromaDB and embedding utilities
     ├── discover_files.py       # Standalone manifest builder script
     ├── nsfw_classifier.py      # NSFW detection for images
     └── file_catalog/
