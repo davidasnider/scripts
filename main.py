@@ -5,7 +5,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
+import logging.handlers
+import queue
 from pathlib import Path
+
+try:
+    from pythonjsonlogger import jsonlogger
+except ImportError:
+    jsonlogger = None
 
 from ai_analyzer import analyze_financial_document, analyze_text_content, describe_image
 from content_extractor import (
@@ -24,6 +32,40 @@ class DataPacket:
     payload: dict
     metadata: dict = dataclasses.field(default_factory=dict)
     error_info: dict | None = None
+
+
+def setup_logging() -> logging.handlers.QueueListener:
+    """Set up centralized asynchronous logging with JSON formatting."""
+    # Create a queue for log messages
+    log_queue = queue.Queue()
+
+    # Create a queue handler
+    queue_handler = logging.handlers.QueueHandler(log_queue)
+
+    # Create a stream handler for output
+    stream_handler = logging.StreamHandler()
+
+    # Set up JSON formatting if available
+    if jsonlogger:
+        formatter = jsonlogger.JsonFormatter()
+    else:
+        formatter = logging.Formatter(
+            '{"timestamp": "%(asctime)s", "level": "%(levelname)s", '
+            '"message": "%(message)s", "correlation_id": "%(correlation_id)s"}'
+        )
+
+    stream_handler.setFormatter(formatter)
+
+    # Create and start the queue listener
+    listener = logging.handlers.QueueListener(log_queue, stream_handler)
+    listener.start()
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(queue_handler)
+
+    return listener
 
 
 # Constants
@@ -51,12 +93,15 @@ def save_manifest(manifest: list[dict]) -> None:
         json.dump(manifest, f, indent=2)
 
 
-def extract_content(file_data: dict) -> None:
+def extract_content(file_data: dict, log: logging.Logger, correlation_id: str) -> None:
     """Extract content from the file based on MIME type."""
     mime_type = file_data.get("mime_type", "")
     file_path = file_data["file_path"]
 
-    print(f"Extracting content from {file_path} (MIME: {mime_type})")
+    log.info(
+        f"Extracting content from {file_path} (MIME: {mime_type})",
+        extra={"correlation_id": correlation_id},
+    )
 
     if mime_type.startswith("text/") or mime_type == "application/pdf":
         if mime_type == "application/pdf":
@@ -89,12 +134,14 @@ def extract_content(file_data: dict) -> None:
     # Add more types as needed
 
 
-def analyze_content(file_data: dict) -> None:
+def analyze_content(file_data: dict, log: logging.Logger, correlation_id: str) -> None:
     """Run AI analysis on the extracted content."""
     file_path = file_data["file_path"]
     mime_type = file_data.get("mime_type", "")
 
-    print(f"Analyzing content from {file_path}")
+    log.info(
+        f"Analyzing content from {file_path}", extra={"correlation_id": correlation_id}
+    )
 
     # Text analysis
     text = file_data.get("extracted_text", "")
@@ -122,38 +169,62 @@ def analyze_content(file_data: dict) -> None:
 
 def main() -> int:
     """Run the main pipeline."""
-    print("Starting file catalog pipeline...")
+    # Set up logging
+    log_listener = setup_logging()
+    log = logging.getLogger(__name__)
+
+    log.info("Starting file catalog pipeline", extra={"correlation_id": "system"})
 
     # Initialize DB
     collection = initialize_db(str(DB_PATH))
 
     # Load manifest
     manifest = load_manifest()
-    print(f"Loaded {len(manifest)} files from manifest.")
+    log.info(
+        f"Loaded {len(manifest)} files from manifest",
+        extra={"correlation_id": "system"},
+    )
 
     for file_data in manifest:
         file_path = file_data["file_path"]
         status = file_data.get("status", PENDING_EXTRACTION)
+        correlation_id = file_path  # Use file_path as correlation_id for now
 
-        print(f"Processing {file_path} (status: {status})")
+        log.info(
+            f"Processing {file_path} (status: {status})",
+            extra={"correlation_id": correlation_id},
+        )
 
         if status == PENDING_EXTRACTION:
-            extract_content(file_data)
+            extract_content(file_data, log, correlation_id)
             file_data["status"] = PENDING_ANALYSIS
             save_manifest(manifest)
-            print(f"Extraction complete for {file_path}")
+            log.info(
+                f"Extraction complete for {file_path}",
+                extra={"correlation_id": correlation_id},
+            )
 
         if status == PENDING_ANALYSIS:
-            analyze_content(file_data)
+            analyze_content(file_data, log, correlation_id)
             add_file_to_db(file_data, collection)
             file_data["status"] = COMPLETE
             save_manifest(manifest)
-            print(f"Analysis and DB addition complete for {file_path}")
+            log.info(
+                f"Analysis and DB addition complete for {file_path}",
+                extra={"correlation_id": correlation_id},
+            )
 
         elif status == COMPLETE:
-            print(f"Skipping completed file {file_path}")
+            log.info(
+                f"Skipping completed file {file_path}",
+                extra={"correlation_id": correlation_id},
+            )
 
-    print("Pipeline complete.")
+    log.info("Pipeline complete", extra={"correlation_id": "system"})
+
+    # Stop the log listener
+    log_listener.stop()
+
     return 0
 
 
