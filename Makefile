@@ -40,5 +40,6 @@ pull-models:
 	ollama pull llama3:70b-instruct
 	ollama pull deepseek-coder-v2:16b-lite-instruct
 	ollama pull llava:34b-v1.6
+	ollama pull nomic-embed-text
 
 setup-ollama: start-ollama pull-models

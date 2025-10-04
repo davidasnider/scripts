@@ -40,8 +40,14 @@ def generate_embedding(text: str) -> list[float]:
     list[float]
         The embedding vector.
     """
-    response = ollama.embeddings(model="nomic-embed-text", prompt=text)
-    return response["embedding"]
+    try:
+        response = ollama.embeddings(model="nomic-embed-text", prompt=text)
+        return response["embedding"]
+    except Exception as e:
+        print(f"Warning: Failed to generate embedding with Ollama: {e}")
+        # Return a zero vector as fallback (nomic-embed-text produces
+        # 768-dim embeddings)
+        return [0.0] * 768
 
 
 def add_file_to_db(file_data: dict, collection) -> None:
