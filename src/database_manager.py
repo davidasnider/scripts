@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 
 import chromadb
@@ -85,6 +84,9 @@ def add_file_to_db(file_data: dict, collection) -> None:
 
     # Structured metadata for filtering
     metadata = {
+        "file_path": file_data.get("file_path", ""),
+        "file_name": file_data.get("file_name", ""),
+        "mime_type": file_data.get("mime_type", ""),
         "file_type": file_data.get("mime_type", "").split("/")[
             0
         ],  # e.g., 'image', 'text'
@@ -97,6 +99,6 @@ def add_file_to_db(file_data: dict, collection) -> None:
         ids=[file_data["file_path"]],
         embeddings=[embedding],
         metadatas=[metadata],
-        documents=[json.dumps(file_data)],
+        documents=[consolidated_text],
     )
     logger.debug("Successfully added file to DB")

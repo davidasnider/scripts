@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any
 
 from transformers import pipeline
+
+# Suppress transformers warnings before importing
+warnings.filterwarnings("ignore", message=".*use_fast.*")
+warnings.filterwarnings("ignore", message=".*slow processor.*")
+warnings.filterwarnings("ignore", message=".*Device set to use.*")
 
 logger = logging.getLogger(__name__)
 

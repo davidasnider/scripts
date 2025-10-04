@@ -38,8 +38,8 @@ def _clean_json_response(response_text: str) -> str:
     return response_text.strip()
 
 
-def _chunk_text(text: str, max_bytes: int = 3000) -> list[str]:
-    """Split text into chunks that fit within the byte limit.
+def _chunk_text(text: str, max_bytes: int = 3000, max_chunks: int = 10) -> list[str]:
+    """Split text into chunks under byte limit, up to a max number of chunks.
 
     Parameters
     ----------
@@ -47,14 +47,35 @@ def _chunk_text(text: str, max_bytes: int = 3000) -> list[str]:
         The text to chunk.
     max_bytes : int
         Maximum bytes per chunk.
+    max_chunks : int
+        Maximum number of chunks to create. If text would create more chunks,
+        increase chunk size to stay within limit.
 
     Returns
     -------
     list[str]
-        List of text chunks.
+        List of text chunks (max 10).
     """
-    if len(text.encode("utf-8")) <= max_bytes:
+    text_bytes = len(text.encode("utf-8"))
+
+    if text_bytes <= max_bytes:
         return [text]
+
+    # If very large, compute minimum chunk size needed to stay under max_chunks
+    if text_bytes > (max_bytes * max_chunks):
+        # Increase chunk size to fit within max_chunks limit
+        adjusted_max_bytes = text_bytes // max_chunks + 1000  # Add buffer
+        logger.debug(
+            (
+                "Large file detected (%d bytes); adjust chunk size from %d to %d "
+                "to limit chunks to %d"
+            ),
+            text_bytes,
+            max_bytes,
+            adjusted_max_bytes,
+            max_chunks,
+        )
+        max_bytes = min(adjusted_max_bytes, 4096)  # Cap at 4096 bytes as requested
 
     chunks = []
     current_chunk = ""
@@ -77,6 +98,18 @@ def _chunk_text(text: str, max_bytes: int = 3000) -> list[str]:
             if current_chunk:
                 chunks.append(current_chunk)
                 current_chunk = sentence
+
+                # Stop if we've reached max chunks limit
+                if len(chunks) >= max_chunks:
+                    remaining = len(text.encode("utf-8")) - sum(
+                        len(c.encode("utf-8")) for c in chunks
+                    )
+                    logger.debug(
+                        "Reached max chunk limit (%d); truncating remaining %d bytes",
+                        max_chunks,
+                        remaining,
+                    )
+                    break
             else:
                 # Single sentence is too long, split by words
                 words = sentence.split()
@@ -87,18 +120,31 @@ def _chunk_text(text: str, max_bytes: int = 3000) -> list[str]:
                         if temp_chunk:
                             chunks.append(temp_chunk)
                             temp_chunk = word
+
+                            # Stop if we've reached max chunks limit
+                            if len(chunks) >= max_chunks:
+                                break
                         else:
                             # Word itself is too long, add as is
                             chunks.append(word)
                             temp_chunk = ""
+
+                            # Stop if we've reached max chunks limit
+                            if len(chunks) >= max_chunks:
+                                break
                     else:
                         temp_chunk = test
+
+                if len(chunks) >= max_chunks:
+                    break
+
                 if temp_chunk:
                     current_chunk = temp_chunk
         else:
             current_chunk = test_chunk
 
-    if current_chunk:
+    # Add final chunk if we haven't reached the limit
+    if current_chunk and len(chunks) < max_chunks:
         chunks.append(current_chunk)
 
     return chunks
@@ -117,12 +163,12 @@ def analyze_text_content(text: str) -> dict[str, Any]:
     dict[str, Any]
         A dictionary with 'summary' (str) and 'mentioned_people' (list[str]).
     """
+    text_bytes = len(text.encode("utf-8"))
     logger.debug(
         "Starting text content analysis, text length: %d bytes",
-        len(text.encode("utf-8")),
+        text_bytes,
     )
     # Check if text needs chunking (over 3000 bytes)
-    text_bytes = len(text.encode("utf-8"))
     if text_bytes <= 3000:
         # Single chunk processing
         prompt = (
@@ -157,7 +203,7 @@ def analyze_text_content(text: str) -> dict[str, Any]:
             }
 
     # Multi-chunk processing
-    chunks = _chunk_text(text, 3000)
+    chunks = _chunk_text(text, 3000, 10)
     all_summaries = []
     all_people = set()
 
@@ -250,12 +296,12 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         A dictionary with 'summary', 'potential_red_flags', 'incriminating_items',
         and 'confidence_score'.
     """
+    text_bytes = len(text.encode("utf-8"))
     logger.debug(
         "Starting financial document analysis, text length: %d bytes",
-        len(text.encode("utf-8")),
+        text_bytes,
     )
     # Check if text needs chunking (over 3000 bytes)
-    text_bytes = len(text.encode("utf-8"))
     if text_bytes <= 3000:
         # Single chunk processing
         prompt = (
@@ -297,7 +343,7 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
             }
 
     # Multi-chunk processing
-    chunks = _chunk_text(text, 3000)
+    chunks = _chunk_text(text, 3000, 10)
     all_summaries = []
     all_red_flags = set()
     all_incriminating = set()

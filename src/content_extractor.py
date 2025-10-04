@@ -133,6 +133,75 @@ def extract_content_from_pdf(file_path: str) -> str:
     return "\n".join(all_text)
 
 
+def extract_content_from_xlsx(file_path: str) -> str:
+    """Extract all text content from an Excel (.xlsx) file.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .xlsx file.
+
+    Returns
+    -------
+    str
+        The extracted text from all worksheets, including headers and data.
+    """
+    logger.debug("Extracting content from Excel file: %s", file_path)
+
+    try:
+        import pandas as pd
+
+        # Read all sheets from the Excel file
+        excel_file = pd.ExcelFile(file_path)
+        all_text = []
+
+        for sheet_name in excel_file.sheet_names:
+            logger.debug("Processing sheet: %s", sheet_name)
+
+            # Add sheet name as a header
+            all_text.append(f"=== SHEET: {sheet_name} ===")
+
+            try:
+                # Read the sheet
+                df = pd.read_excel(file_path, sheet_name=sheet_name)
+
+                # Convert the dataframe to a readable text format
+                # Include column headers
+                if not df.empty:
+                    # Add column headers
+                    headers = " | ".join(str(col) for col in df.columns)
+                    all_text.append(f"Columns: {headers}")
+
+                    # Add each row
+                    for index, row in df.iterrows():
+                        row_text = " | ".join(
+                            str(val) for val in row.values if pd.notna(val)
+                        )
+                        if row_text.strip():  # Only add non-empty rows
+                            all_text.append(row_text)
+                else:
+                    all_text.append("(Empty sheet)")
+
+            except Exception as e:
+                logger.warning("Error reading sheet %s: %s", sheet_name, e)
+                all_text.append(f"(Error reading sheet: {e})")
+
+            all_text.append("")  # Add blank line between sheets
+
+        result = "\n".join(all_text)
+        logger.debug(
+            "Successfully extracted %d characters from Excel file", len(result)
+        )
+        return result
+
+    except ImportError:
+        logger.error("pandas library not available for Excel extraction")
+        return "Excel extraction unavailable - pandas not installed"
+    except Exception as e:
+        logger.error("Error processing Excel file %s: %s", file_path, e)
+        return f"Excel extraction failed: {e}"
+
+
 def extract_frames_from_video(
     file_path: str, output_dir: str, interval_sec: float
 ) -> list[str]:
