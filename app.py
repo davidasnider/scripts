@@ -164,3 +164,55 @@ def generate_response(
     except Exception as e:
         st.error(f"Failed to generate response: {e}")
         return iter([])  # Return empty iterator
+
+
+# Chat input handling
+if prompt := st.chat_input("Ask me about your files..."):
+    # Add user message to session state
+    st.session_state.messages.append({"role": "user", "content": prompt, "sources": []})
+
+    # Display user message immediately
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Generate assistant response
+    with st.chat_message("assistant"):
+        with st.spinner("Searching your archive..."):
+            # Build filters and query knowledge base
+            chroma_filters = build_chroma_filter(st.session_state.filters)
+            context = query_knowledge_base(prompt, chroma_filters)
+
+        if not context:
+            st.warning("No relevant information found in your archive for this query.")
+            # Add empty assistant message
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": "No relevant information found in your archive.",
+                    "sources": [],
+                }
+            )
+        else:
+            # Create placeholder for streaming response
+            response_placeholder = st.empty()
+            full_response = ""
+
+            # Stream the response
+            response_stream = generate_response(
+                prompt, context, st.session_state.messages[:-1]
+            )
+            for chunk in response_stream:
+                if chunk["message"]["content"]:
+                    full_response += chunk["message"]["content"]
+                    response_placeholder.markdown(full_response + "▌")
+
+            # Final display without cursor
+            response_placeholder.markdown(full_response)
+
+            # Add assistant message with sources to session state
+            st.session_state.messages.append(
+                {"role": "assistant", "content": full_response, "sources": context}
+            )
+
+    # Rerun to update the UI with the new message
+    st.rerun()
