@@ -1,4 +1,4 @@
-.PHONY: check-tesseract install-tesseract check-ollama install-ollama install start-ollama pull-models setup-ollama
+.PHONY: check-tesseract install-tesseract check-ollama install-ollama install start-ollama pull-models setup-ollama run-models
 
 check-tesseract:
 	@if command -v tesseract > /dev/null 2>&1; then \
@@ -43,6 +43,14 @@ pull-models:
 	ollama pull nomic-embed-text
 
 setup-ollama: start-ollama pull-models
+
+run-models:
+	$(MAKE) start-ollama
+	@echo "Ensuring all downloaded models are available..."
+	@sleep 2
+	@echo "Available models:"
+	@ollama list
+	@echo "All downloaded Ollama models are ready to use!"
 
 run:
 	uv run streamlit run app.py

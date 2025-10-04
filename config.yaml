@@ -2,9 +2,9 @@
 
 # Maximum workers for each processing stage
 max_workers:
-  ingestion: 4
+  ingestion: 2
   validation: 2
-  analysis: 2
+  analysis: 0  # Disabled until Ollama is properly configured
   loading: 1
 
 # File paths
