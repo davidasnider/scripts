@@ -30,17 +30,15 @@ uv run python -m file_catalog --help
 
 The `scan` command takes a directory to catalog and writes a manifest file. The `analyze` command runs follow-up analyses using the manifest. Both commands currently print placeholders; fill in the implementation using the helpers in `src/file_catalog/`.
 
-## Discover files script
+## Content extraction utilities
 
-Use the `src/discover_files.py` helper when you just need to crawl a directory tree and build a manifest JSON without invoking the full CLI. The script walks every file beneath a root, records metadata (path, name, MIME type, size, and extraction status), and writes the results to a JSON file.
+The `src/content_extractor.py` module provides helpers for pulling text from various file types:
 
-```bash
-uv run python src/discover_files.py /path/to/directory --manifest-path data/manifest.json
-```
+- `preprocess_for_ocr(image)`: Prepares a PIL image for OCR by converting to grayscale and applying binary thresholding.
+- `extract_content_from_docx(file_path)`: Extracts all text from a .docx file using python-docx.
+- `extract_content_from_image(file_path)`: Opens an image with Pillow, preprocesses it for OCR, and extracts text using pytesseract.
 
-- `root_directory` (positional) is the folder to scan. The default manifest destination is `data/manifest.json`, but you can override it with `--manifest-path`.
-- MIME types are resolved with `python-magic` when libmagic is available; otherwise the script falls back to Python's built-in `mimetypes` module.
-- The output is prettified JSON, suitable for checking into version control or feeding into downstream analysis.
+These functions are designed to be called from the main CLI or standalone scripts for content processing.
 
 ## Development notes
 

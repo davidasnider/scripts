@@ -35,3 +35,44 @@ def preprocess_for_ocr(image: Image.Image, threshold: int = 180) -> Image.Image:
     )
 
     return Image.fromarray(binary_array)
+
+
+def extract_content_from_docx(file_path: str) -> str:
+    """Extract all text content from a .docx file.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .docx file.
+
+    Returns
+    -------
+    str
+        The extracted text from the document.
+    """
+    from docx import Document
+
+    doc = Document(file_path)
+    text_parts = [paragraph.text for paragraph in doc.paragraphs]
+    return "\n".join(text_parts)
+
+
+def extract_content_from_image(file_path: str) -> str:
+    """Extract text from an image using OCR after preprocessing.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the image file.
+
+    Returns
+    -------
+    str
+        The extracted text from the image.
+    """
+    import pytesseract
+
+    image = Image.open(file_path)
+    processed_image = preprocess_for_ocr(image)
+    text = pytesseract.image_to_string(processed_image)
+    return text
