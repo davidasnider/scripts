@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from pathlib import Path
 
 import cv2
@@ -11,6 +12,60 @@ import numpy as np
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+
+def extract_text_from_svg(file_path: str) -> str:
+    """Extract text content from an SVG file.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the SVG file.
+
+    Returns
+    -------
+    str
+        The extracted text from the SVG file.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            svg_content = f.read()
+
+        # Extract text from <text> elements
+        text_elements = re.findall(
+            r"<text[^>]*>(.*?)</text>", svg_content, re.DOTALL | re.IGNORECASE
+        )
+
+        # Extract text from <tspan> elements (often used within <text>)
+        tspan_elements = re.findall(
+            r"<tspan[^>]*>(.*?)</tspan>", svg_content, re.DOTALL | re.IGNORECASE
+        )
+
+        # Clean up extracted text (remove HTML entities, extra whitespace)
+        all_text = text_elements + tspan_elements
+        cleaned_text = []
+
+        for text in all_text:
+            # Remove any remaining HTML tags
+            clean_text = re.sub(r"<[^>]+>", "", text)
+            # Decode common HTML entities
+            clean_text = (
+                clean_text.replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&")
+            )
+            # Clean up whitespace
+            clean_text = " ".join(clean_text.split())
+            if clean_text.strip():
+                cleaned_text.append(clean_text.strip())
+
+        result = "\n".join(cleaned_text)
+        logger.debug("Extracted %d characters from SVG: %s", len(result), file_path)
+        return result
+
+    except Exception as e:
+        logger.error("Error extracting text from SVG %s: %s", file_path, e)
+        return ""
 
 
 def preprocess_for_ocr(image: Image.Image, threshold: int = 180) -> Image.Image:
@@ -80,6 +135,10 @@ def extract_content_from_image(file_path: str) -> str:
     import pytesseract
 
     try:
+        # Check if it's an SVG file
+        if file_path.lower().endswith(".svg"):
+            return extract_text_from_svg(file_path)
+
         image = Image.open(file_path)
         processed_image = preprocess_for_ocr(image)
         text = pytesseract.image_to_string(processed_image)
