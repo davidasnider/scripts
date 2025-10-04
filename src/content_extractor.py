@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -118,3 +119,57 @@ def extract_content_from_pdf(file_path: str) -> str:
         doc.close()
 
     return "\n".join(all_text)
+
+
+def extract_frames_from_video(
+    file_path: str, output_dir: str, interval_sec: float
+) -> list[str]:
+    """Extract frames from a video at regular intervals and save as JPEG images.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the video file.
+    output_dir : str
+        Directory to save the extracted frames.
+    interval_sec : float
+        Interval in seconds between extracted frames.
+
+    Returns
+    -------
+    list[str]
+        List of file paths to the saved frame images.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(file_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video file: {file_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps == 0:
+        raise ValueError("Video has invalid FPS")
+
+    frame_interval = int(fps * interval_sec)
+    if frame_interval < 1:
+        frame_interval = 1
+
+    saved_frames = []
+    frame_count = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frame_count % frame_interval == 0:
+            frame_filename = f"frame_{frame_count:06d}.jpg"
+            frame_path = output_path / frame_filename
+            cv2.imwrite(str(frame_path), frame)
+            saved_frames.append(str(frame_path))
+
+        frame_count += 1
+
+    cap.release()
+    return saved_frames

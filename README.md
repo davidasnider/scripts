@@ -53,6 +53,8 @@ various file types:
 - `extract_content_from_pdf(file_path)`: Extracts text from PDFs using a hybrid
   approach: digital text first, OCR for scanned pages (detected by low text
   length).
+- `extract_frames_from_video(file_path, output_dir, interval_sec)`: Extracts
+  frames from videos at specified intervals and saves them as JPEG images.
 
 These functions are designed to be called from the main CLI or standalone
 scripts for content processing.
