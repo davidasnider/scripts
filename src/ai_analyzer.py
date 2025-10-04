@@ -31,12 +31,19 @@ def analyze_text_content(text: str) -> dict[str, Any]:
         "Respond only with valid JSON."
     )
 
-    response = ollama.chat(
-        model="llama3:70b-instruct",
-        messages=[{"role": "user", "content": prompt}],
-    )
-    json_str = response["message"]["content"]
-    return json.loads(json_str)
+    try:
+        response = ollama.chat(
+            model="llama3:70b-instruct",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        json_str = response["message"]["content"]
+        return json.loads(json_str)
+    except Exception as e:
+        print(f"Warning: Failed to analyze text content with Ollama: {e}")
+        return {
+            "summary": "Analysis unavailable - Ollama not accessible",
+            "mentioned_people": [],
+        }
 
 
 def analyze_financial_document(text: str) -> dict[str, Any]:
@@ -66,12 +73,21 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         "Respond only with valid JSON."
     )
 
-    response = ollama.chat(
-        model="deepseek-coder-v2:16b-lite-instruct",
-        messages=[{"role": "user", "content": prompt}],
-    )
-    json_str = response["message"]["content"]
-    return json.loads(json_str)
+    try:
+        response = ollama.chat(
+            model="deepseek-coder-v2:16b-lite-instruct",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        json_str = response["message"]["content"]
+        return json.loads(json_str)
+    except Exception as e:
+        print(f"Warning: Failed to analyze financial document with Ollama: {e}")
+        return {
+            "summary": "Analysis unavailable - Ollama not accessible",
+            "potential_red_flags": [],
+            "incriminating_items": [],
+            "confidence_score": 0,
+        }
 
 
 def describe_image(image_path: str) -> str:
@@ -91,14 +107,18 @@ def describe_image(image_path: str) -> str:
         image_data = f.read()
     image_b64 = base64.b64encode(image_data).decode("utf-8")
 
-    response = ollama.chat(
-        model="llava:34b-v1.6",
-        messages=[
-            {
-                "role": "user",
-                "content": "Describe this image in detail.",
-                "images": [image_b64],
-            }
-        ],
-    )
-    return response["message"]["content"]
+    try:
+        response = ollama.chat(
+            model="llava:34b-v1.6",
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Describe this image in detail.",
+                    "images": [image_b64],
+                }
+            ],
+        )
+        return response["message"]["content"]
+    except Exception as e:
+        print(f"Warning: Failed to describe image with Ollama: {e}")
+        return "Image description unavailable - Ollama not accessible"

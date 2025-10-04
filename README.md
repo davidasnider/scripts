@@ -35,6 +35,7 @@ and enables downstream analysis with local and vector-backed AI tooling.
 
 ```bash
 make install
+make setup-ollama
 uv run python -m file_catalog --help
 ```
 
@@ -80,6 +81,8 @@ resumability.
 - Ensure system dependencies for OCR are installed (Tesseract, poppler for
   `pdf2image`, etc.). On macOS, run `make check-tesseract` to install
   automatically if needed.
+- Ollama must be running for AI analysis features. Run `make setup-ollama` to
+  start Ollama and download required models (llama3, deepseek-coder, llava).
 - Torch and transformers may require additional system packages depending on
   your hardware. Consult their documentation for accelerated backends.
 - Add standalone scripts to the `scripts/` directory when workflows need bespoke
