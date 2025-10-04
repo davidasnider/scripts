@@ -36,6 +36,17 @@ and enables downstream analysis with local and vector-backed AI tooling.
 ```bash
 make install
 make setup-ollama
+make run
+```
+
+This launches the Streamlit web interface for interactive querying of your
+digital archive.
+
+## Command-line tools
+
+The project also includes command-line utilities for batch processing:
+
+```bash
 uv run python -m file_catalog --help
 ```
 

@@ -43,3 +43,6 @@ pull-models:
 	ollama pull nomic-embed-text
 
 setup-ollama: start-ollama pull-models
+
+run:
+	uv run streamlit run app.py
