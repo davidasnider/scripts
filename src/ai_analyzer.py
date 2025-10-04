@@ -9,6 +9,72 @@ from typing import Any
 import ollama
 
 
+def _chunk_text(text: str, max_bytes: int = 3000) -> list[str]:
+    """Split text into chunks that fit within the byte limit.
+
+    Parameters
+    ----------
+    text : str
+        The text to chunk.
+    max_bytes : int
+        Maximum bytes per chunk.
+
+    Returns
+    -------
+    list[str]
+        List of text chunks.
+    """
+    if len(text.encode("utf-8")) <= max_bytes:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+
+    # Split by sentences first
+    sentences = text.replace("\n", " ").split(". ")
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
+        # Add period back if not present
+        if not sentence.endswith("."):
+            sentence += "."
+
+        # Check if adding this sentence would exceed the limit
+        test_chunk = current_chunk + " " + sentence if current_chunk else sentence
+        if len(test_chunk.encode("utf-8")) > max_bytes:
+            if current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = sentence
+            else:
+                # Single sentence is too long, split by words
+                words = sentence.split()
+                temp_chunk = ""
+                for word in words:
+                    test = temp_chunk + " " + word if temp_chunk else word
+                    if len(test.encode("utf-8")) > max_bytes:
+                        if temp_chunk:
+                            chunks.append(temp_chunk)
+                            temp_chunk = word
+                        else:
+                            # Word itself is too long, add as is
+                            chunks.append(word)
+                            temp_chunk = ""
+                    else:
+                        temp_chunk = test
+                if temp_chunk:
+                    current_chunk = temp_chunk
+        else:
+            current_chunk = test_chunk
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+
 def analyze_text_content(text: str) -> dict[str, Any]:
     """Analyze text content using an LLM to extract summary and mentioned people.
 
@@ -22,28 +88,94 @@ def analyze_text_content(text: str) -> dict[str, Any]:
     dict[str, Any]
         A dictionary with 'summary' (str) and 'mentioned_people' (list[str]).
     """
-    prompt = (
-        "You are a document analyst. Analyze the following text and provide a "
-        "JSON response with exactly two keys:\n\n"
-        '- "summary": a concise paragraph summarizing the main points of the text.\n'
-        '- "mentioned_people": a list of names of people mentioned in the text.\n\n'
-        f"Text: {text}\n\n"
-        "Respond only with valid JSON."
-    )
-
-    try:
-        response = ollama.chat(
-            model="llama3:70b-instruct",
-            messages=[{"role": "user", "content": prompt}],
+    # Check if text needs chunking (over 3000 bytes)
+    text_bytes = len(text.encode("utf-8"))
+    if text_bytes <= 3000:
+        # Single chunk processing
+        prompt = (
+            "You are a document analyst. Analyze the following text and provide a "
+            "JSON response with exactly two keys:\n\n"
+            '- "summary": a concise paragraph summarizing the main points of the '
+            "text.\n"
+            '- "mentioned_people": a list of names of people mentioned in the text.\n\n'
+            f"Text: {text}\n\n"
+            "Respond only with valid JSON."
         )
-        json_str = response["message"]["content"]
-        return json.loads(json_str)
-    except Exception as e:
-        print(f"Warning: Failed to analyze text content with Ollama: {e}")
-        return {
-            "summary": "Analysis unavailable - Ollama not accessible",
-            "mentioned_people": [],
-        }
+
+        try:
+            response = ollama.chat(
+                model="llama3:70b-instruct",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            json_str = response["message"]["content"]
+            return json.loads(json_str)
+        except Exception as e:
+            print(f"Warning: Failed to analyze text content with Ollama: {e}")
+            return {
+                "summary": "Analysis unavailable - Ollama not accessible",
+                "mentioned_people": [],
+            }
+
+    # Multi-chunk processing
+    chunks = _chunk_text(text, 3000)
+    all_summaries = []
+    all_people = set()
+
+    for i, chunk in enumerate(chunks):
+        prompt = (
+            f"You are a document analyst. Analyze chunk {i+1} of {len(chunks)} of the "
+            "following text and provide a JSON response with exactly two keys:\n\n"
+            '- "summary": a concise paragraph summarizing the main points of this '
+            "chunk.\n"
+            '- "mentioned_people": a list of names of people mentioned in this '
+            "chunk.\n\n"
+            f"Text chunk: {chunk}\n\n"
+            "Respond only with valid JSON."
+        )
+
+        try:
+            response = ollama.chat(
+                model="llama3:70b-instruct",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            json_str = response["message"]["content"]
+            chunk_result = json.loads(json_str)
+            all_summaries.append(chunk_result.get("summary", ""))
+            all_people.update(chunk_result.get("mentioned_people", []))
+        except Exception as e:
+            print(f"Warning: Failed to analyze text chunk {i+1} with Ollama: {e}")
+            continue
+
+    # Combine results
+    if all_summaries:
+        combined_summary_prompt = (
+            "You are a document analyst. Combine the following chunk summaries into a "
+            "single cohesive summary of the entire document:\n\n"
+            "Chunk summaries:\n"
+            + "\n\n".join(
+                f"Chunk {i+1}: {summary}" for i, summary in enumerate(all_summaries)
+            )
+            + "\n\n"
+            "Provide a concise paragraph summarizing the main points of the entire "
+            "document."
+        )
+
+        try:
+            response = ollama.chat(
+                model="llama3:70b-instruct",
+                messages=[{"role": "user", "content": combined_summary_prompt}],
+            )
+            final_summary = response["message"]["content"]
+        except Exception as e:
+            print(f"Warning: Failed to combine summaries with Ollama: {e}")
+            final_summary = " ".join(all_summaries)
+    else:
+        final_summary = "Analysis unavailable - Ollama not accessible"
+
+    return {
+        "summary": final_summary,
+        "mentioned_people": list(all_people),
+    }
 
 
 def analyze_financial_document(text: str) -> dict[str, Any]:
@@ -60,34 +192,116 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         A dictionary with 'summary', 'potential_red_flags', 'incriminating_items',
         and 'confidence_score'.
     """
-    prompt = (
-        "You are a meticulous forensic accountant. Analyze the following "
-        "financial document text and provide a JSON response with exactly "
-        "four keys:\n\n"
-        '- "summary": a concise paragraph summarizing the document.\n'
-        '- "potential_red_flags": a list of potential red flags or irregularities.\n'
-        '- "incriminating_items": a list of items that could be incriminating.\n'
-        '- "confidence_score": a numerical score from 0 to 100 indicating confidence '
-        "in the analysis.\n\n"
-        f"Text: {text}\n\n"
-        "Respond only with valid JSON."
+    # Check if text needs chunking (over 3000 bytes)
+    text_bytes = len(text.encode("utf-8"))
+    if text_bytes <= 3000:
+        # Single chunk processing
+        prompt = (
+            "You are a meticulous forensic accountant. Analyze the following "
+            "financial document text and provide a JSON response with exactly "
+            "four keys:\n\n"
+            '- "summary": a concise paragraph summarizing the document.\n'
+            '- "potential_red_flags": a list of potential red flags or '
+            "irregularities.\n"
+            '- "incriminating_items": a list of items that could be incriminating.\n'
+            '- "confidence_score": a numerical score from 0 to 100 indicating '
+            "confidence in the analysis.\n\n"
+            f"Text: {text}\n\n"
+            "Respond only with valid JSON."
+        )
+
+        try:
+            response = ollama.chat(
+                model="deepseek-coder-v2:latest",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            json_str = response["message"]["content"]
+            return json.loads(json_str)
+        except Exception as e:
+            print(f"Warning: Failed to analyze financial document with Ollama: {e}")
+            return {
+                "summary": "Analysis unavailable - Ollama not accessible",
+                "potential_red_flags": [],
+                "incriminating_items": [],
+                "confidence_score": 0,
+            }
+
+    # Multi-chunk processing
+    chunks = _chunk_text(text, 3000)
+    all_summaries = []
+    all_red_flags = set()
+    all_incriminating = set()
+    confidence_scores = []
+
+    for i, chunk in enumerate(chunks):
+        prompt = (
+            f"You are a meticulous forensic accountant. Analyze chunk {i+1} of "
+            f"{len(chunks)} of the following financial document text and provide a "
+            "JSON response with exactly four keys:\n\n"
+            '- "summary": a concise paragraph summarizing this chunk.\n'
+            '- "potential_red_flags": a list of potential red flags or irregularities '
+            "in this chunk.\n"
+            '- "incriminating_items": a list of items that could be incriminating in '
+            "this chunk.\n"
+            '- "confidence_score": a numerical score from 0 to 100 indicating '
+            "confidence in the analysis of this chunk.\n\n"
+            f"Text chunk: {chunk}\n\n"
+            "Respond only with valid JSON."
+        )
+
+        try:
+            response = ollama.chat(
+                model="deepseek-coder-v2:latest",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            json_str = response["message"]["content"]
+            chunk_result = json.loads(json_str)
+            all_summaries.append(chunk_result.get("summary", ""))
+            all_red_flags.update(chunk_result.get("potential_red_flags", []))
+            all_incriminating.update(chunk_result.get("incriminating_items", []))
+            if isinstance(chunk_result.get("confidence_score"), (int, float)):
+                confidence_scores.append(chunk_result["confidence_score"])
+        except Exception as e:
+            print(f"Warning: Failed to analyze financial chunk {i+1} with Ollama: {e}")
+            continue
+
+    # Combine results
+    if all_summaries:
+        combined_summary_prompt = (
+            "You are a forensic accountant. Combine the following chunk summaries "
+            "into a single cohesive summary of the entire financial document:\n\n"
+            "Chunk summaries:\n"
+            + "\n\n".join(
+                f"Chunk {i+1}: {summary}" for i, summary in enumerate(all_summaries)
+            )
+            + "\n\n"
+            "Provide a concise paragraph summarizing the main points of the entire "
+            "financial document."
+        )
+
+        try:
+            response = ollama.chat(
+                model="deepseek-coder-v2:latest",
+                messages=[{"role": "user", "content": combined_summary_prompt}],
+            )
+            final_summary = response["message"]["content"]
+        except Exception as e:
+            print(f"Warning: Failed to combine financial summaries with Ollama: {e}")
+            final_summary = " ".join(all_summaries)
+    else:
+        final_summary = "Analysis unavailable - Ollama not accessible"
+
+    # Calculate average confidence score
+    avg_confidence = (
+        sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0
     )
 
-    try:
-        response = ollama.chat(
-            model="deepseek-coder-v2:16b-lite-instruct",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        json_str = response["message"]["content"]
-        return json.loads(json_str)
-    except Exception as e:
-        print(f"Warning: Failed to analyze financial document with Ollama: {e}")
-        return {
-            "summary": "Analysis unavailable - Ollama not accessible",
-            "potential_red_flags": [],
-            "incriminating_items": [],
-            "confidence_score": 0,
-        }
+    return {
+        "summary": final_summary,
+        "potential_red_flags": list(all_red_flags),
+        "incriminating_items": list(all_incriminating),
+        "confidence_score": int(avg_confidence),
+    }
 
 
 def describe_image(image_path: str) -> str:
@@ -109,7 +323,7 @@ def describe_image(image_path: str) -> str:
 
     try:
         response = ollama.chat(
-            model="llava:34b-v1.6",
+            model="llava:7b",
             messages=[
                 {
                     "role": "user",

@@ -42,16 +42,7 @@ make run
 This launches the Streamlit web interface for interactive querying of your
 digital archive.
 
-## Configuration
-
-The pipeline uses a `config.yaml` file for configuration. The default
-configuration includes:
-
-- `max_workers`: Maximum concurrent workers for each processing stage
-  (ingestion, validation, analysis, loading)
-- `paths`: File paths for the manifest and database
-
-You can customize these settings by editing `config.yaml`.
+## Command-line tools
 
 The project also includes command-line utilities for batch processing:
 
