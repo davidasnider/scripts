@@ -5,12 +5,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 from database_manager import generate_embedding, initialize_db
 
+logger = logging.getLogger(__name__)
+
 
 def main() -> int:
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+        ],
+    )
+    # Suppress httpx and related logs
+    logging.getLogger("httpx").setLevel(logging.ERROR)
+    logging.getLogger("httpcore").setLevel(logging.ERROR)
+    logger = logging.getLogger(__name__)
+    logger.info("Starting search archive script")
     parser = argparse.ArgumentParser(
         description="Search the digital archive with semantic queries.",
     )
@@ -63,12 +79,11 @@ def main() -> int:
     # Print results
     for i, doc in enumerate(results["documents"]):
         file_data = json.loads(doc)
-        print(f"Result {i+1}:")
-        print(f"  Path: {file_data.get('file_path', 'N/A')}")
-        print(f"  Summary: {file_data.get('summary', 'N/A')}")
-        print(f"  MIME Type: {file_data.get('mime_type', 'N/A')}")
-        print(f"  Size: {file_data.get('size_bytes', 'N/A')} bytes")
-        print()
+        logger.info("Result %d:", i + 1)
+        logger.info("  Path: %s", file_data.get("file_path", "N/A"))
+        logger.info("  Summary: %s", file_data.get("summary", "N/A"))
+        logger.info("  MIME Type: %s", file_data.get("mime_type", "N/A"))
+        logger.info("  Size: %s bytes", file_data.get("size_bytes", "N/A"))
 
     return 0
 

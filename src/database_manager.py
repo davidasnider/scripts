@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import chromadb
 import ollama
+
+logger = logging.getLogger(__name__)
 
 
 def initialize_db(path: str):
@@ -22,8 +25,10 @@ def initialize_db(path: str):
     chromadb.Collection
         The digital_archive collection.
     """
+    logger.info("Initializing ChromaDB at path: %s", path)
     client = chromadb.PersistentClient(path=path)
     collection = client.get_or_create_collection(name="digital_archive")
+    logger.info("ChromaDB initialized successfully")
     return collection
 
 
@@ -40,11 +45,15 @@ def generate_embedding(text: str) -> list[float]:
     list[float]
         The embedding vector.
     """
+    logger.debug("Generating embedding for text of length %d", len(text))
     try:
+        logger.debug("Sending Ollama embedding request for text length %d", len(text))
         response = ollama.embeddings(model="nomic-embed-text", prompt=text)
+        logger.debug("Received Ollama embedding response")
+        logger.debug("Successfully generated embedding")
         return response["embedding"]
     except Exception as e:
-        print(f"Warning: Failed to generate embedding with Ollama: {e}")
+        logger.warning("Failed to generate embedding with Ollama: %s", e)
         # Return a zero vector as fallback (nomic-embed-text produces
         # 768-dim embeddings)
         return [0.0] * 768
@@ -60,6 +69,7 @@ def add_file_to_db(file_data: dict, collection) -> None:
     collection : chromadb.Collection
         The ChromaDB collection to add to.
     """
+    logger.debug("Adding file to DB: %s", file_data.get("file_path", ""))
     # Consolidate relevant text
     text_parts = [
         file_data.get("file_name", ""),
@@ -89,3 +99,4 @@ def add_file_to_db(file_data: dict, collection) -> None:
         metadatas=[metadata],
         documents=[json.dumps(file_data)],
     )
+    logger.debug("Successfully added file to DB")

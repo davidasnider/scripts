@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import mimetypes
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -12,6 +12,9 @@ try:
     import magic  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - handled gracefully at runtime
     magic = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
 
 
 STATUS_PENDING_EXTRACTION = "pending_extraction"
@@ -51,10 +54,10 @@ def _create_mime_detector() -> Any:
     try:
         return magic.Magic(mime=True)
     except Exception as exc:  # pragma: no cover - depends on system libmagic
-        print(
-            f"Warning: python-magic could not initialize libmagic ({exc}). "
+        logger.warning(
+            "python-magic could not initialize libmagic (%s). "
             "Falling back to mimetypes-based detection.",
-            file=sys.stderr,
+            exc,
         )
         return None
 
@@ -135,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     manifest = create_file_manifest(args.root_directory, args.manifest_path)
-    print(f"Wrote {len(manifest)} entries to {args.manifest_path}")
+    logger.info("Wrote %d entries to %s", len(manifest), args.manifest_path)
     return 0
 
 

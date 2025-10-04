@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from pathlib import Path
 
 from ai_analyzer import analyze_financial_document, analyze_text_content, describe_image
@@ -53,10 +54,11 @@ def save_manifest(manifest: list[dict]) -> None:
 
 def extract_content(file_data: dict) -> None:
     """Extract content from the file based on MIME type."""
+    logger = logging.getLogger(__name__)
     mime_type = file_data.get("mime_type", "")
     file_path = file_data["file_path"]
 
-    print(f"Extracting content from {file_path} (MIME: {mime_type})")
+    logger.info("Extracting content from %s (MIME: %s)", file_path, mime_type)
 
     if mime_type.startswith("text/") or mime_type == "application/pdf":
         if mime_type == "application/pdf":
@@ -91,10 +93,11 @@ def extract_content(file_data: dict) -> None:
 
 def analyze_content(file_data: dict) -> None:
     """Run AI analysis on the extracted content."""
+    logger = logging.getLogger(__name__)
     file_path = file_data["file_path"]
     mime_type = file_data.get("mime_type", "")
 
-    print(f"Analyzing content from {file_path}")
+    logger.info("Analyzing content from %s", file_path)
 
     # Text analysis
     text = file_data.get("extracted_text", "")
@@ -122,39 +125,52 @@ def analyze_content(file_data: dict) -> None:
 
 def main() -> int:
     """Run the main pipeline."""
-    print("Starting file catalog pipeline...")
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler("file_catalog.log", mode="a"),
+        ],
+    )
+    # Suppress httpx and related logs
+    logging.getLogger("httpx").setLevel(logging.ERROR)
+    logging.getLogger("httpcore").setLevel(logging.ERROR)
+    logger = logging.getLogger(__name__)
+    logger.info("Starting file catalog pipeline...")
 
     # Initialize DB
     collection = initialize_db(str(DB_PATH))
 
     # Load manifest
     manifest = load_manifest()
-    print(f"Loaded {len(manifest)} files from manifest.")
+    logger.info("Loaded %d files from manifest.", len(manifest))
 
     for file_data in manifest:
         file_path = file_data["file_path"]
         status = file_data.get("status", PENDING_EXTRACTION)
 
-        print(f"Processing {file_path} (status: {status})")
+        logger.info("Processing %s (status: %s)", file_path, status)
 
         if status == PENDING_EXTRACTION:
             extract_content(file_data)
             file_data["status"] = PENDING_ANALYSIS
             status = PENDING_ANALYSIS
             save_manifest(manifest)
-            print(f"Extraction complete for {file_path}")
+            logger.info("Extraction complete for %s", file_path)
 
         if status == PENDING_ANALYSIS:
             analyze_content(file_data)
             add_file_to_db(file_data, collection)
             file_data["status"] = COMPLETE
             save_manifest(manifest)
-            print(f"Analysis and DB addition complete for {file_path}")
+            logger.info("Analysis and DB addition complete for %s", file_path)
 
         elif status == COMPLETE:
-            print(f"Skipping completed file {file_path}")
+            logger.info("Skipping completed file %s", file_path)
 
-    print("Pipeline complete.")
+    logger.info("Pipeline complete.")
     return 0
 
 

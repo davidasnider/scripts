@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,12 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def handle_scan(root: Path, manifest: Path) -> None:
     """Placeholder implementation for the scan command."""
-    print(f"[TODO] Scanning {root} and writing manifest to {manifest}.")
+    logger.info("Scanning %s and writing manifest to %s", root, manifest)
 
 
 def handle_analyze(manifest: Path) -> None:
     """Placeholder implementation for the analyze command."""
-    print(f"[TODO] Analyzing catalog data from {manifest}.")
+    logger.info("Analyzing catalog data from %s", manifest)
 
 
 def main(argv: list[str] | None = None) -> int:

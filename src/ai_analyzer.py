@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from typing import Any
 
 import ollama
+
+logger = logging.getLogger(__name__)
 
 
 def _clean_json_response(response_text: str) -> str:
@@ -114,6 +117,10 @@ def analyze_text_content(text: str) -> dict[str, Any]:
     dict[str, Any]
         A dictionary with 'summary' (str) and 'mentioned_people' (list[str]).
     """
+    logger.debug(
+        "Starting text content analysis, text length: %d bytes",
+        len(text.encode("utf-8")),
+    )
     # Check if text needs chunking (over 3000 bytes)
     text_bytes = len(text.encode("utf-8"))
     if text_bytes <= 3000:
@@ -130,14 +137,20 @@ def analyze_text_content(text: str) -> dict[str, Any]:
         )
 
         try:
+            logger.debug(
+                "Sending Ollama text analysis request (single chunk), "
+                "prompt length: %d",
+                len(prompt),
+            )
             response = ollama.chat(
                 model="llama3:70b-instruct",
                 messages=[{"role": "user", "content": prompt}],
             )
+            logger.debug("Received Ollama response for text analysis")
             json_str = response["message"]["content"]
             return json.loads(_clean_json_response(json_str))
         except Exception as e:
-            print(f"Warning: Failed to analyze text content with Ollama: {e}")
+            logger.warning("Failed to analyze text content with Ollama: %s", e)
             return {
                 "summary": "Analysis unavailable - Ollama not accessible",
                 "mentioned_people": [],
@@ -162,16 +175,25 @@ def analyze_text_content(text: str) -> dict[str, Any]:
         )
 
         try:
+            logger.debug(
+                "Sending Ollama request for text chunk %d/%d, prompt length: %d",
+                i + 1,
+                len(chunks),
+                len(prompt),
+            )
             response = ollama.chat(
                 model="llama3:70b-instruct",
                 messages=[{"role": "user", "content": prompt}],
+            )
+            logger.debug(
+                "Received Ollama response for text chunk %d/%d", i + 1, len(chunks)
             )
             json_str = response["message"]["content"]
             chunk_result = json.loads(_clean_json_response(json_str))
             all_summaries.append(chunk_result.get("summary", ""))
             all_people.update(chunk_result.get("mentioned_people", []))
         except Exception as e:
-            print(f"Warning: Failed to analyze text chunk {i+1} with Ollama: {e}")
+            logger.warning("Failed to analyze text chunk %d with Ollama: %s", i + 1, e)
             continue
 
     # Combine results
@@ -189,17 +211,25 @@ def analyze_text_content(text: str) -> dict[str, Any]:
         )
 
         try:
+            logger.debug(
+                "Sending Ollama combine request for %d text summaries, "
+                "prompt length: %d",
+                len(all_summaries),
+                len(combined_summary_prompt),
+            )
             response = ollama.chat(
                 model="llama3:70b-instruct",
                 messages=[{"role": "user", "content": combined_summary_prompt}],
             )
+            logger.debug("Received Ollama response for summary combination")
             final_summary = response["message"]["content"]
         except Exception as e:
-            print(f"Warning: Failed to combine summaries with Ollama: {e}")
+            logger.warning("Failed to combine summaries with Ollama: %s", e)
             final_summary = " ".join(all_summaries)
     else:
         final_summary = "Analysis unavailable - Ollama not accessible"
 
+    logger.debug("Completed text content analysis")
     return {
         "summary": final_summary,
         "mentioned_people": list(all_people),
@@ -220,6 +250,10 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         A dictionary with 'summary', 'potential_red_flags', 'incriminating_items',
         and 'confidence_score'.
     """
+    logger.debug(
+        "Starting financial document analysis, text length: %d bytes",
+        len(text.encode("utf-8")),
+    )
     # Check if text needs chunking (over 3000 bytes)
     text_bytes = len(text.encode("utf-8"))
     if text_bytes <= 3000:
@@ -240,15 +274,21 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         )
 
         try:
+            logger.debug(
+                "Sending Ollama financial analysis request (single chunk), "
+                "prompt length: %d",
+                len(prompt),
+            )
             response = ollama.chat(
                 model="deepseek-coder-v2:latest",
                 messages=[{"role": "user", "content": prompt}],
                 options={"raw": True},
             )
+            logger.debug("Received Ollama response for financial analysis")
             json_str = response["message"]["content"]
             return json.loads(_clean_json_response(json_str))
         except Exception as e:
-            print(f"Warning: Failed to analyze financial document with Ollama: {e}")
+            logger.warning("Failed to analyze financial document with Ollama: %s", e)
             return {
                 "summary": "Analysis unavailable - Ollama not accessible",
                 "potential_red_flags": [],
@@ -281,10 +321,19 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         )
 
         try:
+            logger.debug(
+                "Sending Ollama request for financial chunk %d/%d, prompt length: %d",
+                i + 1,
+                len(chunks),
+                len(prompt),
+            )
             response = ollama.chat(
                 model="deepseek-coder-v2:latest",
                 messages=[{"role": "user", "content": prompt}],
                 options={"raw": True},
+            )
+            logger.debug(
+                "Received Ollama response for financial chunk %d/%d", i + 1, len(chunks)
             )
             json_str = response["message"]["content"]
             chunk_result = json.loads(_clean_json_response(json_str))
@@ -294,7 +343,9 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
             if isinstance(chunk_result.get("confidence_score"), (int, float)):
                 confidence_scores.append(chunk_result["confidence_score"])
         except Exception as e:
-            print(f"Warning: Failed to analyze financial chunk {i+1} with Ollama: {e}")
+            logger.warning(
+                "Failed to analyze financial chunk %d with Ollama: %s", i + 1, e
+            )
             continue
 
     # Combine results
@@ -312,14 +363,21 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         )
 
         try:
+            logger.debug(
+                "Sending Ollama combine request for %d financial summaries, "
+                "prompt length: %d",
+                len(all_summaries),
+                len(combined_summary_prompt),
+            )
             response = ollama.chat(
                 model="deepseek-coder-v2:latest",
                 messages=[{"role": "user", "content": combined_summary_prompt}],
                 options={"raw": True},
             )
+            logger.debug("Received Ollama response for financial summary combination")
             final_summary = response["message"]["content"]
         except Exception as e:
-            print(f"Warning: Failed to combine financial summaries with Ollama: {e}")
+            logger.warning("Failed to combine financial summaries with Ollama: %s", e)
             final_summary = " ".join(all_summaries)
     else:
         final_summary = "Analysis unavailable - Ollama not accessible"
@@ -329,6 +387,7 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0
     )
 
+    logger.debug("Completed financial document analysis")
     return {
         "summary": final_summary,
         "potential_red_flags": list(all_red_flags),
@@ -350,11 +409,16 @@ def describe_image(image_path: str) -> str:
     str
         Detailed description of the image.
     """
+    logger.debug("Starting image description for %s", image_path)
     with open(image_path, "rb") as f:
         image_data = f.read()
     image_b64 = base64.b64encode(image_data).decode("utf-8")
 
     try:
+        logger.debug(
+            "Sending Ollama request for image description, image size: %d bytes",
+            len(image_b64),
+        )
         response = ollama.chat(
             model="llava:7b",
             messages=[
@@ -365,7 +429,9 @@ def describe_image(image_path: str) -> str:
                 }
             ],
         )
+        logger.debug("Received Ollama response for image description")
+        logger.debug("Completed image description")
         return response["message"]["content"]
     except Exception as e:
-        print(f"Warning: Failed to describe image with Ollama: {e}")
+        logger.warning("Failed to describe image with Ollama: %s", e)
         return "Image description unavailable - Ollama not accessible"

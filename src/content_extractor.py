@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 def preprocess_for_ocr(image: Image.Image, threshold: int = 180) -> Image.Image:
@@ -73,18 +76,20 @@ def extract_content_from_image(file_path: str) -> str:
     str
         The extracted text from the image.
     """
+    logger.debug("Extracting content from image: %s", file_path)
     import pytesseract
 
     try:
         image = Image.open(file_path)
         processed_image = preprocess_for_ocr(image)
         text = pytesseract.image_to_string(processed_image)
+        logger.debug("Successfully extracted %d characters from image", len(text))
         return text
     except pytesseract.TesseractNotFoundError:
-        print(f"Warning: Tesseract not found. Skipping OCR for {file_path}")
+        logger.warning("Tesseract not found. Skipping OCR for %s", file_path)
         return ""
     except Exception as e:
-        print(f"Error processing image {file_path}: {e}")
+        logger.error("Error processing image %s: %s", file_path, e)
         return ""
 
 
