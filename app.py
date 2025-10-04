@@ -50,3 +50,17 @@ with st.sidebar:
         "Show only files with financial red flags",
         value=st.session_state.filters["red_flags"],
     )
+
+# Display chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+        if message.get("sources") and len(message["sources"]) > 0:
+            with st.expander("View Sources"):
+                for source in message["sources"]:
+                    st.write(f"**File:** {source.get('file_path', 'N/A')}")
+                    if "page_number" in source:
+                        st.write(f"**Page:** {source['page_number']}")
+                    st.write(f"**Snippet:** {source.get('content_snippet', 'N/A')}")
+                    st.write("---")
