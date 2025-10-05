@@ -458,6 +458,29 @@ def main() -> int:
     warnings.filterwarnings("ignore", message=".*use_fast.*")
     warnings.filterwarnings("ignore", message=".*slow processor.*")
     warnings.filterwarnings("ignore", message=".*Device set to use.*")
+
+    # Suppress MuPDF error messages about Screen annotations
+    import sys
+
+    # Redirect stderr to suppress specific noisy MuPDF errors
+    MUPDF_SCREEN_ERR_SUBSTR = (
+        "MuPDF error: unsupported error: cannot create appearance stream for Screen"
+    )
+
+    class MuPDFErrorFilter:
+        def __init__(self, original_stderr):
+            self.original_stderr = original_stderr
+
+        def write(self, data):
+            # Filter out MuPDF Screen annotation appearance errors
+            if MUPDF_SCREEN_ERR_SUBSTR not in data:
+                self.original_stderr.write(data)
+
+        def flush(self):
+            self.original_stderr.flush()
+
+    # Apply the filter
+    sys.stderr = MuPDFErrorFilter(sys.stderr)
     logger = logging.getLogger(__name__)
     logger.info("Starting threaded file catalog pipeline...")
 

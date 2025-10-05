@@ -172,22 +172,51 @@ def extract_content_from_pdf(file_path: str) -> str:
     import fitz  # PyMuPDF
     import pytesseract
 
-    doc = fitz.open(file_path)
+    try:
+        doc = fitz.open(file_path)
+    except Exception as e:
+        logger.error("Failed to open PDF %s: %s", file_path, e)
+        return ""
+
     all_text = []
 
     try:
-        for page in doc:
-            text = page.get_text()
-            if len(text.strip()) < 100:
-                # Assume scanned page, perform OCR
-                pix = page.get_pixmap(dpi=300)
-                img_bytes = pix.tobytes()
-                img = Image.open(io.BytesIO(img_bytes))
-                processed_img = preprocess_for_ocr(img)
-                text = pytesseract.image_to_string(processed_img)
-            all_text.append(text)
+        for page_num, page in enumerate(doc):
+            try:
+                text = page.get_text()
+                if len(text.strip()) < 100:
+                    # Assume scanned page, perform OCR
+                    try:
+                        pix = page.get_pixmap(dpi=300)
+                        img_bytes = pix.tobytes()
+                        img = Image.open(io.BytesIO(img_bytes))
+                        processed_img = preprocess_for_ocr(img)
+                        text = pytesseract.image_to_string(processed_img)
+                    except Exception as ocr_error:
+                        logger.warning(
+                            "OCR failed for page %d in %s: %s",
+                            page_num + 1,
+                            file_path,
+                            ocr_error,
+                        )
+                        # Keep the original text even if OCR fails
+                all_text.append(text)
+            except Exception as page_error:
+                logger.warning(
+                    "Error processing page %d in %s: %s",
+                    page_num + 1,
+                    file_path,
+                    page_error,
+                )
+                # Continue with next page instead of failing entirely
+                continue
+    except Exception as e:
+        logger.error("Error during PDF processing for %s: %s", file_path, e)
     finally:
-        doc.close()
+        try:
+            doc.close()
+        except Exception:
+            pass  # Ignore errors when closing
 
     return "\n".join(all_text)
 
