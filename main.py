@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import dataclasses
 import json
 import logging
@@ -461,6 +462,20 @@ def save_manifest_periodically(manifest: list[dict]) -> None:
             logger.warning("Failed to save manifest: %s", e)
 
 
+def write_processed_files_to_csv(processed_files: list[dict], file_path: str) -> None:
+    """Write processed file data to a CSV file."""
+    if not processed_files:
+        return
+
+    # Define the headers based on the keys of the first dictionary
+    headers = processed_files[0].keys()
+
+    with open(file_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(processed_files)
+
+
 def main(
     model: Annotated[
         AnalysisModel, typer.Option(help="The model to use for analysis.")
@@ -468,6 +483,12 @@ def main(
     limit: Annotated[
         int, typer.Option(help="Limit the number of files to process.")
     ] = 0,
+    csv_output: Annotated[
+        str,
+        typer.Option(
+            help="Path to save a CSV file of processed files.", rich_help_panel="Output"
+        ),
+    ] = "",
 ) -> int:
     """Run the main threaded pipeline."""
     # Set up logging with INFO level
@@ -678,6 +699,21 @@ def main(
         completed_count,
         failed_count,
     )
+
+    # Write to CSV if a path is provided
+    if csv_output:
+        processed_files_data = [
+            item for item in manifest if item.get("status") == COMPLETE
+        ]
+        if processed_files_data:
+            logger.info(
+                "Writing %d processed files to %s",
+                len(processed_files_data),
+                csv_output,
+            )
+            write_processed_files_to_csv(processed_files_data, csv_output)
+        else:
+            logger.info("No files to write to CSV.")
 
     if failed_count > 0:
         logger.warning("Some files failed to process. Check logs for details.")
