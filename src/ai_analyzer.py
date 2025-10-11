@@ -10,6 +10,8 @@ from typing import Any
 import ollama
 import yaml
 
+from src.text_utils import chunk_text
+
 logger = logging.getLogger(__name__)
 
 # Load config
@@ -22,19 +24,7 @@ IMAGE_DESCRIBER_MODEL = config["models"]["image_describer"]
 
 
 def _clean_json_response(response_text: str) -> str:
-    """Clean JSON response by removing code block markers if present.
-
-    Parameters
-    ----------
-    response_text : str
-        The raw response text from the LLM.
-
-    Returns
-    -------
-    str
-        Cleaned JSON string.
-    """
-    # Remove code block markers
+    """Clean JSON response by removing code block markers if present."""
     response_text = response_text.strip()
     if response_text.startswith("```json"):
         response_text = response_text[7:]
@@ -47,137 +37,13 @@ def _clean_json_response(response_text: str) -> str:
     return response_text.strip()
 
 
-def _chunk_text(text: str, max_bytes: int = 3000, max_chunks: int = 10) -> list[str]:
-    """Split text into chunks under byte limit, up to a max number of chunks.
-
-    Parameters
-    ----------
-    text : str
-        The text to chunk.
-    max_bytes : int
-        Maximum bytes per chunk.
-    max_chunks : int
-        Maximum number of chunks to create. If text would create more chunks,
-        increase chunk size to stay within limit.
-
-    Returns
-    -------
-    list[str]
-        List of text chunks (max 10).
-    """
-    text_bytes = len(text.encode("utf-8"))
-
-    if text_bytes <= max_bytes:
-        return [text]
-
-    # If very large, compute minimum chunk size needed to stay under max_chunks
-    if text_bytes > (max_bytes * max_chunks):
-        # Increase chunk size to fit within max_chunks limit
-        adjusted_max_bytes = text_bytes // max_chunks + 1000  # Add buffer
-        logger.debug(
-            (
-                "Large file detected (%d bytes); adjust chunk size from %d to %d "
-                "to limit chunks to %d"
-            ),
-            text_bytes,
-            max_bytes,
-            adjusted_max_bytes,
-            max_chunks,
-        )
-        max_bytes = min(adjusted_max_bytes, 4096)  # Cap at 4096 bytes as requested
-
-    chunks = []
-    current_chunk = ""
-
-    # Split by sentences first
-    sentences = text.replace("\n", " ").split(". ")
-
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-
-        # Add period back if not present
-        if not sentence.endswith("."):
-            sentence += "."
-
-        # Check if adding this sentence would exceed the limit
-        test_chunk = current_chunk + " " + sentence if current_chunk else sentence
-        if len(test_chunk.encode("utf-8")) > max_bytes:
-            if current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = sentence
-
-                # Stop if we've reached max chunks limit
-                if len(chunks) >= max_chunks:
-                    remaining = len(text.encode("utf-8")) - sum(
-                        len(c.encode("utf-8")) for c in chunks
-                    )
-                    logger.debug(
-                        "Reached max chunk limit (%d); truncating remaining %d bytes",
-                        max_chunks,
-                        remaining,
-                    )
-                    break
-            else:
-                # Single sentence is too long, split by words
-                words = sentence.split()
-                temp_chunk = ""
-                for word in words:
-                    test = temp_chunk + " " + word if temp_chunk else word
-                    if len(test.encode("utf-8")) > max_bytes:
-                        if temp_chunk:
-                            chunks.append(temp_chunk)
-                            temp_chunk = word
-
-                            # Stop if we've reached max chunks limit
-                            if len(chunks) >= max_chunks:
-                                break
-                        else:
-                            # Word itself is too long, add as is
-                            chunks.append(word)
-                            temp_chunk = ""
-
-                            # Stop if we've reached max chunks limit
-                            if len(chunks) >= max_chunks:
-                                break
-                    else:
-                        temp_chunk = test
-
-                if len(chunks) >= max_chunks:
-                    break
-
-                if temp_chunk:
-                    current_chunk = temp_chunk
-        else:
-            current_chunk = test_chunk
-
-    # Add final chunk if we haven't reached the limit
-    if current_chunk and len(chunks) < max_chunks:
-        chunks.append(current_chunk)
-
-    return chunks
-
-
 def analyze_text_content(text: str) -> dict[str, Any]:
-    """Analyze text content using an LLM to extract summary and mentioned people.
-
-    Parameters
-    ----------
-    text : str
-        The text content to analyze.
-
-    Returns
-    -------
-    dict[str, Any]
-        A dictionary with 'summary' (str) and 'mentioned_people' (list[str]).
-    """
+    """Analyze text content using an LLM to extract summary and mentioned people."""
     text_bytes = len(text.encode("utf-8"))
     logger.debug(
         "Starting text content analysis, text length: %d bytes",
         text_bytes,
     )
-    # Check if text needs chunking (over 3000 bytes)
     if text_bytes <= 3000:
         # Single chunk processing
         prompt = (
@@ -212,7 +78,7 @@ def analyze_text_content(text: str) -> dict[str, Any]:
             }
 
     # Multi-chunk processing
-    chunks = _chunk_text(text, 3000, 10)
+    chunks = chunk_text(text, max_tokens=2048)
     all_summaries = []
     all_people = set()
 
@@ -251,7 +117,6 @@ def analyze_text_content(text: str) -> dict[str, Any]:
             logger.warning("Failed to analyze text chunk %d with Ollama: %s", i + 1, e)
             continue
 
-    # Combine results
     if all_summaries:
         combined_summary_prompt = (
             "You are a document analyst. Combine the following chunk summaries into a "
@@ -353,7 +218,7 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
             }
 
     # Multi-chunk processing
-    chunks = _chunk_text(text, 3000, 10)
+    chunks = chunk_text(text, max_tokens=2048)
     all_summaries = []
     all_red_flags = set()
     all_incriminating = set()

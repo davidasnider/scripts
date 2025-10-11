@@ -1,50 +1,57 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import mimetypes
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from src.schema import AnalysisName, AnalysisTask, FileRecord
+
 try:
     import magic  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - handled gracefully at runtime
+except ImportError:
     magic = None  # type: ignore[assignment]
 
 try:
     from tqdm import tqdm  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - handled gracefully at runtime
+except ImportError:
     tqdm = None  # type: ignore[assignment]
 
 
 logger = logging.getLogger(__name__)
 
 
-STATUS_PENDING_EXTRACTION = "pending_extraction"
+def _calculate_sha256(file_path: Path) -> str:
+    """Calculate the SHA256 hash of a file."""
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
 
-@dataclass(frozen=True)
-class FileRecord:
-    file_path: str
-    file_name: str
-    mime_type: str
-    size_bytes: int
-    status: str = STATUS_PENDING_EXTRACTION
+def _get_analysis_tasks(mime_type: str, file_path: str = "") -> list[AnalysisTask]:
+    tasks = []
+    if (
+        mime_type.startswith("text/")
+        or mime_type == "application/pdf"
+        or mime_type.endswith("document")
+        or mime_type.endswith("sheet")
+    ):
+        tasks.append(AnalysisTask(name=AnalysisName.TEXT_ANALYSIS))
+    if mime_type.startswith("image/"):
+        tasks.append(AnalysisTask(name=AnalysisName.IMAGE_DESCRIPTION))
+        tasks.append(AnalysisTask(name=AnalysisName.NSFW_CLASSIFICATION))
+        tasks.append(AnalysisTask(name=AnalysisName.TEXT_ANALYSIS))
+    if mime_type.startswith("video/") and not file_path.lower().endswith(".asx"):
+        tasks.append(AnalysisTask(name=AnalysisName.VIDEO_SUMMARY))
+        tasks.append(AnalysisTask(name=AnalysisName.NSFW_CLASSIFICATION))
 
-    @classmethod
-    def from_path(cls, path: Path, mime_detector: Any) -> "FileRecord":
-        mime_type = _detect_mime_type(path, mime_detector)
-
-        stat_info = path.stat()
-        return cls(
-            file_path=str(path),
-            file_name=path.name,
-            mime_type=mime_type,
-            size_bytes=stat_info.st_size,
-        )
+    return tasks
 
 
 def _count_files(root_directory: Path) -> int:
@@ -118,14 +125,12 @@ def create_file_manifest(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Created manifest directory: %s", manifest_path.parent)
 
-    # Phase 1: Count files for progress tracking
     logger.info("Phase 1: Counting files for progress tracking")
     total_files = _count_files(root_directory)
     if total_files == 0:
         logger.warning("No files found in directory: %s", root_directory)
         return []
 
-    # Phase 2: Initialize MIME detector
     logger.info("Phase 2: Initializing MIME detector")
     mime_detector = _create_mime_detector()
     if mime_detector is not None:
@@ -133,7 +138,6 @@ def create_file_manifest(
     else:
         logger.info("Using mimetypes fallback for MIME type detection")
 
-    # Phase 3: Process files with progress tracking
     logger.info("Phase 3: Processing %d files", total_files)
     start_time = time.time()
     records = []
@@ -141,7 +145,6 @@ def create_file_manifest(
     try:
         file_iter = _iter_files(root_directory)
 
-        # Use tqdm if available, otherwise process without progress bar
         if tqdm is not None:
             file_iter = tqdm(
                 file_iter,
@@ -156,11 +159,20 @@ def create_file_manifest(
 
         for path in file_iter:
             try:
-                record = FileRecord.from_path(path, mime_detector)
+                stat_info = path.stat()
+                mime_type = _detect_mime_type(path, mime_detector)
+                record = FileRecord(
+                    file_path=str(path),
+                    file_name=path.name,
+                    mime_type=mime_type,
+                    file_size=stat_info.st_size,
+                    last_modified=stat_info.st_mtime,
+                    sha256=_calculate_sha256(path),
+                    analysis_tasks=_get_analysis_tasks(mime_type, str(path)),
+                )
                 records.append(record)
                 processed_count += 1
 
-                # Log progress every 100 files if no tqdm
                 if tqdm is None and processed_count % 100 == 0:
                     logger.info("Processed %d/%d files", processed_count, total_files)
 
@@ -183,11 +195,10 @@ def create_file_manifest(
     if error_count > 0:
         logger.warning("Encountered %d errors during processing", error_count)
 
-    # Phase 4: Write manifest
     logger.info("Phase 4: Writing manifest to %s", manifest_path)
     write_start = time.time()
 
-    manifest_data = [record.__dict__ for record in records]
+    manifest_data = [record.model_dump(mode="json") for record in records]
 
     with manifest_path.open("w", encoding="utf-8") as manifest_file:
         json.dump(manifest_data, manifest_file, indent=2)
@@ -237,7 +248,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # Configure logging based on verbosity level
     if args.debug:
         log_level = logging.DEBUG
     elif args.verbose:
@@ -257,7 +267,6 @@ def main(argv: list[str] | None = None) -> int:
             "Successfully wrote %d entries to %s", len(manifest), args.manifest_path
         )
 
-        # Print summary to stdout for non-verbose runs
         if not args.verbose and not args.debug:
             print(
                 f"Discovered {len(manifest)} files and wrote manifest to "

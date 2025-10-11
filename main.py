@@ -3,17 +3,23 @@
 
 from __future__ import annotations
 
+import os
+
+# Disable tokenizers parallelism to avoid warnings in threaded environment
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import csv
-import dataclasses
 import json
 import logging
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import typer
 from typing_extensions import Annotated
 
@@ -32,44 +38,38 @@ from src.content_extractor import (
 )
 from src.database_manager import add_file_to_db, initialize_db
 from src.nsfw_classifier import NSFWClassifier
+from src.schema import (
+    COMPLETE,
+    PENDING_ANALYSIS,
+    PENDING_EXTRACTION,
+    AnalysisName,
+    AnalysisStatus,
+    FileRecord,
+)
 
 
 class AnalysisModel(str, Enum):
     """Enum for the analysis models."""
 
-    TEXT_ANALYZER = "text_analyzer"
-    CODE_ANALYZER = "code_analyzer"
-    IMAGE_DESCRIBER = "image_describer"
+    TEXT_ANALYZER = "text_analysis"
+    CODE_ANALYZER = "code_analysis"
+    IMAGE_DESCRIBER = "image_description"
+    VIDEO_ANALYZER = "video_summary"
     ALL = "all"
 
 
-@dataclasses.dataclass
+@dataclass
 class WorkItem:
     """Work item for queue-based processing."""
 
-    file_data: dict
+    file_record: FileRecord
     correlation_id: str
-    stage: str  # 'extraction', 'analysis', 'database'
-
-
-@dataclasses.dataclass
-class DataPacket:
-    """Data packet for passing information between stages."""
-
-    correlation_id: str
-    payload: dict
-    metadata: dict = dataclasses.field(default_factory=dict)
-    error_info: dict | None = None
 
 
 # Constants
 MANIFEST_PATH = Path("data/manifest.json")
 DB_PATH = Path("data/chromadb")
 
-# Status constants
-PENDING_EXTRACTION = "pending_extraction"
-PENDING_ANALYSIS = "pending_analysis"
-COMPLETE = "complete"
 
 # Threading configuration
 NUM_EXTRACTION_WORKERS = 2
@@ -85,19 +85,21 @@ failed_files = set()
 lock = threading.Lock()
 
 
-def load_manifest() -> list[dict]:
-    """Load the manifest from JSON file."""
+def load_manifest() -> list[FileRecord]:
+    """Load the manifest and parse it into a list of FileRecord objects."""
     if not MANIFEST_PATH.exists():
         return []
     with MANIFEST_PATH.open() as f:
-        return json.load(f)
+        data = json.load(f)
+        return [FileRecord.model_validate(item) for item in data]
 
 
-def save_manifest(manifest: list[dict]) -> None:
+def save_manifest(manifest: list[FileRecord]) -> None:
     """Save the manifest to JSON file."""
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     with MANIFEST_PATH.open("w") as f:
-        json.dump(manifest, f, indent=2)
+        data = [record.model_dump(mode="json") for record in manifest]
+        json.dump(data, f, indent=2)
 
 
 def extraction_worker(worker_id: int) -> None:
@@ -111,68 +113,71 @@ def extraction_worker(worker_id: int) -> None:
             work_item = extraction_queue.get(timeout=1.0)
             if work_item is None:  # Poison pill
                 logger.debug("Extraction worker %d received shutdown signal", worker_id)
-                extraction_queue.task_done()  # Mark the poison pill as done
+                extraction_queue.task_done()
                 break
 
-            file_data = work_item.file_data
+            file_record = work_item.file_record
             correlation_id = work_item.correlation_id
-            mime_type = file_data.get("mime_type", "")
-            file_path = file_data["file_path"]
 
             logger.debug(
                 "Worker %d extracting content from %s (MIME: %s) [%s]",
                 worker_id,
-                file_path,
-                mime_type,
+                file_record.file_path,
+                file_record.mime_type,
                 correlation_id,
             )
 
             try:
-                if mime_type.startswith("text/") or mime_type == "application/pdf":
-                    if mime_type == "application/pdf":
-                        text = extract_content_from_pdf(file_path)
+                if (
+                    file_record.mime_type.startswith("text/")
+                    or file_record.mime_type == "application/pdf"
+                ):
+                    if file_record.mime_type == "application/pdf":
+                        text = extract_content_from_pdf(file_record.file_path)
                     else:
-                        # For plain text, just read it
                         try:
-                            with open(file_path, "r", encoding="utf-8") as f:
+                            with open(
+                                file_record.file_path, "r", encoding="utf-8"
+                            ) as f:
                                 text = f.read()
                         except Exception:
                             text = ""
-                    file_data["extracted_text"] = text
+                    file_record.extracted_text = text
 
-                elif mime_type == (
+                elif file_record.mime_type == (
                     "application/vnd.openxmlformats-"
                     "officedocument.wordprocessingml.document"
                 ):
-                    text = extract_content_from_docx(file_path)
-                    file_data["extracted_text"] = text
+                    text = extract_content_from_docx(file_record.file_path)
+                    file_record.extracted_text = text
 
-                elif mime_type == (
+                elif file_record.mime_type == (
                     "application/vnd.openxmlformats-"
                     "officedocument.spreadsheetml.sheet"
                 ):
-                    text = extract_content_from_xlsx(file_path)
-                    file_data["extracted_text"] = text
+                    text = extract_content_from_xlsx(file_record.file_path)
+                    file_record.extracted_text = text
 
-                elif mime_type.startswith("image/"):
-                    text = extract_content_from_image(file_path)
-                    file_data["extracted_text"] = text
+                elif file_record.mime_type.startswith("image/"):
+                    text = extract_content_from_image(file_record.file_path)
+                    file_record.extracted_text = text
 
-                elif mime_type.startswith("video/"):
+                elif file_record.mime_type.startswith(
+                    "video/"
+                ) and not file_record.file_path.lower().endswith(".asx"):
                     frames = extract_frames_from_video(
-                        file_path, "data/frames", interval_sec=10
+                        file_record.file_path, "data/frames", interval_sec=10
                     )
-                    file_data["extracted_frames"] = frames
+                    file_record.extracted_frames = frames
 
-                # Update status and move to analysis queue
-                file_data["status"] = PENDING_ANALYSIS
-                analysis_item = WorkItem(file_data, correlation_id, "analysis")
+                file_record.status = PENDING_ANALYSIS
+                analysis_item = WorkItem(file_record, correlation_id)
                 analysis_queue.put(analysis_item)
 
                 logger.debug(
                     "Worker %d completed extraction for %s [%s]",
                     worker_id,
-                    file_path,
+                    file_record.file_path,
                     correlation_id,
                 )
 
@@ -180,7 +185,7 @@ def extraction_worker(worker_id: int) -> None:
                 logger.error(
                     "Worker %d failed to extract content from %s [%s]: %s",
                     worker_id,
-                    file_path,
+                    file_record.file_path,
                     correlation_id,
                     e,
                 )
@@ -193,7 +198,6 @@ def extraction_worker(worker_id: int) -> None:
             continue
         except Exception as e:
             logger.error("Extraction worker %d error: %s", worker_id, e)
-            # Don't call task_done() here as it's already handled above
 
     logger.debug("Extraction worker %d stopped", worker_id)
 
@@ -207,161 +211,178 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
         work_item = None
         try:
             work_item = analysis_queue.get(timeout=1.0)
-            if work_item is None:  # Poison pill
+            if work_item is None:
                 logger.debug("Analysis worker %d received shutdown signal", worker_id)
-                analysis_queue.task_done()  # Mark the poison pill as done
+                analysis_queue.task_done()
                 break
 
-            file_data = work_item.file_data
+            file_record = work_item.file_record
             correlation_id = work_item.correlation_id
-            file_path = file_data["file_path"]
-            mime_type = file_data.get("mime_type", "")
 
             logger.debug(
                 "Worker %d analyzing content from %s [%s]",
                 worker_id,
-                file_path,
+                file_record.file_path,
                 correlation_id,
             )
 
-            # Process the work item
             try:
-                # Text analysis
-                if model in (AnalysisModel.ALL, AnalysisModel.TEXT_ANALYZER):
-                    text = file_data.get("extracted_text", "")
-                    if text:
-                        logger.debug(
-                            "Worker %d running text analysis for %s [%s]",
-                            worker_id,
-                            file_path,
-                            correlation_id,
-                        )
-                        analysis = analyze_text_content(text)
-                        file_data.update(analysis)
+                # Filter files based on model type
+                if model.value == "video_summary" and not (
+                    file_record.mime_type.startswith("video/")
+                    and not file_record.file_path.lower().endswith(".asx")
+                ):
+                    logger.debug(
+                        "Skipping non-video file %s for video analysis [%s]",
+                        file_record.file_path,
+                        correlation_id,
+                    )
+                    database_item = WorkItem(file_record, correlation_id)
+                    database_queue.put(database_item)
+                    continue
+                elif (
+                    model.value == "image_description"
+                    and not file_record.mime_type.startswith("image/")
+                ):
+                    logger.debug(
+                        "Skipping non-image file %s for image analysis [%s]",
+                        file_record.file_path,
+                        correlation_id,
+                    )
+                    database_item = WorkItem(file_record, correlation_id)
+                    database_queue.put(database_item)
+                    continue
+                elif model.value == "text_analysis" and not (
+                    file_record.mime_type.startswith("text/")
+                    or file_record.mime_type == "application/pdf"
+                    or file_record.mime_type.endswith("document")
+                    or file_record.mime_type.endswith("sheet")
+                ):
+                    logger.debug(
+                        "Skipping non-text file %s for text analysis [%s]",
+                        file_record.file_path,
+                        correlation_id,
+                    )
+                    database_item = WorkItem(file_record, correlation_id)
+                    database_queue.put(database_item)
+                    continue
 
-                # Image description and NSFW
-                if model in (AnalysisModel.ALL, AnalysisModel.IMAGE_DESCRIBER):
-                    if mime_type.startswith("image/"):
-                        logger.debug(
-                            "Worker %d running image analysis for %s [%s]",
-                            worker_id,
-                            file_path,
-                            correlation_id,
-                        )
-                        description = describe_image(file_path)
-                        file_data["description"] = description
+                for task in file_record.analysis_tasks:
+                    if task.status == AnalysisStatus.PENDING:
+                        if (
+                            model != AnalysisModel.ALL
+                            and task.name.value != model.value
+                        ):
+                            continue
 
-                        # Also analyze image description for summary & mentioned_people
-                        logger.debug(
-                            "Worker %d analyzing image description for %s [%s]",
-                            worker_id,
-                            file_path,
-                            correlation_id,
-                        )
-                        image_text_analysis = analyze_text_content(description)
-                        file_data.update(image_text_analysis)
-
-                        classifier = NSFWClassifier()
-                        nsfw_result = classifier.classify_image(file_path)
-                        file_data["is_nsfw"] = nsfw_result["label"].lower() == "nsfw"
-
-                # Video frame analysis
-                if model in (AnalysisModel.ALL, AnalysisModel.IMAGE_DESCRIBER):
-                    if mime_type.startswith("video/"):
-                        logger.debug(
-                            "Worker %d running video analysis for %s [%s]",
-                            worker_id,
-                            file_path,
-                            correlation_id,
-                        )
-                        frames = file_data.get("extracted_frames", [])
-                        if frames:
-                            frame_descriptions = []
-                            classifier = NSFWClassifier()
-                            for frame_path in frames:
-                                try:
-                                    description = describe_image(frame_path)
-                                    frame_descriptions.append(description)
-
-                                    # Check NSFW for each frame
-                                    nsfw_result = classifier.classify_image(frame_path)
-                                    if nsfw_result["label"].lower() == "nsfw":
-                                        file_data["is_nsfw"] = True
-                                except Exception as e:
-                                    logger.warning(
-                                        "Worker %d failed to analyze frame %s [%s]: %s",
-                                        worker_id,
-                                        frame_path,
-                                        correlation_id,
-                                        e,
+                        try:
+                            if task.name == AnalysisName.TEXT_ANALYSIS:
+                                if file_record.extracted_text:
+                                    analysis = analyze_text_content(
+                                        file_record.extracted_text
                                     )
-                                    continue
+                                    file_record.summary = analysis.get("summary")
+                                    file_record.mentioned_people = analysis.get(
+                                        "mentioned_people"
+                                    )
 
-                            # Combine frame descriptions into video summary
-                            if frame_descriptions:
-                                video_summary = summarize_video_frames(
-                                    frame_descriptions
-                                )
-                                file_data["description"] = video_summary
+                            elif task.name == AnalysisName.IMAGE_DESCRIPTION:
+                                if file_record.mime_type.startswith("image/"):
+                                    description = describe_image(file_record.file_path)
+                                    file_record.description = description
+                                    if not file_record.summary:
+                                        file_record.summary = description
 
-                                # Analyze video summary for summary & mentioned_people
-                                logger.debug(
-                                    "Worker %d analyzing video summary for %s [%s]",
-                                    worker_id,
-                                    file_path,
-                                    correlation_id,
-                                )
-                                video_text_analysis = analyze_text_content(
-                                    video_summary
-                                )
-                                file_data.update(video_text_analysis)
-                            else:
-                                file_data["description"] = (
-                                    "Video frame analysis unavailable"
-                                )
-                                file_data["summary"] = (
-                                    "Video frame analysis unavailable"
-                                )
-                                file_data["mentioned_people"] = []
+                            elif task.name == AnalysisName.NSFW_CLASSIFICATION:
+                                if file_record.mime_type.startswith("image/"):
+                                    classifier = NSFWClassifier()
+                                    nsfw_result = classifier.classify_image(
+                                        file_record.file_path
+                                    )
+                                    file_record.is_nsfw = (
+                                        nsfw_result["label"].lower() == "nsfw"
+                                    )
+                                elif file_record.mime_type.startswith("video/"):
+                                    if file_record.extracted_frames:
+                                        classifier = NSFWClassifier()
+                                        for frame_path in file_record.extracted_frames:
+                                            nsfw_result = classifier.classify_image(
+                                                frame_path
+                                            )
+                                            if nsfw_result["label"].lower() == "nsfw":
+                                                file_record.is_nsfw = True
+                                                break
 
-                # Financial analysis if text looks financial
-                if model in (AnalysisModel.ALL, AnalysisModel.CODE_ANALYZER):
-                    text = file_data.get("extracted_text", "")
-                    if text and (
-                        "financial" in text.lower() or "account" in text.lower()
-                    ):
-                        logger.debug(
-                            "Worker %d running financial analysis for %s [%s]",
-                            worker_id,
-                            file_path,
-                            correlation_id,
-                        )
-                        financial_analysis = analyze_financial_document(text)
-                        file_data.update(financial_analysis)
-                        file_data["has_financial_red_flags"] = bool(
-                            financial_analysis.get("potential_red_flags")
-                        )
+                            elif task.name == AnalysisName.VIDEO_SUMMARY:
+                                if (
+                                    file_record.mime_type.startswith("video/")
+                                    and not file_record.file_path.lower().endswith(
+                                        ".asx"
+                                    )
+                                    and file_record.extracted_frames
+                                ):
+                                    frame_descriptions = []
+                                    for frame_path in file_record.extracted_frames:
+                                        try:
+                                            description = describe_image(frame_path)
+                                            frame_descriptions.append(description)
+                                        except Exception as e:
+                                            logger.warning(
+                                                "Failed to describe frame %s: %s",
+                                                frame_path,
+                                                e,
+                                            )
+                                    if frame_descriptions:
+                                        video_summary = summarize_video_frames(
+                                            frame_descriptions
+                                        )
+                                        file_record.description = video_summary
+                                        if not file_record.summary:
+                                            file_record.summary = video_summary
 
-                # Ensure all files have consistent summary and description fields
-                if "summary" not in file_data:
-                    file_data["summary"] = file_data.get(
-                        "description", "No summary available"
-                    )
-                if "description" not in file_data:
-                    file_data["description"] = file_data.get(
-                        "summary", "No description available"
-                    )
-                if "mentioned_people" not in file_data:
-                    file_data["mentioned_people"] = []
+                            elif task.name == AnalysisName.FINANCIAL_ANALYSIS:
+                                if file_record.extracted_text and (
+                                    "financial" in file_record.extracted_text.lower()
+                                    or "account" in file_record.extracted_text.lower()
+                                ):
+                                    financial_analysis = analyze_financial_document(
+                                        file_record.extracted_text
+                                    )
+                                    file_record.summary = financial_analysis.get(
+                                        "summary"
+                                    )
+                                    file_record.potential_red_flags = (
+                                        financial_analysis.get("potential_red_flags")
+                                    )
+                                    file_record.incriminating_items = (
+                                        financial_analysis.get("incriminating_items")
+                                    )
+                                    file_record.confidence_score = (
+                                        financial_analysis.get("confidence_score")
+                                    )
+                                    file_record.has_financial_red_flags = bool(
+                                        financial_analysis.get("potential_red_flags")
+                                    )
 
-                # Move to database queue
-                database_item = WorkItem(file_data, correlation_id, "database")
+                            task.status = AnalysisStatus.COMPLETE
+
+                        except Exception as e:
+                            logger.error(
+                                "Failed to run analysis task %s for %s: %s",
+                                task.name,
+                                file_record.file_path,
+                                e,
+                            )
+                            task.status = AnalysisStatus.ERROR
+                            task.error_message = str(e)
+
+                database_item = WorkItem(file_record, correlation_id)
                 database_queue.put(database_item)
 
                 logger.debug(
                     "Worker %d completed analysis for %s [%s]",
                     worker_id,
-                    file_path,
+                    file_record.file_path,
                     correlation_id,
                 )
 
@@ -369,22 +390,19 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                 logger.error(
                     "Worker %d failed to analyze content from %s [%s]: %s",
                     worker_id,
-                    file_path,
+                    file_record.file_path,
                     correlation_id,
                     e,
                 )
                 with lock:
                     failed_files.add(correlation_id)
-                # Failure recorded in failed_files set above
 
-            # Always mark the work item as done
             analysis_queue.task_done()
 
         except queue.Empty:
             continue
         except Exception as e:
             logger.error("Analysis worker %d error: %s", worker_id, e)
-            # Don't call task_done() here as it's already handled above
 
     logger.debug("Analysis worker %d stopped", worker_id)
 
@@ -398,25 +416,30 @@ def database_worker(worker_id: int, collection: Any) -> None:
         work_item = None
         try:
             work_item = database_queue.get(timeout=1.0)
-            if work_item is None:  # Poison pill
+            if work_item is None:
                 logger.debug("Database worker %d received shutdown signal", worker_id)
-                database_queue.task_done()  # Mark the poison pill as done
+                database_queue.task_done()
                 break
 
-            file_data = work_item.file_data
+            file_record = work_item.file_record
             correlation_id = work_item.correlation_id
-            file_path = file_data["file_path"]
 
             logger.debug(
                 "Worker %d adding to database: %s [%s]",
                 worker_id,
-                file_path,
+                file_record.file_path,
                 correlation_id,
             )
 
             try:
-                add_file_to_db(file_data, collection)
-                file_data["status"] = COMPLETE
+                add_file_to_db(file_record.model_dump(), collection)
+
+                all_tasks_done = all(
+                    task.status != AnalysisStatus.PENDING
+                    for task in file_record.analysis_tasks
+                )
+                if all_tasks_done:
+                    file_record.status = COMPLETE
 
                 with lock:
                     completed_files.add(correlation_id)
@@ -424,7 +447,7 @@ def database_worker(worker_id: int, collection: Any) -> None:
                 logger.debug(
                     "Worker %d completed database addition for %s [%s]",
                     worker_id,
-                    file_path,
+                    file_record.file_path,
                     correlation_id,
                 )
 
@@ -432,7 +455,7 @@ def database_worker(worker_id: int, collection: Any) -> None:
                 logger.error(
                     "Worker %d failed to add %s to database [%s]: %s",
                     worker_id,
-                    file_path,
+                    file_record.file_path,
                     correlation_id,
                     e,
                 )
@@ -445,16 +468,15 @@ def database_worker(worker_id: int, collection: Any) -> None:
             continue
         except Exception as e:
             logger.error("Database worker %d error: %s", worker_id, e)
-            # Don't call task_done() here as it's already handled above
 
     logger.debug("Database worker %d stopped", worker_id)
 
 
-def save_manifest_periodically(manifest: list[dict]) -> None:
+def save_manifest_periodically(manifest: list[FileRecord]) -> None:
     """Periodically save manifest to persist progress."""
     logger = logging.getLogger(__name__)
     while True:
-        time.sleep(10)  # Save every 10 seconds
+        time.sleep(10)
         try:
             save_manifest(manifest)
             logger.debug("Manifest saved periodically")
@@ -463,17 +485,12 @@ def save_manifest_periodically(manifest: list[dict]) -> None:
 
 
 def write_processed_files_to_csv(processed_files: list[dict], file_path: str) -> None:
-    """Write processed file data to a CSV file."""
+    """Write processed file data to a CSV file using pandas."""
     if not processed_files:
         return
 
-    # Define the headers based on the keys of the first dictionary
-    headers = processed_files[0].keys()
-
-    with open(file_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
-        writer.writeheader()
-        writer.writerows(processed_files)
+    df = pd.DataFrame(processed_files)
+    df.to_csv(file_path, index=False, quoting=csv.QUOTE_ALL)
 
 
 def main(
@@ -491,7 +508,6 @@ def main(
     ] = "",
 ) -> int:
     """Run the main threaded pipeline."""
-    # Set up logging with INFO level
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -500,25 +516,19 @@ def main(
             logging.FileHandler("file_catalog.log", mode="a"),
         ],
     )
-    # Suppress httpx and related logs but keep some visibility
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-    # Suppress transformers/huggingface warnings
     logging.getLogger("transformers").setLevel(logging.ERROR)
     logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
 
-    # Suppress specific warnings we don't need to see
     import warnings
 
     warnings.filterwarnings("ignore", message=".*use_fast.*")
     warnings.filterwarnings("ignore", message=".*slow processor.*")
     warnings.filterwarnings("ignore", message=".*Device set to use.*")
 
-    # Suppress MuPDF error messages about Screen annotations
     import sys
 
-    # Redirect stderr to suppress specific noisy MuPDF errors
     MUPDF_SCREEN_ERR_SUBSTR = (
         "MuPDF error: unsupported error: cannot create appearance stream for Screen"
     )
@@ -528,43 +538,40 @@ def main(
             self.original_stderr = original_stderr
 
         def write(self, data):
-            # Filter out MuPDF Screen annotation appearance errors
             if MUPDF_SCREEN_ERR_SUBSTR not in data:
                 self.original_stderr.write(data)
 
         def flush(self):
             self.original_stderr.flush()
 
-    # Apply the filter
     sys.stderr = MuPDFErrorFilter(sys.stderr)
     logger = logging.getLogger(__name__)
     logger.info("Starting threaded file catalog pipeline...")
 
-    # Initialize DB
     collection = initialize_db(str(DB_PATH))
     logger.debug("Database initialized")
 
-    # Load manifest
     full_manifest = load_manifest()
     logger.info("Loaded %d files from manifest", len(full_manifest))
 
     if limit > 0:
-        processing_manifest = full_manifest[:limit]
-        logger.info("Limiting to %d files", len(processing_manifest))
+        unprocessed_files = [f for f in full_manifest if f.status != COMPLETE]
+        processing_manifest = unprocessed_files[:limit]
+        logger.info(
+            "Found %d unprocessed files. Limiting to %d files for processing.",
+            len(unprocessed_files),
+            len(processing_manifest),
+        )
     else:
         processing_manifest = full_manifest
 
-    # Start periodic manifest saver
     manifest_saver = threading.Thread(
         target=save_manifest_periodically, args=(full_manifest,), daemon=True
     )
     manifest_saver.start()
     logger.debug("Started manifest saver thread")
 
-    # Start worker threads
     threads = []
-
-    # Extraction workers
     for i in range(NUM_EXTRACTION_WORKERS):
         thread = threading.Thread(
             target=extraction_worker, args=(i,), name=f"ExtractionWorker-{i}"
@@ -573,7 +580,6 @@ def main(
         threads.append(thread)
         logger.debug("Started extraction worker %d", i)
 
-    # Analysis workers
     for i in range(NUM_ANALYSIS_WORKERS):
         thread = threading.Thread(
             target=analysis_worker, args=(i, model), name=f"AnalysisWorker-{i}"
@@ -582,7 +588,6 @@ def main(
         threads.append(thread)
         logger.debug("Started analysis worker %d", i)
 
-    # Database workers
     for i in range(NUM_DATABASE_WORKERS):
         thread = threading.Thread(
             target=database_worker, args=(i, collection), name=f"DatabaseWorker-{i}"
@@ -593,34 +598,36 @@ def main(
 
     logger.info("All worker threads started")
 
-    # Queue work items based on current status
     pending_files = 0
+    for file_record in processing_manifest:
+        correlation_id = f"file-{hash(file_record.file_path) % 100000:05d}"
 
-    for file_data in processing_manifest:
-        file_path = file_data["file_path"]
-        status = file_data.get("status", PENDING_EXTRACTION)
-        correlation_id = f"file-{hash(file_path) % 100000:05d}"
+        logger.debug(
+            "Queuing %s (status: %s) [%s]",
+            file_record.file_path,
+            file_record.status,
+            correlation_id,
+        )
 
-        logger.debug("Queuing %s (status: %s) [%s]", file_path, status, correlation_id)
-
-        if status == PENDING_EXTRACTION:
-            work_item = WorkItem(file_data, correlation_id, "extraction")
+        if file_record.status == PENDING_EXTRACTION:
+            work_item = WorkItem(file_record, correlation_id)
             extraction_queue.put(work_item)
             pending_files += 1
-
-        elif status == PENDING_ANALYSIS:
-            work_item = WorkItem(file_data, correlation_id, "analysis")
+        elif file_record.status == PENDING_ANALYSIS:
+            work_item = WorkItem(file_record, correlation_id)
             analysis_queue.put(work_item)
             pending_files += 1
-
-        elif status == COMPLETE:
-            logger.debug("Skipping completed file %s [%s]", file_path, correlation_id)
+        elif file_record.status == COMPLETE:
+            logger.debug(
+                "Skipping completed file %s [%s]",
+                file_record.file_path,
+                correlation_id,
+            )
             with lock:
                 completed_files.add(correlation_id)
 
     logger.info("Queued %d pending files for processing", pending_files)
 
-    # Monitor progress
     start_time = time.time()
     last_progress_time = start_time
 
@@ -635,7 +642,7 @@ def main(
         remaining = pending_files - processed_count
 
         current_time = time.time()
-        if current_time - last_progress_time >= 30:  # Log progress every 30 seconds
+        if current_time - last_progress_time >= 30:
             elapsed = current_time - start_time
             if processed_count > 0:
                 estimated_total = elapsed * pending_files / processed_count
@@ -663,13 +670,11 @@ def main(
         if remaining <= 0:
             break
 
-    # Wait for all queues to finish
     logger.info("Waiting for all work to complete...")
     extraction_queue.join()
     analysis_queue.join()
     database_queue.join()
 
-    # Send poison pills to stop workers
     logger.debug("Sending shutdown signals to workers...")
     for _ in range(NUM_EXTRACTION_WORKERS):
         extraction_queue.put(None)
@@ -678,15 +683,12 @@ def main(
     for _ in range(NUM_DATABASE_WORKERS):
         database_queue.put(None)
 
-    # Wait for all worker threads to finish
     logger.debug("Waiting for worker threads to stop...")
     for thread in threads:
         thread.join()
 
-    # Final save
     save_manifest(full_manifest)
 
-    # Final statistics
     elapsed_time = time.time() - start_time
     with lock:
         completed_count = len(completed_files)
@@ -701,10 +703,11 @@ def main(
         failed_count,
     )
 
-    # Write to CSV if a path is provided
     if csv_output:
         processed_files_data = [
-            item for item in processing_manifest if item.get("status") == COMPLETE
+            record.model_dump()
+            for record in processing_manifest
+            if f"file-{hash(record.file_path) % 100000:05d}" in completed_files
         ]
         if processed_files_data:
             logger.info(

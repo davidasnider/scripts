@@ -5,8 +5,11 @@ from __future__ import annotations
 import logging
 
 import chromadb
+import numpy as np
 import ollama
 import yaml
+
+from src.text_utils import chunk_text
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +22,7 @@ EMBEDDING_MODEL = config["models"]["embedding_model"]
 
 def initialize_db(path: str):
     """Initialize a persistent ChromaDB client and return the digital_archive
-    collection.
-
-    Parameters
-    ----------
-    path : str
-        Path to the persistent database directory.
-
-    Returns
-    -------
-    chromadb.Collection
-        The digital_archive collection.
-    """
+    collection."""
     logger.info("Initializing ChromaDB at path: %s", path)
     client = chromadb.PersistentClient(path=path)
     collection = client.get_or_create_collection(name="digital_archive")
@@ -40,28 +32,33 @@ def initialize_db(path: str):
 
 def generate_embedding(text: str) -> list[float]:
     """Generate an embedding for the given text using the configured model.
-
-    Parameters
-    ----------
-    text : str
-        The text to embed.
-
-    Returns
-    -------
-    list[float]
-        The embedding vector.
+    If the text is long, it will be chunked and the embeddings will be averaged.
     """
     logger.debug("Generating embedding for text of length %d", len(text))
-    try:
-        logger.debug("Sending Ollama embedding request for text length %d", len(text))
-        response = ollama.embeddings(model=EMBEDDING_MODEL, prompt=text)
-        logger.debug("Received Ollama embedding response")
-        logger.debug("Successfully generated embedding")
-        return response["embedding"]
-    except Exception as e:
-        logger.warning("Failed to generate embedding with Ollama: %s", e)
-        # Return a zero vector as fallback
-        return [0.0] * 768
+
+    chunks = chunk_text(text)
+    embeddings = []
+
+    for chunk in chunks:
+        try:
+            logger.debug(
+                "Sending Ollama embedding request for chunk of length %d", len(chunk)
+            )
+            response = ollama.embeddings(model=EMBEDDING_MODEL, prompt=chunk)
+            embeddings.append(response["embedding"])
+            logger.debug("Received Ollama embedding response for chunk")
+        except Exception as e:
+            logger.warning("Failed to generate embedding for chunk with Ollama: %s", e)
+            continue
+
+    if not embeddings:
+        logger.warning("No embeddings were generated for the text.")
+        return [0.0] * 768  # Fallback zero vector
+
+    # Average the embeddings
+    avg_embedding = np.mean(embeddings, axis=0).tolist()
+    logger.debug("Successfully generated and averaged embeddings")
+    return avg_embedding
 
 
 def add_file_to_db(file_data: dict, collection) -> None:
@@ -83,21 +80,23 @@ def add_file_to_db(file_data: dict, collection) -> None:
         file_data.get("extracted_text", ""),
         ", ".join(file_data.get("mentioned_people", [])),
     ]
-    consolidated_text = " ".join(text_parts).strip()
+    consolidated_text = " ".join(part for part in text_parts if part).strip()
 
-    # Generate embedding
-    embedding = generate_embedding(consolidated_text)
+    # Generate embedding only if there is text
+    if consolidated_text:
+        embedding = generate_embedding(consolidated_text)
+    else:
+        # Use a zero vector if there is no text to embed
+        embedding = [0.0] * 768
 
     # Structured metadata for filtering
     metadata = {
-        "file_path": file_data.get("file_path", ""),
-        "file_name": file_data.get("file_name", ""),
-        "mime_type": file_data.get("mime_type", ""),
-        "file_type": file_data.get("mime_type", "").split("/")[
-            0
-        ],  # e.g., 'image', 'text'
-        "is_nsfw": file_data.get("is_nsfw", False),
-        "has_financial_red_flags": file_data.get("has_financial_red_flags", False),
+        "file_path": file_data.get("file_path") or "",
+        "file_name": file_data.get("file_name") or "",
+        "mime_type": file_data.get("mime_type") or "",
+        "file_type": (file_data.get("mime_type") or "").split("/")[0],
+        "is_nsfw": file_data.get("is_nsfw") or False,
+        "has_financial_red_flags": file_data.get("has_financial_red_flags") or False,
     }
 
     # Add to collection
