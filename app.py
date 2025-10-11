@@ -4,6 +4,7 @@ import chromadb
 import cv2
 import ollama
 import streamlit as st
+import yaml
 from PIL import Image
 
 # Configure Streamlit page
@@ -12,9 +13,12 @@ st.set_page_config(page_title="Local AI Digital Archive", layout="wide")
 # Main title
 st.title("🔎 Local AI Digital Archive")
 
-# Constants
-EMBEDDING_MODEL = "nomic-embed-text"
-LLM_MODEL = "llama3:70b-instruct"
+# Load config
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
+
+EMBEDDING_MODEL = config["models"]["embedding_model"]
+LLM_MODEL = config["models"]["text_analyzer"]
 
 # Initialize session state
 if "messages" not in st.session_state:

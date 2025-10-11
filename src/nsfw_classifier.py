@@ -6,6 +6,7 @@ import logging
 import warnings
 from typing import Any
 
+import yaml
 from transformers import pipeline
 
 # Suppress transformers warnings before importing
@@ -21,9 +22,11 @@ class NSFWClassifier:
 
     def __init__(self) -> None:
         logger.debug("Initializing NSFW classifier")
+        with open("config.yaml", "r") as f:
+            config = yaml.safe_load(f)
         self.pipeline = pipeline(
             "image-classification",
-            model="AdamCodd/vit-base-nsfw-detector",
+            model=config["models"]["nsfw_detector"],
         )
         logger.debug("NSFW classifier initialized")
 

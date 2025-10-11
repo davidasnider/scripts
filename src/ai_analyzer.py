@@ -8,8 +8,17 @@ import logging
 from typing import Any
 
 import ollama
+import yaml
 
 logger = logging.getLogger(__name__)
+
+# Load config
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
+
+TEXT_ANALYZER_MODEL = config["models"]["text_analyzer"]
+CODE_ANALYZER_MODEL = config["models"]["code_analyzer"]
+IMAGE_DESCRIBER_MODEL = config["models"]["image_describer"]
 
 
 def _clean_json_response(response_text: str) -> str:
@@ -189,7 +198,7 @@ def analyze_text_content(text: str) -> dict[str, Any]:
                 len(prompt),
             )
             response = ollama.chat(
-                model="llama3:70b-instruct",
+                model=TEXT_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
             )
             logger.debug("Received Ollama response for text analysis")
@@ -228,7 +237,7 @@ def analyze_text_content(text: str) -> dict[str, Any]:
                 len(prompt),
             )
             response = ollama.chat(
-                model="llama3:70b-instruct",
+                model=TEXT_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
             )
             logger.debug(
@@ -264,7 +273,7 @@ def analyze_text_content(text: str) -> dict[str, Any]:
                 len(combined_summary_prompt),
             )
             response = ollama.chat(
-                model="llama3:70b-instruct",
+                model=TEXT_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": combined_summary_prompt}],
             )
             logger.debug("Received Ollama response for summary combination")
@@ -326,7 +335,7 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
                 len(prompt),
             )
             response = ollama.chat(
-                model="deepseek-coder-v2:latest",
+                model=CODE_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"raw": True},
             )
@@ -374,7 +383,7 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
                 len(prompt),
             )
             response = ollama.chat(
-                model="deepseek-coder-v2:latest",
+                model=CODE_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 options={"raw": True},
             )
@@ -416,7 +425,7 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
                 len(combined_summary_prompt),
             )
             response = ollama.chat(
-                model="deepseek-coder-v2:latest",
+                model=CODE_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": combined_summary_prompt}],
                 options={"raw": True},
             )
@@ -466,7 +475,7 @@ def describe_image(image_path: str) -> str:
             len(image_b64),
         )
         response = ollama.chat(
-            model="llava:7b",
+            model=IMAGE_DESCRIBER_MODEL,
             messages=[
                 {
                     "role": "user",
@@ -525,7 +534,7 @@ def summarize_video_frames(frame_descriptions: list[str]) -> str:
             len(prompt),
         )
         response = ollama.chat(
-            model="llama3:70b-instruct",
+            model=TEXT_ANALYZER_MODEL,
             messages=[{"role": "user", "content": prompt}],
         )
         logger.debug("Received Ollama response for video summarization")

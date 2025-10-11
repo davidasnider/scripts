@@ -1,0 +1,6 @@
+models:
+  nsfw_detector: "AdamCodd/vit-base-nsfw-detector"
+  text_analyzer: "llama3:70b-instruct"
+  code_analyzer: "deepseek-coder-v2:latest"
+  image_describer: "llava:7b"
+  embedding_model: "nomic-embed-text"

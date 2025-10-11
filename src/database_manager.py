@@ -6,8 +6,15 @@ import logging
 
 import chromadb
 import ollama
+import yaml
 
 logger = logging.getLogger(__name__)
+
+# Load config
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
+
+EMBEDDING_MODEL = config["models"]["embedding_model"]
 
 
 def initialize_db(path: str):
@@ -32,7 +39,7 @@ def initialize_db(path: str):
 
 
 def generate_embedding(text: str) -> list[float]:
-    """Generate an embedding for the given text using nomic-embed-text.
+    """Generate an embedding for the given text using the configured model.
 
     Parameters
     ----------
@@ -47,14 +54,13 @@ def generate_embedding(text: str) -> list[float]:
     logger.debug("Generating embedding for text of length %d", len(text))
     try:
         logger.debug("Sending Ollama embedding request for text length %d", len(text))
-        response = ollama.embeddings(model="nomic-embed-text", prompt=text)
+        response = ollama.embeddings(model=EMBEDDING_MODEL, prompt=text)
         logger.debug("Received Ollama embedding response")
         logger.debug("Successfully generated embedding")
         return response["embedding"]
     except Exception as e:
         logger.warning("Failed to generate embedding with Ollama: %s", e)
-        # Return a zero vector as fallback (nomic-embed-text produces
-        # 768-dim embeddings)
+        # Return a zero vector as fallback
         return [0.0] * 768
 
 
