@@ -262,7 +262,8 @@ def analyze_text_content(text: str) -> dict[str, Any]:
             )
             + "\n\n"
             "Provide a concise paragraph summarizing the main points of the entire "
-            "document."
+            "document. Your response should contain only the summary, with no "
+            "introductory phrases like 'Here is a summary:'."
         )
 
         try:
@@ -414,7 +415,8 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
             )
             + "\n\n"
             "Provide a concise paragraph summarizing the main points of the entire "
-            "financial document."
+            "financial document. Your response should contain only the summary, with "
+            "no introductory phrases like 'Here is a summary:'."
         )
 
         try:
@@ -525,7 +527,9 @@ def summarize_video_frames(frame_descriptions: list[str]) -> str:
         "video and provide a cohesive summary of the video's content. Focus on the "
         "main subjects, activities, and overall narrative shown in the frames.\n\n"
         f"Frame descriptions:\n{combined_descriptions}\n\n"
-        "Provide a concise paragraph summarizing the video content."
+        "Provide a concise paragraph summarizing the video content. Your "
+        "response should contain only the summary, with no introductory phrases like "
+        "'Here is a summary:'."
     )
 
     try:
