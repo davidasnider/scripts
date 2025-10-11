@@ -545,16 +545,18 @@ def main(
     logger.debug("Database initialized")
 
     # Load manifest
-    manifest = load_manifest()
-    logger.info("Loaded %d files from manifest", len(manifest))
+    full_manifest = load_manifest()
+    logger.info("Loaded %d files from manifest", len(full_manifest))
 
     if limit > 0:
-        manifest = manifest[:limit]
-        logger.info("Limiting to %d files", len(manifest))
+        processing_manifest = full_manifest[:limit]
+        logger.info("Limiting to %d files", len(processing_manifest))
+    else:
+        processing_manifest = full_manifest
 
     # Start periodic manifest saver
     manifest_saver = threading.Thread(
-        target=save_manifest_periodically, args=(manifest,), daemon=True
+        target=save_manifest_periodically, args=(full_manifest,), daemon=True
     )
     manifest_saver.start()
     logger.debug("Started manifest saver thread")
@@ -592,10 +594,9 @@ def main(
     logger.info("All worker threads started")
 
     # Queue work items based on current status
-    total_files = len(manifest)
     pending_files = 0
 
-    for file_data in manifest:
+    for file_data in processing_manifest:
         file_path = file_data["file_path"]
         status = file_data.get("status", PENDING_EXTRACTION)
         correlation_id = f"file-{hash(file_path) % 100000:05d}"
@@ -683,7 +684,7 @@ def main(
         thread.join()
 
     # Final save
-    save_manifest(manifest)
+    save_manifest(full_manifest)
 
     # Final statistics
     elapsed_time = time.time() - start_time
@@ -694,7 +695,7 @@ def main(
     logger.info(
         "Pipeline complete! Processed %d files in %.1f seconds "
         "(%d completed, %d failed)",
-        total_files,
+        len(full_manifest),
         elapsed_time,
         completed_count,
         failed_count,
@@ -703,7 +704,7 @@ def main(
     # Write to CSV if a path is provided
     if csv_output:
         processed_files_data = [
-            item for item in manifest if item.get("status") == COMPLETE
+            item for item in processing_manifest if item.get("status") == COMPLETE
         ]
         if processed_files_data:
             logger.info(
