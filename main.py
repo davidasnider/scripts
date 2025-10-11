@@ -9,8 +9,12 @@ import logging
 import queue
 import threading
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Any
+
+import typer
+from typing_extensions import Annotated
 
 from src.ai_analyzer import (
     analyze_financial_document,
@@ -29,6 +33,15 @@ from src.database_manager import add_file_to_db, initialize_db
 from src.nsfw_classifier import NSFWClassifier
 
 
+class AnalysisModel(str, Enum):
+    """Enum for the analysis models."""
+
+    TEXT_ANALYZER = "text_analyzer"
+    CODE_ANALYZER = "code_analyzer"
+    IMAGE_DESCRIBER = "image_describer"
+    ALL = "all"
+
+
 @dataclasses.dataclass
 class WorkItem:
     """Work item for queue-based processing."""
@@ -40,6 +53,8 @@ class WorkItem:
 
 @dataclasses.dataclass
 class DataPacket:
+    """Data packet for passing information between stages."""
+
     correlation_id: str
     payload: dict
     metadata: dict = dataclasses.field(default_factory=dict)
@@ -182,7 +197,7 @@ def extraction_worker(worker_id: int) -> None:
     logger.debug("Extraction worker %d stopped", worker_id)
 
 
-def analysis_worker(worker_id: int) -> None:
+def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
     """Worker thread for AI analysis."""
     logger = logging.getLogger(__name__)
     logger.debug("Analysis worker %d started", worker_id)
@@ -211,107 +226,120 @@ def analysis_worker(worker_id: int) -> None:
             # Process the work item
             try:
                 # Text analysis
-                text = file_data.get("extracted_text", "")
-                if text:
-                    logger.debug(
-                        "Worker %d running text analysis for %s [%s]",
-                        worker_id,
-                        file_path,
-                        correlation_id,
-                    )
-                    analysis = analyze_text_content(text)
-                    file_data.update(analysis)
+                if model in (AnalysisModel.ALL, AnalysisModel.TEXT_ANALYZER):
+                    text = file_data.get("extracted_text", "")
+                    if text:
+                        logger.debug(
+                            "Worker %d running text analysis for %s [%s]",
+                            worker_id,
+                            file_path,
+                            correlation_id,
+                        )
+                        analysis = analyze_text_content(text)
+                        file_data.update(analysis)
 
                 # Image description and NSFW
-                if mime_type.startswith("image/"):
-                    logger.debug(
-                        "Worker %d running image analysis for %s [%s]",
-                        worker_id,
-                        file_path,
-                        correlation_id,
-                    )
-                    description = describe_image(file_path)
-                    file_data["description"] = description
+                if model in (AnalysisModel.ALL, AnalysisModel.IMAGE_DESCRIBER):
+                    if mime_type.startswith("image/"):
+                        logger.debug(
+                            "Worker %d running image analysis for %s [%s]",
+                            worker_id,
+                            file_path,
+                            correlation_id,
+                        )
+                        description = describe_image(file_path)
+                        file_data["description"] = description
 
-                    # Also analyze image description for summary & mentioned_people
-                    logger.debug(
-                        "Worker %d analyzing image description for %s [%s]",
-                        worker_id,
-                        file_path,
-                        correlation_id,
-                    )
-                    image_text_analysis = analyze_text_content(description)
-                    file_data.update(image_text_analysis)
+                        # Also analyze image description for summary & mentioned_people
+                        logger.debug(
+                            "Worker %d analyzing image description for %s [%s]",
+                            worker_id,
+                            file_path,
+                            correlation_id,
+                        )
+                        image_text_analysis = analyze_text_content(description)
+                        file_data.update(image_text_analysis)
 
-                    classifier = NSFWClassifier()
-                    nsfw_result = classifier.classify_image(file_path)
-                    file_data["is_nsfw"] = nsfw_result["label"].lower() == "nsfw"
+                        classifier = NSFWClassifier()
+                        nsfw_result = classifier.classify_image(file_path)
+                        file_data["is_nsfw"] = nsfw_result["label"].lower() == "nsfw"
 
                 # Video frame analysis
-                elif mime_type.startswith("video/"):
-                    logger.debug(
-                        "Worker %d running video analysis for %s [%s]",
-                        worker_id,
-                        file_path,
-                        correlation_id,
-                    )
-                    frames = file_data.get("extracted_frames", [])
-                    if frames:
-                        frame_descriptions = []
-                        classifier = NSFWClassifier()
-                        for frame_path in frames:
-                            try:
-                                description = describe_image(frame_path)
-                                frame_descriptions.append(description)
+                if model in (AnalysisModel.ALL, AnalysisModel.IMAGE_DESCRIBER):
+                    if mime_type.startswith("video/"):
+                        logger.debug(
+                            "Worker %d running video analysis for %s [%s]",
+                            worker_id,
+                            file_path,
+                            correlation_id,
+                        )
+                        frames = file_data.get("extracted_frames", [])
+                        if frames:
+                            frame_descriptions = []
+                            classifier = NSFWClassifier()
+                            for frame_path in frames:
+                                try:
+                                    description = describe_image(frame_path)
+                                    frame_descriptions.append(description)
 
-                                # Check NSFW for each frame
-                                nsfw_result = classifier.classify_image(frame_path)
-                                if nsfw_result["label"].lower() == "nsfw":
-                                    file_data["is_nsfw"] = True
-                            except Exception as e:
-                                logger.warning(
-                                    "Worker %d failed to analyze frame %s [%s]: %s",
-                                    worker_id,
-                                    frame_path,
-                                    correlation_id,
-                                    e,
+                                    # Check NSFW for each frame
+                                    nsfw_result = classifier.classify_image(frame_path)
+                                    if nsfw_result["label"].lower() == "nsfw":
+                                        file_data["is_nsfw"] = True
+                                except Exception as e:
+                                    logger.warning(
+                                        "Worker %d failed to analyze frame %s [%s]: %s",
+                                        worker_id,
+                                        frame_path,
+                                        correlation_id,
+                                        e,
+                                    )
+                                    continue
+
+                            # Combine frame descriptions into video summary
+                            if frame_descriptions:
+                                video_summary = summarize_video_frames(
+                                    frame_descriptions
                                 )
-                                continue
+                                file_data["description"] = video_summary
 
-                        # Combine frame descriptions into video summary
-                        if frame_descriptions:
-                            video_summary = summarize_video_frames(frame_descriptions)
-                            file_data["description"] = video_summary
-
-                            # Analyze video summary for summary & mentioned_people
-                            logger.debug(
-                                "Worker %d analyzing video summary for %s [%s]",
-                                worker_id,
-                                file_path,
-                                correlation_id,
-                            )
-                            video_text_analysis = analyze_text_content(video_summary)
-                            file_data.update(video_text_analysis)
-                        else:
-                            file_data["description"] = (
-                                "Video frame analysis unavailable"
-                            )
-                            file_data["summary"] = "Video frame analysis unavailable"
-                            file_data["mentioned_people"] = []
+                                # Analyze video summary for summary & mentioned_people
+                                logger.debug(
+                                    "Worker %d analyzing video summary for %s [%s]",
+                                    worker_id,
+                                    file_path,
+                                    correlation_id,
+                                )
+                                video_text_analysis = analyze_text_content(
+                                    video_summary
+                                )
+                                file_data.update(video_text_analysis)
+                            else:
+                                file_data["description"] = (
+                                    "Video frame analysis unavailable"
+                                )
+                                file_data["summary"] = (
+                                    "Video frame analysis unavailable"
+                                )
+                                file_data["mentioned_people"] = []
 
                 # Financial analysis if text looks financial
-                if text and ("financial" in text.lower() or "account" in text.lower()):
-                    logger.debug(
-                        "Worker %d running financial analysis for %s [%s]",
-                        worker_id,
-                        file_path,
-                        correlation_id,
-                    )
-                    financial_analysis = analyze_financial_document(text)
-                    file_data.update(financial_analysis)
-                    file_data["has_financial_red_flags"] = bool(
-                        financial_analysis.get("potential_red_flags")
-                    )
+                if model in (AnalysisModel.ALL, AnalysisModel.CODE_ANALYZER):
+                    text = file_data.get("extracted_text", "")
+                    if text and (
+                        "financial" in text.lower() or "account" in text.lower()
+                    ):
+                        logger.debug(
+                            "Worker %d running financial analysis for %s [%s]",
+                            worker_id,
+                            file_path,
+                            correlation_id,
+                        )
+                        financial_analysis = analyze_financial_document(text)
+                        file_data.update(financial_analysis)
+                        file_data["has_financial_red_flags"] = bool(
+                            financial_analysis.get("potential_red_flags")
+                        )
 
                 # Ensure all files have consistent summary and description fields
                 if "summary" not in file_data:
@@ -433,7 +461,14 @@ def save_manifest_periodically(manifest: list[dict]) -> None:
             logger.warning("Failed to save manifest: %s", e)
 
 
-def main() -> int:
+def main(
+    model: Annotated[
+        AnalysisModel, typer.Option(help="The model to use for analysis.")
+    ] = AnalysisModel.ALL,
+    limit: Annotated[
+        int, typer.Option(help="Limit the number of files to process.")
+    ] = 0,
+) -> int:
     """Run the main threaded pipeline."""
     # Set up logging with INFO level
     logging.basicConfig(
@@ -492,6 +527,10 @@ def main() -> int:
     manifest = load_manifest()
     logger.info("Loaded %d files from manifest", len(manifest))
 
+    if limit > 0:
+        manifest = manifest[:limit]
+        logger.info("Limiting to %d files", len(manifest))
+
     # Start periodic manifest saver
     manifest_saver = threading.Thread(
         target=save_manifest_periodically, args=(manifest,), daemon=True
@@ -514,7 +553,7 @@ def main() -> int:
     # Analysis workers
     for i in range(NUM_ANALYSIS_WORKERS):
         thread = threading.Thread(
-            target=analysis_worker, args=(i,), name=f"AnalysisWorker-{i}"
+            target=analysis_worker, args=(i, model), name=f"AnalysisWorker-{i}"
         )
         thread.start()
         threads.append(thread)
@@ -648,4 +687,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    typer.run(main)
