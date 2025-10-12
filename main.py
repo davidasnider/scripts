@@ -169,6 +169,11 @@ def extraction_worker(worker_id: int) -> None:
                         file_record.file_path, "data/frames", interval_sec=10
                     )
                     file_record.extracted_frames = frames
+                    logger.info(
+                        "Extracted %d frames from video %s",
+                        len(frames),
+                        file_record.file_path,
+                    )
 
                 file_record.status = PENDING_ANALYSIS
                 analysis_item = WorkItem(file_record, correlation_id)
@@ -227,46 +232,6 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
             )
 
             try:
-                # Filter files based on model type
-                if model.value == "video_summary" and not (
-                    file_record.mime_type.startswith("video/")
-                    and not file_record.file_path.lower().endswith(".asx")
-                ):
-                    logger.debug(
-                        "Skipping non-video file %s for video analysis [%s]",
-                        file_record.file_path,
-                        correlation_id,
-                    )
-                    database_item = WorkItem(file_record, correlation_id)
-                    database_queue.put(database_item)
-                    continue
-                elif (
-                    model.value == "image_description"
-                    and not file_record.mime_type.startswith("image/")
-                ):
-                    logger.debug(
-                        "Skipping non-image file %s for image analysis [%s]",
-                        file_record.file_path,
-                        correlation_id,
-                    )
-                    database_item = WorkItem(file_record, correlation_id)
-                    database_queue.put(database_item)
-                    continue
-                elif model.value == "text_analysis" and not (
-                    file_record.mime_type.startswith("text/")
-                    or file_record.mime_type == "application/pdf"
-                    or file_record.mime_type.endswith("document")
-                    or file_record.mime_type.endswith("sheet")
-                ):
-                    logger.debug(
-                        "Skipping non-text file %s for text analysis [%s]",
-                        file_record.file_path,
-                        correlation_id,
-                    )
-                    database_item = WorkItem(file_record, correlation_id)
-                    database_queue.put(database_item)
-                    continue
-
                 for task in file_record.analysis_tasks:
                     if task.status == AnalysisStatus.PENDING:
                         if (
@@ -314,31 +279,55 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                                 break
 
                             elif task.name == AnalysisName.VIDEO_SUMMARY:
-                                if (
-                                    file_record.mime_type.startswith("video/")
-                                    and not file_record.file_path.lower().endswith(
-                                        ".asx"
-                                    )
-                                    and file_record.extracted_frames
+                                if file_record.mime_type.startswith(
+                                    "video/"
+                                ) and not file_record.file_path.lower().endswith(
+                                    ".asx"
                                 ):
-                                    frame_descriptions = []
-                                    for frame_path in file_record.extracted_frames:
-                                        try:
-                                            description = describe_image(frame_path)
-                                            frame_descriptions.append(description)
-                                        except Exception as e:
-                                            logger.warning(
-                                                "Failed to describe frame %s: %s",
-                                                frame_path,
-                                                e,
-                                            )
-                                    if frame_descriptions:
-                                        video_summary = summarize_video_frames(
-                                            frame_descriptions
+                                    if not file_record.extracted_frames:
+                                        logger.warning(
+                                            "No frames extracted for video %s, "
+                                            "cannot generate summary",
+                                            file_record.file_path,
                                         )
-                                        file_record.description = video_summary
-                                        if not file_record.summary:
-                                            file_record.summary = video_summary
+                                        # Still mark as complete since there's
+                                        # nothing to summarize
+                                    else:
+                                        frame_descriptions = []
+                                        for frame_path in file_record.extracted_frames:
+                                            try:
+                                                description = describe_image(frame_path)
+                                                frame_descriptions.append(description)
+                                            except Exception as e:
+                                                logger.warning(
+                                                    "Failed to describe frame %s: %s",
+                                                    frame_path,
+                                                    e,
+                                                )
+                                        if frame_descriptions:
+                                            video_summary = summarize_video_frames(
+                                                frame_descriptions
+                                            )
+                                            file_record.description = video_summary
+                                            if not file_record.summary:
+                                                file_record.summary = video_summary
+                                            logger.info(
+                                                "Generated video summary for %s "
+                                                "with %d frames",
+                                                file_record.file_path,
+                                                len(frame_descriptions),
+                                            )
+                                        else:
+                                            logger.warning(
+                                                "No frame descriptions generated "
+                                                "for video %s",
+                                                file_record.file_path,
+                                            )
+                                else:
+                                    logger.debug(
+                                        "Skipping video summary for non-video file %s",
+                                        file_record.file_path,
+                                    )
 
                             elif task.name == AnalysisName.FINANCIAL_ANALYSIS:
                                 if file_record.extracted_text and (
@@ -506,10 +495,11 @@ def main(
             help="Path to save a CSV file of processed files.", rich_help_panel="Output"
         ),
     ] = "",
+    debug: Annotated[bool, typer.Option(help="Enable debug logging.")] = False,
 ) -> int:
     """Run the main threaded pipeline."""
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.StreamHandler(),
@@ -608,6 +598,32 @@ def main(
             file_record.status,
             correlation_id,
         )
+
+        # Filter files based on model type before queuing
+        should_process = True
+        if model.value == "video_summary":
+            should_process = file_record.mime_type.startswith(
+                "video/"
+            ) and not file_record.file_path.lower().endswith(".asx")
+        elif model.value == "image_description":
+            should_process = file_record.mime_type.startswith("image/")
+        elif model.value == "text_analysis":
+            should_process = (
+                file_record.mime_type.startswith("text/")
+                or file_record.mime_type == "application/pdf"
+                or file_record.mime_type.endswith("document")
+                or file_record.mime_type.endswith("sheet")
+            )
+        # For model.ALL or other models, process all files
+
+        if not should_process:
+            logger.debug(
+                "Skipping %s - not applicable for model %s [%s]",
+                file_record.file_path,
+                model.value,
+                correlation_id,
+            )
+            continue
 
         if file_record.status == PENDING_EXTRACTION:
             work_item = WorkItem(file_record, correlation_id)
