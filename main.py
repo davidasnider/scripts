@@ -566,8 +566,11 @@ def main(
     model: Annotated[
         AnalysisModel, typer.Option(help="The model to use for analysis.")
     ] = AnalysisModel.ALL,
-    limit: Annotated[
-        int, typer.Option(help="Limit the number of files to process.")
+    batch_size: Annotated[
+        int,
+        typer.Option(
+            help="Number of files to process in this batch (0 = process all remaining)."
+        ),
     ] = 0,
     csv_output: Annotated[
         str,
@@ -629,16 +632,20 @@ def main(
     signal.signal(signal.SIGTERM, signal_handler)
     logger.debug("Signal handlers installed for safe manifest saving")
 
-    if limit > 0:
+    if batch_size > 0:
         unprocessed_files = [f for f in full_manifest if f.status != COMPLETE]
-        processing_manifest = unprocessed_files[:limit]
+        processing_manifest = unprocessed_files[:batch_size]
         logger.info(
-            "Found %d unprocessed files. Limiting to %d files for processing.",
+            "Found %d unprocessed files. Processing batch of %d files.",
             len(unprocessed_files),
             len(processing_manifest),
         )
     else:
-        processing_manifest = full_manifest
+        processing_manifest = [f for f in full_manifest if f.status != COMPLETE]
+        logger.info(
+            "Found %d unprocessed files. Processing all remaining files.",
+            len(processing_manifest),
+        )
 
     manifest_saver = threading.Thread(
         target=save_manifest_periodically, args=(full_manifest,), daemon=True
