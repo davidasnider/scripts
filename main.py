@@ -12,6 +12,8 @@ import csv
 import json
 import logging
 import queue
+import signal
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -83,6 +85,25 @@ database_queue = queue.Queue()
 completed_files = set()
 failed_files = set()
 lock = threading.Lock()
+
+# Global manifest for signal handlers
+current_manifest = None
+
+
+def signal_handler(signum, frame):
+    """Handle SIGINT/SIGTERM by saving manifest before exit."""
+    logger = logging.getLogger(__name__)
+    logger.info("Received signal %d, saving manifest before exit...", signum)
+
+    if current_manifest is not None:
+        try:
+            save_manifest(current_manifest)
+            logger.info("Manifest saved successfully")
+        except Exception as e:
+            logger.error("Failed to save manifest on exit: %s", e)
+
+    # Exit gracefully
+    sys.exit(1)
 
 
 def log_unprocessed_file(
@@ -576,8 +597,6 @@ def main(
     warnings.filterwarnings("ignore", message=".*slow processor.*")
     warnings.filterwarnings("ignore", message=".*Device set to use.*")
 
-    import sys
-
     MUPDF_SCREEN_ERR_SUBSTR = (
         "MuPDF error: unsupported error: cannot create appearance stream for Screen"
     )
@@ -602,6 +621,13 @@ def main(
 
     full_manifest = load_manifest()
     logger.info("Loaded %d files from manifest", len(full_manifest))
+
+    # Set up signal handlers for safe shutdown
+    global current_manifest
+    current_manifest = full_manifest
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    logger.debug("Signal handlers installed for safe manifest saving")
 
     if limit > 0:
         unprocessed_files = [f for f in full_manifest if f.status != COMPLETE]
@@ -703,52 +729,62 @@ def main(
 
     logger.info("Queued %d pending files for processing", pending_files)
 
-    start_time = time.time()
-    last_progress_time = start_time
+    try:
+        start_time = time.time()
+        last_progress_time = start_time
 
-    while pending_files > 0:
-        time.sleep(2)
+        while pending_files > 0:
+            time.sleep(2)
 
-        with lock:
-            completed_count = len(completed_files)
-            failed_count = len(failed_files)
+            with lock:
+                completed_count = len(completed_files)
+                failed_count = len(failed_files)
 
-        processed_count = completed_count + failed_count
-        remaining = pending_files - processed_count
+            processed_count = completed_count + failed_count
+            remaining = pending_files - processed_count
 
-        current_time = time.time()
-        if current_time - last_progress_time >= 30:
-            elapsed = current_time - start_time
-            if processed_count > 0:
-                estimated_total = elapsed * pending_files / processed_count
-                estimated_remaining = estimated_total - elapsed
-                logger.info(
-                    "Progress: %d/%d completed, %d failed, %d remaining "
-                    "(%.1f%% complete, ~%.1f minutes remaining)",
-                    completed_count,
-                    pending_files,
-                    failed_count,
-                    remaining,
-                    (processed_count / pending_files) * 100,
-                    estimated_remaining / 60,
-                )
-            else:
-                logger.info(
-                    "Progress: %d/%d completed, %d failed, %d remaining",
-                    completed_count,
-                    pending_files,
-                    failed_count,
-                    remaining,
-                )
-            last_progress_time = current_time
+            current_time = time.time()
+            if current_time - last_progress_time >= 30:
+                elapsed = current_time - start_time
+                if processed_count > 0:
+                    estimated_total = elapsed * pending_files / processed_count
+                    estimated_remaining = estimated_total - elapsed
+                    logger.info(
+                        "Progress: %d/%d completed, %d failed, %d remaining "
+                        "(%.1f%% complete, ~%.1f minutes remaining)",
+                        completed_count,
+                        pending_files,
+                        failed_count,
+                        remaining,
+                        (processed_count / pending_files) * 100,
+                        estimated_remaining / 60,
+                    )
+                else:
+                    logger.info(
+                        "Progress: %d/%d completed, %d failed, %d remaining",
+                        completed_count,
+                        pending_files,
+                        failed_count,
+                        remaining,
+                    )
+                last_progress_time = current_time
 
-        if remaining <= 0:
-            break
+            if remaining <= 0:
+                break
 
-    logger.info("Waiting for all work to complete...")
-    extraction_queue.join()
-    analysis_queue.join()
-    database_queue.join()
+        logger.info("Waiting for all work to complete...")
+        extraction_queue.join()
+        analysis_queue.join()
+        database_queue.join()
+
+    finally:
+        # Ensure manifest is saved even if there's an unexpected exception
+        logger.info("Ensuring manifest is saved...")
+        try:
+            save_manifest(full_manifest)
+            logger.info("Manifest saved successfully")
+        except Exception as e:
+            logger.error("Failed to save manifest: %s", e)
 
     logger.debug("Sending shutdown signals to workers...")
     for _ in range(NUM_EXTRACTION_WORKERS):
@@ -829,4 +865,8 @@ def main(
 
 
 if __name__ == "__main__":
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     typer.run(main)
