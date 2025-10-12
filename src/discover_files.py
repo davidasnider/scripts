@@ -109,7 +109,7 @@ def _detect_mime_type(path: Path, mime_detector: Any) -> str:
 
 
 def create_file_manifest(
-    root_directory: Path, manifest_path: Path
+    root_directory: Path, manifest_path: Path, max_files: int = 100
 ) -> list[dict[str, object]]:
     logger.info("Starting file discovery process")
     logger.info("Root directory: %s", root_directory)
@@ -138,9 +138,11 @@ def create_file_manifest(
     else:
         logger.info("Using mimetypes fallback for MIME type detection")
 
-    logger.info("Phase 3: Processing %d files", total_files)
+    logger.info("Phase 3: Processing up to %d files", max_files)
     start_time = time.time()
     records = []
+    mime_type_counts = {}  # Track count per MIME type
+    seen_mime_types = set()  # Track all MIME types we've encountered
 
     try:
         file_iter = _iter_files(root_directory)
@@ -156,11 +158,25 @@ def create_file_manifest(
 
         processed_count = 0
         error_count = 0
+        skipped_due_to_limits = 0
 
         for path in file_iter:
+            # Check if we've reached the total limit
+            if len(records) >= max_files:
+                logger.info("Reached maximum file limit of %d", max_files)
+                break
+
             try:
                 stat_info = path.stat()
                 mime_type = _detect_mime_type(path, mime_detector)
+                seen_mime_types.add(mime_type)
+
+                # Check if this MIME type has reached its limit
+                current_count = mime_type_counts.get(mime_type, 0)
+                if current_count >= 10:
+                    skipped_due_to_limits += 1
+                    continue  # Skip this file
+
                 record = FileRecord(
                     file_path=str(path),
                     file_name=path.name,
@@ -171,6 +187,7 @@ def create_file_manifest(
                     analysis_tasks=_get_analysis_tasks(mime_type, str(path)),
                 )
                 records.append(record)
+                mime_type_counts[mime_type] = current_count + 1
                 processed_count += 1
 
                 if tqdm is None and processed_count % 100 == 0:
@@ -180,6 +197,11 @@ def create_file_manifest(
                 error_count += 1
                 logger.error("Failed to process file %s: %s", path, exc)
                 continue
+
+        # Check if we've exhausted all file types (all seen types are at limit)
+        exhausted_types = sum(1 for count in mime_type_counts.values() if count >= 10)
+        if exhausted_types == len(seen_mime_types) and len(records) < max_files:
+            logger.info("All encountered file types have reached their 10-file limit")
 
     finally:
         if mime_detector is not None and hasattr(mime_detector, "close"):
@@ -191,6 +213,16 @@ def create_file_manifest(
 
     processing_time = time.time() - start_time
     logger.info("Processed %d files in %.2f seconds", len(records), processing_time)
+
+    # Log MIME type distribution
+    if mime_type_counts:
+        logger.info("File type distribution:")
+        for mime_type, count in sorted(mime_type_counts.items()):
+            status = " (limit reached)" if count >= 10 else ""
+            logger.info("  %s: %d files%s", mime_type, count, status)
+
+    if skipped_due_to_limits > 0:
+        logger.info("Skipped %d files due to type limits", skipped_due_to_limits)
 
     if error_count > 0:
         logger.warning("Encountered %d errors during processing", error_count)
@@ -236,6 +268,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--max-files",
+        type=int,
+        default=100,
+        help="Maximum number of files to discover (default: 100).",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging output."
     )
     parser.add_argument(
@@ -262,7 +300,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        manifest = create_file_manifest(args.root_directory, args.manifest_path)
+        manifest = create_file_manifest(
+            args.root_directory, args.manifest_path, args.max_files
+        )
         logger.info(
             "Successfully wrote %d entries to %s", len(manifest), args.manifest_path
         )
