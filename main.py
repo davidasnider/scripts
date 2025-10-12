@@ -85,6 +85,40 @@ failed_files = set()
 lock = threading.Lock()
 
 
+def log_unprocessed_file(
+    file_path: str, mime_type: str, reason: str, additional_info: str = ""
+) -> None:
+    """Log files that couldn't be processed for later analysis."""
+    unprocessed_log_path = Path("data/unprocessed_files.csv")
+    unprocessed_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Check if file already exists to determine if we need headers
+    file_exists = unprocessed_log_path.exists()
+
+    with lock:
+        with unprocessed_log_path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+            if not file_exists:
+                writer.writerow(
+                    [
+                        "timestamp",
+                        "file_path",
+                        "mime_type",
+                        "reason",
+                        "additional_info",
+                    ]
+                )
+            writer.writerow(
+                [
+                    time.strftime("%Y-%m-%d %H:%M:%S"),
+                    file_path,
+                    mime_type,
+                    reason,
+                    additional_info,
+                ]
+            )
+
+
 def load_manifest() -> list[FileRecord]:
     """Load the manifest and parse it into a list of FileRecord objects."""
     if not MANIFEST_PATH.exists():
@@ -194,6 +228,12 @@ def extraction_worker(worker_id: int) -> None:
                     correlation_id,
                     e,
                 )
+                log_unprocessed_file(
+                    file_record.file_path,
+                    file_record.mime_type,
+                    "extraction_failed",
+                    str(e),
+                )
                 with lock:
                     failed_files.add(correlation_id)
 
@@ -290,6 +330,13 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                             "cannot generate summary",
                                             file_record.file_path,
                                         )
+                                        log_unprocessed_file(
+                                            file_record.file_path,
+                                            file_record.mime_type,
+                                            "no_video_frames_extracted",
+                                            "Video too short or frame "
+                                            "extraction failed",
+                                        )
                                         # Still mark as complete since there's
                                         # nothing to summarize
                                     else:
@@ -322,6 +369,12 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                                 "No frame descriptions generated "
                                                 "for video %s",
                                                 file_record.file_path,
+                                            )
+                                            log_unprocessed_file(
+                                                file_record.file_path,
+                                                file_record.mime_type,
+                                                "video_frame_description_failed",
+                                                "All frame descriptions failed",
                                             )
                                 else:
                                     logger.debug(
@@ -382,6 +435,12 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                     file_record.file_path,
                     correlation_id,
                     e,
+                )
+                log_unprocessed_file(
+                    file_record.file_path,
+                    file_record.mime_type,
+                    "analysis_failed",
+                    str(e),
                 )
                 with lock:
                     failed_files.add(correlation_id)
@@ -718,6 +777,33 @@ def main(
         completed_count,
         failed_count,
     )
+
+    # Log files with incomplete analysis for future AI analyzer development
+    incomplete_files = []
+    for record in full_manifest:
+        if record.status == COMPLETE:
+            incomplete_tasks = [
+                task
+                for task in record.analysis_tasks
+                if task.status != AnalysisStatus.COMPLETE
+            ]
+            if incomplete_tasks:
+                incomplete_files.append((record, incomplete_tasks))
+                for task in incomplete_tasks:
+                    log_unprocessed_file(
+                        record.file_path,
+                        record.mime_type,
+                        f"incomplete_{task.name.value}",
+                        f"Task failed or skipped: "
+                        f"{task.error_message or 'Unknown reason'}",
+                    )
+
+    if incomplete_files:
+        logger.info(
+            "Found %d files with incomplete analysis tasks. "
+            "Check data/unprocessed_files.csv for details.",
+            len(incomplete_files),
+        )
 
     if csv_output:
         processed_files_data = [
