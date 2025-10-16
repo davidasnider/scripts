@@ -614,6 +614,16 @@ def main(
             rich_help_panel="Filtering",
         ),
     ] = "",
+    per_mime_limit: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Maximum number of files per MIME type to process in this run "
+                "(0 disables the limit)."
+            ),
+            rich_help_panel="Filtering",
+        ),
+    ] = 0,
     debug: Annotated[bool, typer.Option(help="Enable debug logging.")] = False,
 ) -> int:
     """Run the main threaded pipeline."""
@@ -705,6 +715,34 @@ def main(
             len(processing_manifest),
             target_filename,
         )
+
+    if per_mime_limit > 0:
+        mime_counts: dict[str, int] = {}
+        limited_manifest: list[FileRecord] = []
+        for record in processing_manifest:
+            mime_key = record.mime_type or "unknown"
+            count = mime_counts.get(mime_key, 0)
+            if count >= per_mime_limit:
+                continue
+            mime_counts[mime_key] = count + 1
+            limited_manifest.append(record)
+
+        if not limited_manifest:
+            logger.warning(
+                "No files remain after applying per-MIME limit of %d.",
+                per_mime_limit,
+            )
+            return 0
+
+        if len(limited_manifest) < len(processing_manifest):
+            logger.info(
+                "Per-MIME limit reduced processing set to %d file(s) "
+                "across %d MIME type(s).",
+                len(limited_manifest),
+                len(mime_counts),
+            )
+
+        processing_manifest = limited_manifest
 
     manifest_saver = threading.Thread(
         target=save_manifest_periodically, args=(full_manifest,), daemon=True
