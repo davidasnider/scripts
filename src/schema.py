@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 PENDING_EXTRACTION = "pending_extraction"
 PENDING_ANALYSIS = "pending_analysis"
 COMPLETE = "complete"
+FAILED = "failed"
 
 
 class AnalysisStatus(str, Enum):

@@ -43,6 +43,7 @@ from src.database_manager import add_file_to_db, initialize_db
 from src.nsfw_classifier import NSFWClassifier
 from src.schema import (
     COMPLETE,
+    FAILED,
     PENDING_ANALYSIS,
     PENDING_EXTRACTION,
     AnalysisName,
@@ -535,11 +536,47 @@ def database_worker(worker_id: int, collection: Any) -> None:
                     task.status != AnalysisStatus.PENDING
                     for task in file_record.analysis_tasks
                 )
-                if all_tasks_done:
+                any_task_failed = any(
+                    task.status == AnalysisStatus.ERROR
+                    for task in file_record.analysis_tasks
+                )
+
+                target_set = completed_files
+                if not all_tasks_done:
+                    file_record.status = FAILED
+                    target_set = failed_files
+
+                    pending_tasks = ", ".join(
+                        task.name.value
+                        for task in file_record.analysis_tasks
+                        if task.status == AnalysisStatus.PENDING
+                    )
+                    log_unprocessed_file(
+                        file_record.file_path,
+                        file_record.mime_type,
+                        "analysis_tasks_incomplete",
+                        pending_tasks or "Analysis tasks never completed",
+                    )
+                elif any_task_failed:
+                    file_record.status = FAILED
+                    target_set = failed_files
+
+                    failed_details = ", ".join(
+                        f"{task.name.value}: {task.error_message or 'unknown error'}"
+                        for task in file_record.analysis_tasks
+                        if task.status == AnalysisStatus.ERROR
+                    )
+                    log_unprocessed_file(
+                        file_record.file_path,
+                        file_record.mime_type,
+                        "analysis_task_failed",
+                        failed_details or "One or more analysis tasks failed",
+                    )
+                else:
                     file_record.status = COMPLETE
 
                 with lock:
-                    completed_files.add(correlation_id)
+                    target_set.add(correlation_id)
 
                 logger.debug(
                     "Worker %d completed database addition for %s [%s]",
@@ -831,6 +868,14 @@ def main(
             )
             with lock:
                 completed_files.add(correlation_id)
+        elif file_record.status == FAILED:
+            logger.debug(
+                "Skipping failed file %s [%s]",
+                file_record.file_path,
+                correlation_id,
+            )
+            with lock:
+                failed_files.add(correlation_id)
 
     logger.info("Queued %d pending files for processing", pending_files)
 
@@ -922,7 +967,7 @@ def main(
     # Log files with incomplete analysis for future AI analyzer development
     incomplete_files = []
     for record in full_manifest:
-        if record.status == COMPLETE:
+        if record.status in {COMPLETE, FAILED}:
             incomplete_tasks = [
                 task
                 for task in record.analysis_tasks
