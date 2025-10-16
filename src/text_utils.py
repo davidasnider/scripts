@@ -1,12 +1,41 @@
 import logging
+import os
+from pathlib import Path
+from typing import Union
 
 from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
-# Load a tokenizer for a BERT-based model
-# 'bert-base-uncased' is a good proxy for many embedding models
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+PREFERRED_TOKENIZER = "meta-llama/Meta-Llama-3-8B"
+FALLBACK_TOKENIZER = "bert-base-uncased"
+
+
+def _load_tokenizer() -> AutoTokenizer:
+    """Initialize tokenizer, preferring the LLaMA 3 vocabulary."""
+    candidates: list[Union[str, Path]] = []
+
+    env_path = os.getenv("LLAMA3_TOKENIZER_PATH")
+    if env_path:
+        path = Path(env_path).expanduser()
+        if path.exists():
+            candidates.append(path)
+
+    candidates.append(PREFERRED_TOKENIZER)
+    candidates.append(FALLBACK_TOKENIZER)
+
+    for candidate in candidates:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(candidate, use_fast=False)
+            logger.debug("Loaded tokenizer from %s", candidate)
+            return tokenizer
+        except Exception as exc:
+            logger.debug("Tokenizer load failed for %s: %s", candidate, exc)
+
+    raise RuntimeError("Failed to initialize text tokenizer")
+
+
+tokenizer = _load_tokenizer()
 
 
 def chunk_text(text: str, max_tokens: int = 256) -> list[str]:
