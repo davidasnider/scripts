@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 import pandas as pd
 import typer
@@ -140,6 +141,29 @@ def log_unprocessed_file(
             )
 
 
+def extract_text_from_svg(file_path: str) -> str:
+    """Extract visible text from an SVG, fallback to raw XML if parsing fails."""
+    logger = logging.getLogger(__name__)
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        text_chunks: list[str] = []
+        for element in root.iter():
+            if element.text:
+                chunk = element.text.strip()
+                if chunk:
+                    text_chunks.append(chunk)
+        return "\n".join(text_chunks)
+    except Exception as exc:
+        logger.warning("Failed to parse SVG %s: %s", file_path, exc)
+        try:
+            with open(file_path, "r", encoding="utf-8") as handle:
+                return handle.read()
+        except Exception as raw_exc:
+            logger.error("Failed to read SVG fallback %s: %s", file_path, raw_exc)
+            return ""
+
+
 def load_manifest() -> list[FileRecord]:
     """Load the manifest and parse it into a list of FileRecord objects."""
     if not MANIFEST_PATH.exists():
@@ -211,6 +235,10 @@ def extraction_worker(worker_id: int) -> None:
                     "officedocument.spreadsheetml.sheet"
                 ):
                     text = extract_content_from_xlsx(file_record.file_path)
+                    file_record.extracted_text = text
+
+                elif file_record.mime_type == "image/svg+xml":
+                    text = extract_text_from_svg(file_record.file_path)
                     file_record.extracted_text = text
 
                 elif file_record.mime_type.startswith("image/"):
@@ -703,6 +731,7 @@ def main(
             should_process = (
                 file_record.mime_type.startswith("text/")
                 or file_record.mime_type == "application/pdf"
+                or file_record.mime_type == "image/svg+xml"
                 or file_record.mime_type.endswith("document")
                 or file_record.mime_type.endswith("sheet")
             )
