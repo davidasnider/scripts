@@ -9,6 +9,7 @@ from typing import Any
 
 import ollama
 import yaml
+from PIL import Image, UnidentifiedImageError
 
 from src.text_utils import chunk_text
 
@@ -332,6 +333,25 @@ def describe_image(image_path: str) -> str:
         Detailed description of the image.
     """
     logger.debug("Starting image description for %s", image_path)
+
+    try:
+        with Image.open(image_path) as handle:
+            handle.verify()
+    except UnidentifiedImageError as exc:
+        logger.info(
+            "Skipping image description for unsupported image %s: %s",
+            image_path,
+            exc,
+        )
+        return "Image description unavailable - unsupported image format"
+    except Exception as exc:
+        logger.info(
+            "Skipping image description for unreadable image %s: %s",
+            image_path,
+            exc,
+        )
+        return "Image description unavailable - unreadable image"
+
     with open(image_path, "rb") as f:
         image_data = f.read()
     image_b64 = base64.b64encode(image_data).decode("utf-8")

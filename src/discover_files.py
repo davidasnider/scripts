@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
+from src.logging_utils import configure_logging
 from src.schema import AnalysisName, AnalysisTask, FileRecord
 
 try:
@@ -280,11 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         log_level = logging.WARNING
 
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    configure_logging(level=log_level, force=True)
 
     try:
         manifest = create_file_manifest(

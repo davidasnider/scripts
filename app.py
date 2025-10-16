@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import chromadb
@@ -6,6 +7,12 @@ import ollama
 import streamlit as st
 import yaml
 from PIL import Image
+
+from src.logging_utils import configure_logging
+
+configure_logging()
+logger = logging.getLogger("file_catalog.app")
+logger.info("Streamlit UI initialized")
 
 # Configure Streamlit page
 st.set_page_config(page_title="Local AI Digital Archive", layout="wide")
@@ -19,6 +26,11 @@ with open("config.yaml", "r") as f:
 
 EMBEDDING_MODEL = config["models"]["embedding_model"]
 LLM_MODEL = config["models"]["text_analyzer"]
+logger.debug(
+    "Loaded configuration (embedding_model=%s, llm_model=%s)",
+    EMBEDDING_MODEL,
+    LLM_MODEL,
+)
 
 # Initialize session state
 if "messages" not in st.session_state:
@@ -37,8 +49,10 @@ if "filters" not in st.session_state:
 def create_thumbnail(file_path: str, mime_type: str, max_size: tuple = (200, 200)):
     """Create a thumbnail for display in the app."""
     try:
+        logger.debug("Creating thumbnail for %s (%s)", file_path, mime_type)
         file_path = Path(file_path)
         if not file_path.exists():
+            logger.debug("Skipping thumbnail; file not found: %s", file_path)
             return None
 
         if mime_type.startswith("image/"):
@@ -49,6 +63,7 @@ def create_thumbnail(file_path: str, mime_type: str, max_size: tuple = (200, 200
 
         elif mime_type.startswith("video/"):
             # For videos, extract first frame and create thumbnail
+            logger.debug("Extracting video thumbnail for %s", file_path)
             cap = cv2.VideoCapture(str(file_path))
             ret, frame = cap.read()
             cap.release()
@@ -62,6 +77,7 @@ def create_thumbnail(file_path: str, mime_type: str, max_size: tuple = (200, 200
 
     except Exception as e:
         st.error(f"Failed to create thumbnail for {file_path}: {e}")
+        logger.exception("Failed to create thumbnail for %s", file_path)
 
     return None
 
@@ -123,6 +139,9 @@ def display_source_with_thumbnail(source: dict, index: int):
                             )
                         except Exception as e:
                             st.error(f"Could not load full image: {e}")
+                            logger.exception(
+                                "Could not load full image for %s", file_path
+                            )
                 else:
                     st.write("🖼️ Thumbnail unavailable")
 
@@ -196,6 +215,7 @@ except Exception as e:
 
 def build_chroma_filter(filter_state: dict) -> dict:
     """Build a ChromaDB where filter from the filter state dictionary."""
+    logger.debug("Building Chroma filter from state: %s", filter_state)
     filters = []
 
     # Use variables to avoid string interpolation issues
@@ -216,15 +236,20 @@ def build_chroma_filter(filter_state: dict) -> dict:
             filters.append({"mime_type": {in_op: filter_state["file_type"]}})
 
     if len(filters) == 1:
-        return filters[0]
+        result = filters[0]
     elif len(filters) > 1:
-        return {and_op: filters}
-    return {}
+        result = {and_op: filters}
+    else:
+        result = {}
+
+    logger.debug("Generated Chroma filter: %s", result)
+    return result
 
 
 def get_database_stats(filters: dict = None) -> dict:
     """Get statistics about the database contents."""
     try:
+        logger.info("Fetching database stats (filters_applied=%s)", bool(filters))
         if filters:
             # Get filtered results for counting
             results = collection.get(where=filters, include=["metadatas"])
@@ -283,19 +308,29 @@ def get_database_stats(filters: dict = None) -> dict:
                 }
             )
 
-        return {
+        stats = {
             "total_count": total_count,
             "file_types": file_types,
             "file_list": file_list,
         }
+        logger.info(
+            "Database stats ready (total=%d, distinct_types=%d)",
+            total_count,
+            len(file_types),
+        )
+        return stats
     except Exception as e:
         st.error(f"Failed to get database stats: {e}")
+        logger.exception("Failed to compute database stats")
         return {"total_count": 0, "file_types": {}, "file_list": []}
 
 
 def query_knowledge_base(query_text: str, filters: dict) -> list[dict]:
     """Query the ChromaDB collection for relevant documents."""
     try:
+        preview = query_text[:80] + ("…" if len(query_text) > 80 else "")
+        logger.info("Querying knowledge base (filters_applied=%s)", bool(filters))
+        logger.debug("Query preview: %s", preview)
         # Generate embedding for the query
         query_embedding = ollama.embeddings(model=EMBEDDING_MODEL, prompt=query_text)[
             "embedding"
@@ -331,9 +366,11 @@ def query_knowledge_base(query_text: str, filters: dict) -> list[dict]:
                 }
             )
 
+        logger.info("Knowledge base returned %d source(s)", len(sources))
         return sources
     except Exception as e:
         st.error(f"Failed to query knowledge base: {e}")
+        logger.exception("Knowledge base query failed")
         return []
 
 
@@ -342,6 +379,11 @@ def generate_response(
 ) -> iter:
     """Generate a streaming response from the LLM."""
     try:
+        logger.info(
+            "Generating response (context_sources=%d, history_entries=%d)",
+            len(context),
+            len(chat_history),
+        )
         # Limit and summarize context to avoid prompt truncation
         max_context_chars = 2000  # Keep context under 2000 chars
         summarized_context = []
@@ -368,6 +410,11 @@ def generate_response(
             total_chars += len(context_entry)
 
         context_str = "\n".join(summarized_context)
+        logger.debug(
+            "Prepared context (characters=%d, segments=%d)",
+            len(context_str),
+            len(summarized_context),
+        )
 
         # Limit chat history as well
         history_str = "\n".join(
@@ -402,20 +449,25 @@ def generate_response(
             st.warning(
                 f"Large prompt ({prompt_length} chars); response may be truncated."
             )
+        logger.debug("Prompt length for response: %d", prompt_length)
 
         # Call Ollama with streaming
         response = ollama.chat(
             model=LLM_MODEL, messages=[{"role": "user", "content": prompt}], stream=True
         )
 
+        logger.info("LLM streaming response started")
         return response
     except Exception as e:
         st.error(f"Failed to generate response: {e}")
+        logger.exception("Failed to generate LLM response")
         return iter([])  # Return empty iterator
 
 
 # Chat input handling
 if prompt := st.chat_input("Ask me about your files..."):
+    prompt_preview = prompt[:120] + ("…" if len(prompt) > 120 else "")
+    logger.info("Received user prompt: %s", prompt_preview)
     # Add user message to session state
     st.session_state.messages.append({"role": "user", "content": prompt, "sources": []})
 
@@ -444,11 +496,10 @@ if prompt := st.chat_input("Ask me about your files..."):
             "my files",
         ]
         is_stats_query = any(keyword in prompt.lower() for keyword in stats_keywords)
-
-        # Debug: show what we're checking
-        st.write(f"Debug - Query: '{prompt.lower()}', Is stats query: {is_stats_query}")
+        logger.debug("Stats query detection: %s", is_stats_query)
 
         if is_stats_query:
+            logger.info("Handling statistics query")
             with st.spinner("Counting files in your archive..."):
                 chroma_filters = build_chroma_filter(st.session_state.filters)
                 stats = get_database_stats(chroma_filters if chroma_filters else None)
@@ -492,12 +543,14 @@ if prompt := st.chat_input("Ask me about your files..."):
                     {"role": "assistant", "content": response_text, "sources": []}
                 )
         else:
+            logger.info("Handling knowledge base query")
             with st.spinner("Searching your archive..."):
                 # Build filters and query knowledge base
                 chroma_filters = build_chroma_filter(st.session_state.filters)
                 context = query_knowledge_base(prompt, chroma_filters)
 
             if not context:
+                logger.info("No matching context found for prompt")
                 st.warning(
                     "No relevant information found in your archive for this query."
                 )
@@ -525,6 +578,9 @@ if prompt := st.chat_input("Ask me about your files..."):
 
                 # Final display without cursor
                 response_placeholder.markdown(full_response)
+                logger.info(
+                    "Streaming response completed (length=%d)", len(full_response)
+                )
 
                 # Add assistant message with sources to session state
                 st.session_state.messages.append(

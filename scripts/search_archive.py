@@ -9,23 +9,15 @@ import logging
 from pathlib import Path
 
 from database_manager import generate_embedding, initialize_db
+from logging_utils import configure_logging
 
 logger = logging.getLogger(__name__)
 
 
 def main() -> int:
     # Set up logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-        ],
-    )
-    # Suppress httpx and related logs
-    logging.getLogger("httpx").setLevel(logging.ERROR)
-    logging.getLogger("httpcore").setLevel(logging.ERROR)
-    logger = logging.getLogger(__name__)
+    configure_logging(level=logging.INFO, force=True)
+    logger = logging.getLogger("file_catalog.search")
     logger.info("Starting search archive script")
     parser = argparse.ArgumentParser(
         description="Search the digital archive with semantic queries.",
@@ -55,6 +47,14 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    logger.info(
+        "Executing search for %r (max_results=%d, nsfw=%s, red_flags=%s, db=%s)",
+        args.query,
+        args.num_results,
+        args.is_nsfw,
+        args.has_financial_red_flags,
+        args.db_path,
+    )
 
     # Initialize DB
     collection = initialize_db(str(args.db_path))
@@ -75,6 +75,7 @@ def main() -> int:
         n_results=args.num_results,
         where=where or None,
     )
+    logger.info("Received %d result(s) from ChromaDB", len(results["documents"]))
 
     # Print results
     for i, doc in enumerate(results["documents"]):
@@ -85,6 +86,7 @@ def main() -> int:
         logger.info("  MIME Type: %s", file_data.get("mime_type", "N/A"))
         logger.info("  Size: %s bytes", file_data.get("size_bytes", "N/A"))
 
+    logger.info("Search archive operation finished")
     return 0
 
 

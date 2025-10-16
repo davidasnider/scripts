@@ -40,6 +40,7 @@ from src.content_extractor import (
     extract_frames_from_video,
 )
 from src.database_manager import add_file_to_db, initialize_db
+from src.logging_utils import configure_logging
 from src.nsfw_classifier import NSFWClassifier
 from src.schema import (
     COMPLETE,
@@ -91,18 +92,23 @@ lock = threading.Lock()
 # Global manifest for signal handlers
 current_manifest = None
 
+LOGGER_NAME = "file_catalog.pipeline"
+pipeline_logger = logging.getLogger(LOGGER_NAME)
+extraction_logger = logging.getLogger(f"{LOGGER_NAME}.extraction")
+analysis_logger = logging.getLogger(f"{LOGGER_NAME}.analysis")
+database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
+
 
 def signal_handler(signum, frame):
     """Handle SIGINT/SIGTERM by saving manifest before exit."""
-    logger = logging.getLogger(__name__)
-    logger.info("Received signal %d, saving manifest before exit...", signum)
+    pipeline_logger.info("Received signal %d, saving manifest before exit...", signum)
 
     if current_manifest is not None:
         try:
             save_manifest(current_manifest)
-            logger.info("Manifest saved successfully")
+            pipeline_logger.info("Manifest saved successfully")
         except Exception as e:
-            logger.error("Failed to save manifest on exit: %s", e)
+            pipeline_logger.error("Failed to save manifest on exit: %s", e)
 
     # Exit gracefully
     sys.exit(1)
@@ -144,7 +150,6 @@ def log_unprocessed_file(
 
 def extract_text_from_svg(file_path: str) -> str:
     """Extract visible text from an SVG, fallback to raw XML if parsing fails."""
-    logger = logging.getLogger(__name__)
     try:
         tree = ET.parse(file_path)
         root = tree.getroot()
@@ -156,12 +161,14 @@ def extract_text_from_svg(file_path: str) -> str:
                     text_chunks.append(chunk)
         return "\n".join(text_chunks)
     except Exception as exc:
-        logger.warning("Failed to parse SVG %s: %s", file_path, exc)
+        extraction_logger.warning("Failed to parse SVG %s: %s", file_path, exc)
         try:
             with open(file_path, "r", encoding="utf-8") as handle:
                 return handle.read()
         except Exception as raw_exc:
-            logger.error("Failed to read SVG fallback %s: %s", file_path, raw_exc)
+            extraction_logger.error(
+                "Failed to read SVG fallback %s: %s", file_path, raw_exc
+            )
             return ""
 
 
@@ -184,22 +191,24 @@ def save_manifest(manifest: list[FileRecord]) -> None:
 
 def extraction_worker(worker_id: int) -> None:
     """Worker thread for content extraction."""
-    logger = logging.getLogger("main")
-    logger.debug("Extraction worker %d started", worker_id)
+    worker_logger = extraction_logger.getChild(f"worker-{worker_id}")
+    worker_logger.debug("Extraction worker %d started", worker_id)
 
     while True:
         work_item = None
         try:
             work_item = extraction_queue.get(timeout=1.0)
             if work_item is None:  # Poison pill
-                logger.debug("Extraction worker %d received shutdown signal", worker_id)
+                worker_logger.debug(
+                    "Extraction worker %d received shutdown signal", worker_id
+                )
                 extraction_queue.task_done()
                 break
 
             file_record = work_item.file_record
             correlation_id = work_item.correlation_id
 
-            logger.debug(
+            worker_logger.debug(
                 "Worker %d extracting content from %s (MIME: %s) [%s]",
                 worker_id,
                 file_record.file_path,
@@ -208,62 +217,75 @@ def extraction_worker(worker_id: int) -> None:
             )
 
             try:
+                stage_start = time.time()
+                extracted_frames: list[str] = []
+                extracted_text = ""
+
                 if (
                     file_record.mime_type.startswith("text/")
                     or file_record.mime_type == "application/pdf"
                 ):
                     if file_record.mime_type == "application/pdf":
-                        text = extract_content_from_pdf(file_record.file_path)
+                        extracted_text = extract_content_from_pdf(file_record.file_path)
                     else:
                         try:
                             with open(
                                 file_record.file_path, "r", encoding="utf-8"
                             ) as f:
-                                text = f.read()
+                                extracted_text = f.read()
                         except Exception:
-                            text = ""
-                    file_record.extracted_text = text
+                            extracted_text = ""
+                    file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type == (
                     "application/vnd.openxmlformats-"
                     "officedocument.wordprocessingml.document"
                 ):
-                    text = extract_content_from_docx(file_record.file_path)
-                    file_record.extracted_text = text
+                    extracted_text = extract_content_from_docx(file_record.file_path)
+                    file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type == (
                     "application/vnd.openxmlformats-"
                     "officedocument.spreadsheetml.sheet"
                 ):
-                    text = extract_content_from_xlsx(file_record.file_path)
-                    file_record.extracted_text = text
+                    extracted_text = extract_content_from_xlsx(file_record.file_path)
+                    file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type == "image/svg+xml":
-                    text = extract_text_from_svg(file_record.file_path)
-                    file_record.extracted_text = text
+                    extracted_text = extract_text_from_svg(file_record.file_path)
+                    file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type.startswith("image/"):
-                    text = extract_content_from_image(file_record.file_path)
-                    file_record.extracted_text = text
+                    extracted_text = extract_content_from_image(file_record.file_path)
+                    file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type.startswith(
                     "video/"
                 ) and not file_record.file_path.lower().endswith(".asx"):
-                    frames = extract_frames_from_video(
+                    extracted_frames = extract_frames_from_video(
                         file_record.file_path, "data/frames", interval_sec=10
                     )
-                    file_record.extracted_frames = frames
-                    logger.info(
-                        "Extracted %d frames from video %s",
-                        len(frames),
-                        file_record.file_path,
-                    )
+                    file_record.extracted_frames = extracted_frames
+
+                extraction_duration = time.time() - stage_start
+                extracted_text_len = len(file_record.extracted_text or "")
+                extracted_frame_count = len(file_record.extracted_frames or [])
+
+                worker_logger.info(
+                    "Extraction complete for %s [%s] in %.2fs "
+                    "(text=%d chars, frames=%d)",
+                    file_record.file_path,
+                    correlation_id,
+                    extraction_duration,
+                    extracted_text_len,
+                    extracted_frame_count,
+                )
 
                 file_record.status = PENDING_ANALYSIS
                 analysis_item = WorkItem(file_record, correlation_id)
                 analysis_queue.put(analysis_item)
 
-                logger.debug(
+                worker_logger.debug(
                     "Worker %d completed extraction for %s [%s]",
                     worker_id,
                     file_record.file_path,
@@ -271,7 +293,7 @@ def extraction_worker(worker_id: int) -> None:
                 )
 
             except Exception as e:
-                logger.error(
+                worker_logger.error(
                     "Worker %d failed to extract content from %s [%s]: %s",
                     worker_id,
                     file_record.file_path,
@@ -292,29 +314,31 @@ def extraction_worker(worker_id: int) -> None:
         except queue.Empty:
             continue
         except Exception as e:
-            logger.error("Extraction worker %d error: %s", worker_id, e)
+            worker_logger.error("Extraction worker %d error: %s", worker_id, e)
 
-    logger.debug("Extraction worker %d stopped", worker_id)
+    worker_logger.debug("Extraction worker %d stopped", worker_id)
 
 
 def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
     """Worker thread for AI analysis."""
-    logger = logging.getLogger(__name__)
-    logger.debug("Analysis worker %d started", worker_id)
+    worker_logger = analysis_logger.getChild(f"worker-{worker_id}")
+    worker_logger.debug("Analysis worker %d started", worker_id)
 
     while True:
         work_item = None
         try:
             work_item = analysis_queue.get(timeout=1.0)
             if work_item is None:
-                logger.debug("Analysis worker %d received shutdown signal", worker_id)
+                worker_logger.debug(
+                    "Analysis worker %d received shutdown signal", worker_id
+                )
                 analysis_queue.task_done()
                 break
 
             file_record = work_item.file_record
             correlation_id = work_item.correlation_id
 
-            logger.debug(
+            worker_logger.debug(
                 "Worker %d analyzing content from %s [%s]",
                 worker_id,
                 file_record.file_path,
@@ -322,6 +346,8 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
             )
 
             try:
+                stage_start = time.time()
+
                 for task in file_record.analysis_tasks:
                     if task.status == AnalysisStatus.PENDING:
                         if (
@@ -375,7 +401,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     ".asx"
                                 ):
                                     if not file_record.extracted_frames:
-                                        logger.warning(
+                                        worker_logger.warning(
                                             "No frames extracted for video %s, "
                                             "cannot generate summary",
                                             file_record.file_path,
@@ -396,7 +422,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                                 description = describe_image(frame_path)
                                                 frame_descriptions.append(description)
                                             except Exception as e:
-                                                logger.warning(
+                                                worker_logger.warning(
                                                     "Failed to describe frame %s: %s",
                                                     frame_path,
                                                     e,
@@ -408,14 +434,14 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                             file_record.description = video_summary
                                             if not file_record.summary:
                                                 file_record.summary = video_summary
-                                            logger.info(
+                                            worker_logger.info(
                                                 "Generated video summary for %s "
                                                 "with %d frames",
                                                 file_record.file_path,
                                                 len(frame_descriptions),
                                             )
                                         else:
-                                            logger.warning(
+                                            worker_logger.warning(
                                                 "No frame descriptions generated "
                                                 "for video %s",
                                                 file_record.file_path,
@@ -427,7 +453,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                                 "All frame descriptions failed",
                                             )
                                 else:
-                                    logger.debug(
+                                    worker_logger.debug(
                                         "Skipping video summary for non-video file %s",
                                         file_record.file_path,
                                     )
@@ -459,7 +485,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             task.status = AnalysisStatus.COMPLETE
 
                         except Exception as e:
-                            logger.error(
+                            worker_logger.error(
                                 "Failed to run analysis task %s for %s: %s",
                                 task.name,
                                 file_record.file_path,
@@ -471,7 +497,34 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                 database_item = WorkItem(file_record, correlation_id)
                 database_queue.put(database_item)
 
-                logger.debug(
+                completed_tasks = sum(
+                    task.status == AnalysisStatus.COMPLETE
+                    for task in file_record.analysis_tasks
+                )
+                failed_tasks = sum(
+                    task.status == AnalysisStatus.ERROR
+                    for task in file_record.analysis_tasks
+                )
+                pending_tasks = sum(
+                    task.status == AnalysisStatus.PENDING
+                    for task in file_record.analysis_tasks
+                )
+                analysis_duration = time.time() - stage_start
+
+                worker_logger.info(
+                    "Analysis complete for %s [%s] in %.2fs "
+                    "(tasks: %d complete, %d failed, %d pending, nsfw=%s, summary=%s)",
+                    file_record.file_path,
+                    correlation_id,
+                    analysis_duration,
+                    completed_tasks,
+                    failed_tasks,
+                    pending_tasks,
+                    file_record.is_nsfw,
+                    bool(file_record.summary),
+                )
+
+                worker_logger.debug(
                     "Worker %d completed analysis for %s [%s]",
                     worker_id,
                     file_record.file_path,
@@ -479,7 +532,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                 )
 
             except Exception as e:
-                logger.error(
+                worker_logger.error(
                     "Worker %d failed to analyze content from %s [%s]: %s",
                     worker_id,
                     file_record.file_path,
@@ -500,29 +553,31 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
         except queue.Empty:
             continue
         except Exception as e:
-            logger.error("Analysis worker %d error: %s", worker_id, e)
+            worker_logger.error("Analysis worker %d error: %s", worker_id, e)
 
-    logger.debug("Analysis worker %d stopped", worker_id)
+    worker_logger.debug("Analysis worker %d stopped", worker_id)
 
 
 def database_worker(worker_id: int, collection: Any) -> None:
     """Worker thread for database operations."""
-    logger = logging.getLogger(__name__)
-    logger.debug("Database worker %d started", worker_id)
+    worker_logger = database_logger.getChild(f"worker-{worker_id}")
+    worker_logger.debug("Database worker %d started", worker_id)
 
     while True:
         work_item = None
         try:
             work_item = database_queue.get(timeout=1.0)
             if work_item is None:
-                logger.debug("Database worker %d received shutdown signal", worker_id)
+                worker_logger.debug(
+                    "Database worker %d received shutdown signal", worker_id
+                )
                 database_queue.task_done()
                 break
 
             file_record = work_item.file_record
             correlation_id = work_item.correlation_id
 
-            logger.debug(
+            worker_logger.debug(
                 "Worker %d adding to database: %s [%s]",
                 worker_id,
                 file_record.file_path,
@@ -578,7 +633,17 @@ def database_worker(worker_id: int, collection: Any) -> None:
                 with lock:
                     target_set.add(correlation_id)
 
-                logger.debug(
+                worker_logger.info(
+                    "Database indexed %s [%s] with status=%s "
+                    "(nsfw=%s, financial_flags=%s)",
+                    file_record.file_path,
+                    correlation_id,
+                    file_record.status,
+                    file_record.is_nsfw,
+                    file_record.has_financial_red_flags,
+                )
+
+                worker_logger.debug(
                     "Worker %d completed database addition for %s [%s]",
                     worker_id,
                     file_record.file_path,
@@ -586,7 +651,7 @@ def database_worker(worker_id: int, collection: Any) -> None:
                 )
 
             except Exception as e:
-                logger.error(
+                worker_logger.error(
                     "Worker %d failed to add %s to database [%s]: %s",
                     worker_id,
                     file_record.file_path,
@@ -601,21 +666,21 @@ def database_worker(worker_id: int, collection: Any) -> None:
         except queue.Empty:
             continue
         except Exception as e:
-            logger.error("Database worker %d error: %s", worker_id, e)
+            worker_logger.error("Database worker %d error: %s", worker_id, e)
 
-    logger.debug("Database worker %d stopped", worker_id)
+    worker_logger.debug("Database worker %d stopped", worker_id)
 
 
 def save_manifest_periodically(manifest: list[FileRecord]) -> None:
     """Periodically save manifest to persist progress."""
-    logger = logging.getLogger(__name__)
+    thread_logger = pipeline_logger.getChild("manifest_saver")
     while True:
         time.sleep(10)
         try:
             save_manifest(manifest)
-            logger.debug("Manifest saved periodically")
+            thread_logger.debug("Manifest saved periodically")
         except Exception as e:
-            logger.warning("Failed to save manifest: %s", e)
+            thread_logger.warning("Failed to save manifest: %s", e)
 
 
 def write_processed_files_to_csv(processed_files: list[dict], file_path: str) -> None:
@@ -664,18 +729,10 @@ def main(
     debug: Annotated[bool, typer.Option(help="Enable debug logging.")] = False,
 ) -> int:
     """Run the main threaded pipeline."""
-    logging.basicConfig(
+    configure_logging(
         level=logging.DEBUG if debug else logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler("file_catalog.log", mode="a"),
-        ],
+        force=True,
     )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("transformers").setLevel(logging.ERROR)
-    logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
 
     import warnings
 
@@ -699,33 +756,33 @@ def main(
             self.original_stderr.flush()
 
     sys.stderr = MuPDFErrorFilter(sys.stderr)
-    logger = logging.getLogger(__name__)
-    logger.info("Starting threaded file catalog pipeline...")
+    run_logger = pipeline_logger.getChild("run")
+    run_logger.info("Starting threaded file catalog pipeline...")
 
     collection = initialize_db(str(DB_PATH))
-    logger.debug("Database initialized")
+    run_logger.debug("Database initialized")
 
     full_manifest = load_manifest()
-    logger.info("Loaded %d files from manifest", len(full_manifest))
+    run_logger.info("Loaded %d files from manifest", len(full_manifest))
 
     # Set up signal handlers for safe shutdown
     global current_manifest
     current_manifest = full_manifest
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    logger.debug("Signal handlers installed for safe manifest saving")
+    run_logger.debug("Signal handlers installed for safe manifest saving")
 
     if batch_size > 0:
         unprocessed_files = [f for f in full_manifest if f.status != COMPLETE]
         processing_manifest = unprocessed_files[:batch_size]
-        logger.info(
+        run_logger.info(
             "Found %d unprocessed files. Processing batch of %d files.",
             len(unprocessed_files),
             len(processing_manifest),
         )
     else:
         processing_manifest = [f for f in full_manifest if f.status != COMPLETE]
-        logger.info(
+        run_logger.info(
             "Found %d unprocessed files. Processing all remaining files.",
             len(processing_manifest),
         )
@@ -740,14 +797,14 @@ def main(
         ]
 
         if not filtered_manifest:
-            logger.warning(
+            run_logger.warning(
                 "No files matched the filter %r. Nothing to process.",
                 target_filename,
             )
             return 0
 
         processing_manifest = filtered_manifest
-        logger.info(
+        run_logger.info(
             "Filtered manifest to %d file(s) matching %r.",
             len(processing_manifest),
             target_filename,
@@ -765,14 +822,14 @@ def main(
             limited_manifest.append(record)
 
         if not limited_manifest:
-            logger.warning(
+            run_logger.warning(
                 "No files remain after applying per-MIME limit of %d.",
                 per_mime_limit,
             )
             return 0
 
         if len(limited_manifest) < len(processing_manifest):
-            logger.info(
+            run_logger.info(
                 "Per-MIME limit reduced processing set to %d file(s) "
                 "across %d MIME type(s).",
                 len(limited_manifest),
@@ -785,7 +842,7 @@ def main(
         target=save_manifest_periodically, args=(full_manifest,), daemon=True
     )
     manifest_saver.start()
-    logger.debug("Started manifest saver thread")
+    run_logger.debug("Started manifest saver thread")
 
     threads = []
     for i in range(NUM_EXTRACTION_WORKERS):
@@ -794,7 +851,7 @@ def main(
         )
         thread.start()
         threads.append(thread)
-        logger.debug("Started extraction worker %d", i)
+        extraction_logger.debug("Started extraction worker %d", i)
 
     for i in range(NUM_ANALYSIS_WORKERS):
         thread = threading.Thread(
@@ -802,7 +859,7 @@ def main(
         )
         thread.start()
         threads.append(thread)
-        logger.debug("Started analysis worker %d", i)
+        analysis_logger.debug("Started analysis worker %d", i)
 
     for i in range(NUM_DATABASE_WORKERS):
         thread = threading.Thread(
@@ -810,15 +867,15 @@ def main(
         )
         thread.start()
         threads.append(thread)
-        logger.debug("Started database worker %d", i)
+        database_logger.debug("Started database worker %d", i)
 
-    logger.info("All worker threads started")
+    run_logger.info("All worker threads started")
 
     pending_files = 0
     for file_record in processing_manifest:
         correlation_id = f"file-{hash(file_record.file_path) % 100000:05d}"
 
-        logger.debug(
+        run_logger.debug(
             "Queuing %s (status: %s) [%s]",
             file_record.file_path,
             file_record.status,
@@ -844,7 +901,7 @@ def main(
         # For model.ALL or other models, process all files
 
         if not should_process:
-            logger.debug(
+            run_logger.debug(
                 "Skipping %s - not applicable for model %s [%s]",
                 file_record.file_path,
                 model.value,
@@ -855,13 +912,19 @@ def main(
         if file_record.status == PENDING_EXTRACTION:
             work_item = WorkItem(file_record, correlation_id)
             extraction_queue.put(work_item)
+            extraction_logger.info(
+                "Queued %s for extraction [%s]", file_record.file_path, correlation_id
+            )
             pending_files += 1
         elif file_record.status == PENDING_ANALYSIS:
             work_item = WorkItem(file_record, correlation_id)
             analysis_queue.put(work_item)
+            analysis_logger.info(
+                "Queued %s for analysis [%s]", file_record.file_path, correlation_id
+            )
             pending_files += 1
         elif file_record.status == COMPLETE:
-            logger.debug(
+            run_logger.debug(
                 "Skipping completed file %s [%s]",
                 file_record.file_path,
                 correlation_id,
@@ -869,7 +932,7 @@ def main(
             with lock:
                 completed_files.add(correlation_id)
         elif file_record.status == FAILED:
-            logger.debug(
+            run_logger.debug(
                 "Skipping failed file %s [%s]",
                 file_record.file_path,
                 correlation_id,
@@ -877,7 +940,7 @@ def main(
             with lock:
                 failed_files.add(correlation_id)
 
-    logger.info("Queued %d pending files for processing", pending_files)
+    run_logger.info("Queued %d pending files for processing", pending_files)
 
     try:
         start_time = time.time()
@@ -899,7 +962,7 @@ def main(
                 if processed_count > 0:
                     estimated_total = elapsed * pending_files / processed_count
                     estimated_remaining = estimated_total - elapsed
-                    logger.info(
+                    run_logger.info(
                         "Progress: %d/%d completed, %d failed, %d remaining "
                         "(%.1f%% complete, ~%.1f minutes remaining)",
                         completed_count,
@@ -910,7 +973,7 @@ def main(
                         estimated_remaining / 60,
                     )
                 else:
-                    logger.info(
+                    run_logger.info(
                         "Progress: %d/%d completed, %d failed, %d remaining",
                         completed_count,
                         pending_files,
@@ -922,21 +985,21 @@ def main(
             if remaining <= 0:
                 break
 
-        logger.info("Waiting for all work to complete...")
+        run_logger.info("Waiting for all work to complete...")
         extraction_queue.join()
         analysis_queue.join()
         database_queue.join()
 
     finally:
         # Ensure manifest is saved even if there's an unexpected exception
-        logger.info("Ensuring manifest is saved...")
+        run_logger.info("Ensuring manifest is saved...")
         try:
             save_manifest(full_manifest)
-            logger.info("Manifest saved successfully")
+            run_logger.info("Manifest saved successfully")
         except Exception as e:
-            logger.error("Failed to save manifest: %s", e)
+            run_logger.error("Failed to save manifest: %s", e)
 
-    logger.debug("Sending shutdown signals to workers...")
+    run_logger.debug("Sending shutdown signals to workers...")
     for _ in range(NUM_EXTRACTION_WORKERS):
         extraction_queue.put(None)
     for _ in range(NUM_ANALYSIS_WORKERS):
@@ -944,9 +1007,9 @@ def main(
     for _ in range(NUM_DATABASE_WORKERS):
         database_queue.put(None)
 
-    logger.debug("Waiting for worker threads to stop...")
+    run_logger.debug("Waiting for worker threads to stop...")
     for thread in threads:
-        thread.join()
+        thread.join(timeout=5)
 
     save_manifest(full_manifest)
 
@@ -955,7 +1018,7 @@ def main(
         completed_count = len(completed_files)
         failed_count = len(failed_files)
 
-    logger.info(
+    run_logger.info(
         "Pipeline complete! Processed %d files in %.1f seconds "
         "(%d completed, %d failed)",
         len(full_manifest),
@@ -985,7 +1048,7 @@ def main(
                     )
 
     if incomplete_files:
-        logger.info(
+        run_logger.info(
             "Found %d files with incomplete analysis tasks. "
             "Check data/unprocessed_files.csv for details.",
             len(incomplete_files),
@@ -998,17 +1061,17 @@ def main(
             if f"file-{hash(record.file_path) % 100000:05d}" in completed_files
         ]
         if processed_files_data:
-            logger.info(
+            run_logger.info(
                 "Writing %d processed files to %s",
                 len(processed_files_data),
                 csv_output,
             )
             write_processed_files_to_csv(processed_files_data, csv_output)
         else:
-            logger.info("No files to write to CSV.")
+            run_logger.info("No files to write to CSV.")
 
     if failed_count > 0:
-        logger.warning("Some files failed to process. Check logs for details.")
+        run_logger.warning("Some files failed to process. Check logs for details.")
         return 1
 
     return 0

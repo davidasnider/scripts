@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 import yaml
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from transformers import pipeline
 
 # Suppress transformers warnings before importing
@@ -76,9 +76,33 @@ class NSFWClassifier:
         try:
             with Image.open(image_path) as handle:
                 image = handle.convert("RGB")
+        except UnidentifiedImageError as exc:
+            logger.info(
+                "Skipping NSFW classification for unsupported image %s: %s",
+                image_path,
+                exc,
+            )
+            return {
+                "label": "SFW",
+                "score": 0.0,
+                "reason": "unsupported_image_format",
+            }
         except Exception:
             logger.debug("Falling back to raw path for %s", image_path)
             image = image_path
-        results = self.pipeline(image)
+        try:
+            results = self.pipeline(image)
+        except UnidentifiedImageError as exc:
+            logger.info(
+                "Skipping NSFW classification via pipeline for "
+                "unsupported image %s: %s",
+                image_path,
+                exc,
+            )
+            return {
+                "label": "SFW",
+                "score": 0.0,
+                "reason": "unsupported_image_format",
+            }
         logger.debug("Classification result: %s", results[0])
         return results[0]

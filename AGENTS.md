@@ -51,3 +51,11 @@ Model defaults live in `config.yaml`; do not commit secrets. `data/` is
 gitignored for local experiments—sanitize artifacts before sharing. Long-running
 workflows assume Ollama and Tesseract are available (`make check-ollama`,
 `make check-tesseract`) prior to pipeline runs.
+
+## Logging Practices
+
+Use `src.logging_utils.configure_logging` at entrypoints so logs share format,
+level, and rotation. Prefer stage-specific loggers (for example,
+`file_catalog.pipeline`, `.extraction`, `.analysis`) and log actionable
+summaries—durations, counts, correlation IDs. Treat info-level messages as
+operator-facing progress; keep per-item chatter at debug.
