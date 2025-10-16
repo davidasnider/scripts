@@ -606,6 +606,14 @@ def main(
             help="Path to save a CSV file of processed files.", rich_help_panel="Output"
         ),
     ] = "",
+    target_filename: Annotated[
+        str,
+        typer.Option(
+            "--file-name",
+            help="Only process files whose path or basename contains this value.",
+            rich_help_panel="Filtering",
+        ),
+    ] = "",
     debug: Annotated[bool, typer.Option(help="Enable debug logging.")] = False,
 ) -> int:
     """Run the main threaded pipeline."""
@@ -673,6 +681,29 @@ def main(
         logger.info(
             "Found %d unprocessed files. Processing all remaining files.",
             len(processing_manifest),
+        )
+
+    if target_filename:
+        search_term = target_filename.lower()
+        filtered_manifest = [
+            record
+            for record in processing_manifest
+            if search_term in record.file_path.lower()
+            or Path(record.file_path).name.lower() == search_term
+        ]
+
+        if not filtered_manifest:
+            logger.warning(
+                "No files matched the filter %r. Nothing to process.",
+                target_filename,
+            )
+            return 0
+
+        processing_manifest = filtered_manifest
+        logger.info(
+            "Filtered manifest to %d file(s) matching %r.",
+            len(processing_manifest),
+            target_filename,
         )
 
     manifest_saver = threading.Thread(
