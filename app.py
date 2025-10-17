@@ -1,14 +1,25 @@
+import json
 import logging
+import os
+import subprocess
+import sys
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import chromadb
 import cv2
 import ollama
+import pandas as pd
 import streamlit as st
 import yaml
 from PIL import Image
 
 from src.logging_utils import configure_logging
+
+# Truncation length for summary/description fields in tables
+SUMMARY_TRUNCATE_LENGTH = 120
 
 configure_logging()
 logger = logging.getLogger("file_catalog.app")
@@ -21,7 +32,7 @@ st.set_page_config(page_title="Local AI Digital Archive", layout="wide")
 st.title("🔎 Local AI Digital Archive")
 
 # Load config
-with open("config.yaml", "r") as f:
+with open("config.yaml", "r", encoding="utf-8") as f:
     config = yaml.safe_load(f)
 
 EMBEDDING_MODEL = config["models"]["embedding_model"]
@@ -161,6 +172,795 @@ def display_source_with_thumbnail(source: dict, index: int):
             st.write(f"**Page:** {source['page_number']}")
         st.write(f"**Snippet:** {source.get('content_snippet', 'N/A')}")
 
+    file_path_str = str(file_path)
+    path_obj = Path(file_path_str)
+    if file_path_str != "N/A":
+        if path_obj.exists():
+            if st.button(
+                "Open file",
+                key=f"open_source_{index}_{hash(file_path_str)}",
+            ):
+                if open_file_with_system(file_path_str):
+                    st.success("Opening file with the default application.")
+        else:
+            st.caption("File not found on disk; cannot open.")
+
+
+def open_file_with_system(file_path: str) -> bool:
+    """Launch a file with the system default handler."""
+    path = Path(file_path)
+    if not path.exists():
+        st.error("File could not be located on disk.")
+        logger.warning("Open file requested but missing: %s", file_path)
+        return False
+
+    try:
+        if os.name == "nt" and hasattr(os, "startfile"):
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+        logger.info("Opening file with system handler: %s", file_path)
+        return True
+    except Exception as err:
+        st.error(f"Failed to open file: {err}")
+        logger.exception("Failed to open file %s", file_path)
+        return False
+
+
+def format_bytes(size: int | float | None) -> str:
+    """Convert bytes to a human readable string."""
+    if size is None:
+        return "Unknown"
+    if not isinstance(size, (int, float)):
+        raise TypeError(f"Expected int or float for size, got {type(size).__name__}")
+
+    step = 1024.0
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    value = float(size)
+    for unit in units:
+        if value < step:
+            return f"{value:.1f} {unit}"
+        value /= step
+    return f"{value:.1f} EB"
+
+
+def extract_selected_rows(table_state: Any) -> list[int]:
+    """Normalize Streamlit table selection data into a list of row indices."""
+    if table_state is None:
+        return []
+
+    if hasattr(table_state, "selection"):
+        rows = table_state.selection.get("rows", [])
+    elif isinstance(table_state, str):
+        try:
+            parsed_state = json.loads(table_state)
+        except json.JSONDecodeError:
+            return []
+        rows = parsed_state.get("selection", {}).get("rows", [])
+    elif isinstance(table_state, dict):
+        rows = table_state.get("selection", {}).get("rows", [])
+    else:
+        return []
+
+    if isinstance(rows, dict):
+        rows = list(rows.keys())
+
+    if isinstance(rows, (list, tuple, set)):
+        return [int(idx) for idx in rows]
+
+    # Handle other iterable views (e.g., dict_values) that are not list/tuple/set
+    try:
+        if rows is not None and not isinstance(rows, (str, bytes)):
+            rows_iter = list(rows)  # type: ignore[arg-type]
+            if rows_iter:
+                return [int(idx) for idx in rows_iter]
+    except TypeError:
+        pass
+
+    if rows is None:
+        return []
+
+    return [int(rows)]
+
+
+def render_related_file_table(
+    table_rows: list[dict[str, str]],
+    files: list[dict[str, Any]],
+    *,
+    select_state_key: str,
+    table_state_key: str,
+    last_selection_state_key: str,
+    log_label: str,
+) -> None:
+    """Render shared selectbox + dataframe controls for related file tables."""
+    state_key = select_state_key
+    widget_key = f"{select_state_key}_widget"
+
+    if state_key not in st.session_state:
+        st.session_state[state_key] = -1
+
+    labels = [f"{row['File']} ({row['Directory']})" for row in table_rows]
+    selection_options = [-1] + list(range(len(files)))
+    try:
+        select_default = selection_options.index(st.session_state[state_key])
+    except ValueError:
+        select_default = 0
+
+    def format_option(idx: int) -> str:
+        if idx == -1:
+            return "-- Select a file --"
+        if 0 <= idx < len(labels):
+            return labels[idx]
+        return f"File {idx}"
+
+    selection = st.selectbox(
+        "Open file details",
+        options=selection_options,
+        format_func=format_option,
+        index=select_default,
+        key=widget_key,
+    )
+    if selection != -1 and 0 <= selection < len(files):
+        selected_path = files[selection].get("file_path")
+        st.session_state.file_browser_selected_file = selected_path
+        st.session_state[state_key] = selection
+    else:
+        st.session_state[state_key] = -1
+
+    table_df = pd.DataFrame(table_rows)
+    table_state = st.dataframe(
+        table_df,
+        hide_index=True,
+        width="stretch",
+        selection_mode="single-row",
+        on_select="rerun",
+        key=table_state_key,
+    )
+
+    widget_state = st.session_state.get(table_state_key)
+    state_payload = widget_state if widget_state is not None else table_state
+
+    selected_rows = extract_selected_rows(state_payload)
+    previous_rows = st.session_state.get(last_selection_state_key, [])
+    if selected_rows != previous_rows:
+        st.session_state[last_selection_state_key] = selected_rows
+        if selected_rows:
+            selected_index = selected_rows[0]
+            if 0 <= selected_index < len(files):
+                selected_path = files[selected_index].get("file_path")
+                st.session_state.file_browser_selected_file = selected_path
+                st.session_state[state_key] = selected_index
+                if selected_path:
+                    logger.info("%s file selected: %s", log_label, selected_path)
+        else:
+            st.session_state[state_key] = -1
+            st.session_state.file_browser_selected_file = None
+            logger.info("%s selection cleared", log_label)
+
+
+def compute_directory_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Build an index of directories, their child folders, and contained files."""
+    directory_files: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    subdir_map: defaultdict[str, set[str]] = defaultdict(set)
+
+    for entry in entries:
+        file_path = entry.get("file_path")
+        if not file_path:
+            continue
+
+        path_obj = Path(file_path)
+        dir_path = str(path_obj.parent)
+        directory_files[dir_path].append(entry)
+
+        parents = list(path_obj.parents)
+        for child, parent in zip(parents, parents[1:]):
+            subdir_map[str(parent)].add(str(child))
+
+    all_dirs: set[str] = set(directory_files.keys()) | set(subdir_map.keys())
+    for subdirs in subdir_map.values():
+        all_dirs.update(subdirs)
+
+    directory_index: dict[str, dict[str, Any]] = {}
+    for dir_path in all_dirs:
+        dir_obj = Path(dir_path)
+        parent_obj = dir_obj.parent
+        parent_str = str(parent_obj) if parent_obj != dir_obj else None
+
+        files = sorted(
+            directory_files.get(dir_path, []),
+            key=lambda item: (
+                item.get("file_name") or Path(item.get("file_path", "")).name or ""
+            ).lower(),
+        )
+        subdirs = sorted(
+            subdir_map.get(dir_path, set()),
+            key=lambda path: (Path(path).name or path).lower(),
+        )
+
+        directory_index[dir_path] = {
+            "path": dir_path,
+            "name": dir_obj.name or dir_path,
+            "parent": parent_str,
+            "subdirs": subdirs,
+            "files": files,
+            "file_count": len(files),
+        }
+
+    return directory_index
+
+
+def compute_mime_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Group files by MIME type for quick lookup."""
+    mime_map: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        mime_type = entry.get("mime_type") or "unknown/unknown"
+        mime_map[mime_type].append(entry)
+
+    mime_index: dict[str, dict[str, Any]] = {}
+    for mime_type, files in mime_map.items():
+        mime_index[mime_type] = {
+            "mime_type": mime_type,
+            "count": len(files),
+            "files": sorted(
+                files,
+                key=lambda item: (
+                    item.get("file_name") or Path(item.get("file_path", "")).name or ""
+                ).lower(),
+            ),
+        }
+
+    return dict(
+        sorted(mime_index.items(), key=lambda item: (-item[1]["count"], item[0]))
+    )
+
+
+def compute_people_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Group files by people mentioned in metadata."""
+    people_map: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entry in entries:
+        people = entry.get("mentioned_people") or []
+        for person in people:
+            if not person:
+                continue
+            person_name = str(person).strip()
+            if not person_name:
+                continue
+            people_map[person_name].append(entry)
+
+    people_index: dict[str, dict[str, Any]] = {}
+    for person_name, files in people_map.items():
+        people_index[person_name] = {
+            "person": person_name,
+            "count": len(files),
+            "files": sorted(
+                files,
+                key=lambda item: (
+                    item.get("file_name") or Path(item.get("file_path", "")).name or ""
+                ).lower(),
+            ),
+        }
+
+    return dict(
+        sorted(
+            people_index.items(),
+            key=lambda item: (-item[1]["count"], item[0].lower()),
+        )
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_manifest_assets(manifest_path: str = "data/manifest.json") -> dict[str, Any]:
+    """Load manifest entries and build reusable indexes."""
+    # manifest_path argument participates in the cache key to avoid stale cache
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as file:
+            entries: list[dict[str, Any]] = json.load(file)
+    except FileNotFoundError:
+        logger.warning("Manifest not found at %s", manifest_path)
+        return {
+            "entries": [],
+            "path_lookup": {},
+            "directory_index": {},
+            "mime_index": {},
+        }
+    except json.JSONDecodeError:
+        logger.exception("Manifest at %s is not valid JSON", manifest_path)
+        return {
+            "entries": [],
+            "path_lookup": {},
+            "directory_index": {},
+            "mime_index": {},
+        }
+
+    directory_index = compute_directory_index(entries)
+    mime_index = compute_mime_index(entries)
+    path_lookup = {
+        entry["file_path"]: entry for entry in entries if entry.get("file_path")
+    }
+
+    logger.info(
+        "Manifest loaded (files=%d, directories=%d, mime_types=%d)",
+        len(entries),
+        len(directory_index),
+        len(mime_index),
+    )
+
+    return {
+        "entries": entries,
+        "path_lookup": path_lookup,
+        "directory_index": directory_index,
+        "mime_index": mime_index,
+    }
+
+
+def apply_manifest_filters(
+    entries: list[dict[str, Any]], filter_state: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Apply Streamlit sidebar filters to manifest rows."""
+    filtered: list[dict[str, Any]] = []
+    file_types = filter_state.get("file_type") or []
+    hide_nsfw = filter_state.get("hide_nsfw", False)
+    only_red_flags = filter_state.get("red_flags", False)
+
+    for entry in entries:
+        if hide_nsfw and entry.get("is_nsfw"):
+            continue
+        if file_types and entry.get("mime_type") not in file_types:
+            continue
+        if only_red_flags and not entry.get("has_financial_red_flags"):
+            continue
+        filtered.append(entry)
+
+    return filtered
+
+
+def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = False):
+    """Show metadata, summary, and previews for a selected file."""
+    st.markdown("### File Details")
+
+    if not file_entry:
+        _render_file_detail_empty(filtered_out)
+        return
+
+    if filtered_out:
+        st.warning("This file is hidden by the current filters; showing full metadata.")
+
+    file_path_str = file_entry.get("file_path") or "Unknown path"
+    file_name = (
+        file_entry.get("file_name") or Path(file_path_str).name or "Unknown name"
+    )
+    mime_type = file_entry.get("mime_type") or "unknown/unknown"
+
+    _render_file_metadata(file_entry, file_path_str, file_name, mime_type)
+    _render_file_summary_description(file_entry)
+    preview_rendered = _render_file_previews(
+        file_entry, file_path_str, file_name, mime_type
+    )
+
+    if not preview_rendered and mime_type.startswith("image/"):
+        st.warning("Image preview unavailable; the file could not be located.")
+    elif not preview_rendered and file_entry.get("extracted_frames"):
+        st.warning("Extracted frame references were found but the images are missing.")
+
+    if file_entry.get("analysis_tasks"):
+        with st.expander("Analysis Tasks"):
+            st.json(file_entry["analysis_tasks"])
+
+    if file_entry.get("potential_red_flags"):
+        with st.expander("Potential Red Flags"):
+            st.write(file_entry["potential_red_flags"])
+
+
+def _render_file_detail_empty(filtered_out: bool):
+    if filtered_out:
+        st.warning("The previously selected file is hidden by the current filters.")
+    else:
+        st.info("Select a file to see its details.")
+
+
+def _render_file_metadata(
+    file_entry: dict[str, Any], file_path_str: str, file_name: str, mime_type: str
+):
+    st.subheader(file_name)
+    st.code(file_path_str)
+
+    file_path = Path(file_path_str)
+    file_exists = file_path.exists()
+    if file_exists:
+        if st.button(
+            "Open in default application",
+            key=f"open_detail_{hash(file_path_str)}",
+        ):
+            if open_file_with_system(file_path_str):
+                st.success("Opening file in the system viewer.")
+    else:
+        st.caption("File not found on disk; opening is unavailable.")
+
+    file_size = file_entry.get("file_size")
+    last_modified = file_entry.get("last_modified")
+    size_text = (
+        format_bytes(file_size) if isinstance(file_size, (int, float)) else "Unknown"
+    )
+    meta_line = f"**Type:** {mime_type} · **Size:** {size_text}"
+    if isinstance(last_modified, (int, float)):
+        timestamp = datetime.fromtimestamp(last_modified)
+        meta_line += f" · **Modified:** {timestamp:%Y-%m-%d %H:%M:%S}"
+    st.markdown(meta_line)
+
+
+def _render_file_summary_description(file_entry: dict[str, Any]):
+    summary = file_entry.get("summary")
+    description = file_entry.get("description")
+
+    st.markdown("**Summary**")
+    st.write(summary if summary else "_No summary available._")
+
+    st.markdown("**Description**")
+    st.write(description if description else "_No description available._")
+
+
+def _render_file_previews(
+    file_entry: dict[str, Any], file_path_str: str, file_name: str, mime_type: str
+) -> bool:
+    file_path = Path(file_path_str)
+    preview_rendered = False
+
+    if mime_type.startswith("image/") and file_path.exists():
+        st.image(str(file_path), caption=file_name)
+        preview_rendered = True
+
+    frames = file_entry.get("extracted_frames") or []
+    existing_frames = [
+        Path(frame) for frame in frames if frame and Path(frame).exists()
+    ]
+    if existing_frames:
+        st.markdown("**Extracted Frames**")
+        columns = st.columns(min(3, len(existing_frames)))
+        for idx, frame_path in enumerate(existing_frames[:9]):
+            with columns[idx % len(columns)]:
+                st.image(str(frame_path), caption=frame_path.name)
+        preview_rendered = True
+
+    return preview_rendered
+
+
+def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
+    """Render controls for browsing by directory."""
+    if not directory_index:
+        st.info("No directories available for the current filters.")
+        return
+
+    if "file_browser_selected_dir" not in st.session_state:
+        default_dir = max(
+            directory_index.values(),
+            key=lambda item: item["file_count"],
+            default=None,
+        )
+        st.session_state.file_browser_selected_dir = (
+            default_dir["path"] if default_dir else next(iter(directory_index))
+        )
+
+    selected_dir = st.session_state.get("file_browser_selected_dir")
+    if selected_dir not in directory_index:
+        selected_dir = next(iter(directory_index))
+        st.session_state.file_browser_selected_dir = selected_dir
+
+    directory_info = directory_index[selected_dir]
+
+    parent_path = directory_info.get("parent")
+
+    st.caption(f"Location: `{selected_dir}`")
+
+    st.caption(f"{directory_info['file_count']} file(s) in this directory.")
+
+    subdirs = directory_info.get("subdirs", [])
+    files = directory_info.get("files", [])
+
+    if not subdirs and not files:
+        st.info("This directory does not contain any items matching the filters.")
+        return
+
+    st.markdown("**Folder Contents**")
+
+    combined_entries: list[dict[str, Any]] = []
+    table_rows: list[dict[str, str]] = []
+
+    selected_file_path = st.session_state.get("file_browser_selected_file")
+
+    if parent_path and parent_path in directory_index:
+        parent_name = Path(parent_path).name or parent_path
+        combined_entries.append(
+            {"path": parent_path, "is_dir": True, "is_parent": True}
+        )
+        table_rows.append(
+            {
+                "Name": "↩︎ Parent Directory",
+                "Details": parent_name,
+                "Summary": "",
+            }
+        )
+
+    for subdir in subdirs:
+        child_info = directory_index.get(subdir, {})
+        item_count = child_info.get("file_count", 0)
+        display_name = Path(subdir).name or subdir
+        combined_entries.append({"path": subdir, "is_dir": True})
+        table_rows.append(
+            {
+                "Name": f"📁 {display_name}",
+                "Details": f"{item_count} item{'s' if item_count != 1 else ''}",
+                "Summary": "",
+            }
+        )
+
+    for item in files:
+        file_path = item.get("file_path", "")
+        file_name = item.get("file_name") or Path(file_path).name or "Unknown file"
+        summary_text = (item.get("summary") or item.get("description") or "") or ""
+        summary_text = summary_text[:SUMMARY_TRUNCATE_LENGTH]
+        file_size = item.get("file_size")
+        details = format_bytes(file_size) if isinstance(file_size, (int, float)) else ""
+
+        combined_entries.append({"path": file_path, "is_dir": False})
+        display_label = f"📄 {file_name}"
+        if file_path == selected_file_path:
+            display_label = f"✅ {display_label}"
+
+        table_rows.append(
+            {
+                "Name": display_label,
+                "Details": details,
+                "Summary": summary_text,
+            }
+        )
+
+    entry_lookup = {entry["path"]: entry for entry in combined_entries}
+    paths = [entry["path"] for entry in combined_entries]
+
+    display_df = pd.DataFrame(table_rows)
+
+    action_state_map = st.session_state.get("directory_action_flags")
+    if not isinstance(action_state_map, dict):
+        action_state_map = {}
+
+    action_values = [bool(action_state_map.get(path, False)) for path in paths]
+    display_df.insert(0, "Action", action_values)
+    display_df["Path"] = paths
+
+    editor_state = st.data_editor(
+        display_df,
+        hide_index=True,
+        num_rows="fixed",
+        column_order=["Action", "Name", "Details", "Summary", "Path"],
+        column_config={
+            "Action": st.column_config.CheckboxColumn(
+                label="", default=False, width="small"
+            ),
+            "Name": st.column_config.Column(disabled=True),
+            "Details": st.column_config.Column(disabled=True),
+            "Summary": st.column_config.Column(disabled=True),
+            "Path": st.column_config.TextColumn(disabled=True),
+        },
+        width="stretch",
+        key="directory_browser_table",
+    )
+
+    if editor_state is not None and "Action" in editor_state and "Path" in editor_state:
+        current_flags = dict(
+            zip(
+                editor_state["Path"],
+                editor_state["Action"].astype(bool),
+            )
+        )
+    else:
+        current_flags = {path: False for path in paths}
+
+    previous_flags = action_state_map if isinstance(action_state_map, dict) else {}
+
+    trigger_path = None
+    for path, is_checked in current_flags.items():
+        if is_checked and not previous_flags.get(path, False):
+            trigger_path = path
+            break
+
+    if trigger_path:
+        entry_meta = entry_lookup.get(trigger_path)
+        if entry_meta:
+            entry_path = entry_meta["path"]
+            if entry_meta.get("is_parent"):
+                st.session_state.file_browser_selected_dir = entry_path
+                st.session_state.file_browser_selected_file = None
+                logger.info("Directory view parent opened via action: %s", entry_path)
+            elif entry_meta["is_dir"]:
+                st.session_state.file_browser_selected_dir = entry_path
+                st.session_state.file_browser_selected_file = None
+                logger.info("Directory view folder opened via action: %s", entry_path)
+            else:
+                st.session_state.file_browser_selected_file = entry_path
+                logger.info("Directory view file selected via action: %s", entry_path)
+
+        st.session_state.directory_action_flags = {path: False for path in paths}
+        st.rerun()
+    else:
+        st.session_state.directory_action_flags = current_flags
+
+
+def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
+    """Render controls for browsing by MIME type."""
+    if not mime_index:
+        st.info("No MIME types found for the current filters.")
+        return
+
+    if "file_browser_selected_mime" not in st.session_state:
+        st.session_state.file_browser_selected_mime = next(iter(mime_index))
+
+    options = list(mime_index.keys())
+    try:
+        default_index = options.index(st.session_state.file_browser_selected_mime)
+    except ValueError:
+        default_index = 0
+
+    selected_mime = st.selectbox(
+        "Select a MIME type",
+        options,
+        index=default_index,
+        key="mime_type_select",
+    )
+    st.session_state.file_browser_selected_mime = selected_mime
+
+    mime_info = mime_index[selected_mime]
+    files = mime_info.get("files", [])
+
+    st.caption(f"{len(files)} file(s) with MIME type `{selected_mime}`.")
+
+    table_rows = [
+        {
+            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
+            "Directory": str(Path(item.get("file_path", "")).parent),
+            "Summary": (item.get("summary") or item.get("description") or "")[
+                :SUMMARY_TRUNCATE_LENGTH
+            ],
+        }
+        for item in files
+    ]
+
+    render_related_file_table(
+        table_rows,
+        files,
+        select_state_key="mime_file_select",
+        table_state_key="mime_file_table",
+        last_selection_state_key="mime_file_table_last_selection",
+        log_label="MIME view",
+    )
+
+
+def render_people_browser(people_index: dict[str, dict[str, Any]]):
+    """Render controls for browsing by mentioned people."""
+    if not people_index:
+        st.info("No people metadata available for the current filters.")
+        return
+
+    if "file_browser_selected_person" not in st.session_state:
+        st.session_state.file_browser_selected_person = next(iter(people_index))
+
+    people_names = list(people_index.keys())
+    try:
+        default_index = people_names.index(
+            st.session_state.file_browser_selected_person
+        )
+    except ValueError:
+        default_index = 0
+
+    selected_person = st.selectbox(
+        "Select a person mentioned",
+        people_names,
+        index=default_index,
+        key="people_select",
+    )
+    st.session_state.file_browser_selected_person = selected_person
+
+    person_info = people_index[selected_person]
+    files = person_info.get("files", [])
+
+    st.caption(f"{len(files)} file(s) mention **{selected_person}**.")
+
+    table_rows = [
+        {
+            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
+            "Directory": str(Path(item.get("file_path", "")).parent),
+            "Summary": (item.get("summary") or item.get("description") or "")[
+                :SUMMARY_TRUNCATE_LENGTH
+            ],
+        }
+        for item in files
+    ]
+
+    render_related_file_table(
+        table_rows,
+        files,
+        select_state_key="people_file_select",
+        table_state_key="people_file_table",
+        last_selection_state_key="people_file_table_last_selection",
+        log_label="People view",
+    )
+
+
+def render_file_browser(filter_state: dict[str, Any]):
+    """Top-level renderer for the file browser tab."""
+    manifest_assets = load_manifest_assets()
+    entries = manifest_assets["entries"]
+
+    if not entries:
+        st.info(
+            "No manifest entries were found. Run `uv run python src/discover_files.py` "
+            "to index your files."
+        )
+        return
+
+    filtered_entries = apply_manifest_filters(entries, filter_state)
+
+    if not filtered_entries:
+        st.info("No files match the current filters. Adjust them in the sidebar.")
+        return
+
+    directory_index = compute_directory_index(filtered_entries)
+    mime_index = compute_mime_index(filtered_entries)
+    people_index = compute_people_index(filtered_entries)
+    filtered_lookup = {
+        entry["file_path"]: entry
+        for entry in filtered_entries
+        if entry.get("file_path")
+    }
+    full_lookup = manifest_assets["path_lookup"]
+
+    total_files = len(filtered_entries)
+    total_directories = len(directory_index)
+    total_mime_types = len(mime_index)
+    total_people = len(people_index)
+
+    met_col1, met_col2, met_col3, met_col4 = st.columns(4)
+    met_col1.metric("Files", f"{total_files:,}")
+    met_col2.metric("Directories", f"{total_directories:,}")
+    met_col3.metric("MIME types", f"{total_mime_types:,}")
+    met_col4.metric("People", f"{total_people:,}")
+
+    if "file_browser_view_mode" not in st.session_state:
+        st.session_state.file_browser_view_mode = "Directory"
+    elif st.session_state.file_browser_view_mode not in {
+        "Directory",
+        "MIME type",
+        "People",
+    }:
+        st.session_state.file_browser_view_mode = "Directory"
+
+    view_mode = st.radio(
+        "Browse files by",
+        ["Directory", "MIME type", "People"],
+        horizontal=True,
+        key="file_browser_view_mode",
+    )
+
+    nav_col, detail_col = st.columns((1.2, 1.8))
+    with nav_col:
+        if view_mode == "Directory":
+            render_directory_browser(directory_index)
+        elif view_mode == "MIME type":
+            render_mime_browser(mime_index)
+        else:
+            render_people_browser(people_index)
+
+    selected_path = st.session_state.get("file_browser_selected_file")
+    selected_entry = filtered_lookup.get(selected_path)
+    filtered_out = False
+    if not selected_entry and selected_path:
+        selected_entry = full_lookup.get(selected_path)
+        filtered_out = bool(selected_entry)
+
+    with detail_col:
+        render_file_detail(selected_entry, filtered_out=filtered_out)
+
 
 # Sidebar for search filters
 with st.sidebar:
@@ -191,18 +991,6 @@ with st.sidebar:
         "Show only files with financial red flags",
         value=st.session_state.filters["red_flags"],
     )
-
-# Display chat messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-        if message.get("sources") and len(message["sources"]) > 0:
-            with st.expander("View Sources"):
-                for i, source in enumerate(message["sources"]):
-                    display_source_with_thumbnail(source, i)
-                    if i < len(message["sources"]) - 1:
-                        st.write("---")
 
 # Initialize ChromaDB client
 try:
@@ -260,14 +1048,11 @@ def get_database_stats(filters: dict = None) -> dict:
         total_count = len(results["metadatas"])
 
         # Load manifest to get proper summaries
-        import json
-
         try:
-            with open("data/manifest.json", "r") as f:
+            with open("data/manifest.json", "r", encoding="utf-8") as f:
                 manifest = json.load(f)
-            # Create a lookup dict by file path
             manifest_lookup = {item["file_path"]: item for item in manifest}
-        except Exception:
+        except (FileNotFoundError, json.JSONDecodeError):
             manifest_lookup = {}
 
         # Group by file type
@@ -464,56 +1249,74 @@ def generate_response(
         return iter([])  # Return empty iterator
 
 
-# Chat input handling
-if prompt := st.chat_input("Ask me about your files..."):
-    prompt_preview = prompt[:120] + ("…" if len(prompt) > 120 else "")
-    logger.info("Received user prompt: %s", prompt_preview)
-    # Add user message to session state
-    st.session_state.messages.append({"role": "user", "content": prompt, "sources": []})
+chat_tab, browser_tab = st.tabs(["Chat", "File Browser"])
 
-    # Display user message immediately
-    with st.chat_message("user"):
-        st.markdown(prompt)
+with chat_tab:
+    # Display existing conversation
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    # Generate assistant response
-    with st.chat_message("assistant"):
-        # Check if this is a database statistics query
-        stats_keywords = [
-            "how many",
-            "total files",
-            "count",
-            "database stats",
-            "how much",
-            "all files",
-            "files in",
-            "archive",
-            "database",
-            "list files",
-            "show files",
-            "what files",
-            "tell me about my files",
-            "about my files",
-            "my files",
-        ]
-        is_stats_query = any(keyword in prompt.lower() for keyword in stats_keywords)
-        logger.debug("Stats query detection: %s", is_stats_query)
+            if message.get("sources") and len(message["sources"]) > 0:
+                with st.expander("View Sources"):
+                    for i, source in enumerate(message["sources"]):
+                        display_source_with_thumbnail(source, i)
+                        if i < len(message["sources"]) - 1:
+                            st.write("---")
+    prompt = st.chat_input("Ask about your archive")
 
-        if is_stats_query:
-            logger.info("Handling statistics query")
-            with st.spinner("Counting files in your archive..."):
-                chroma_filters = build_chroma_filter(st.session_state.filters)
-                stats = get_database_stats(chroma_filters if chroma_filters else None)
+    if prompt:
+        prompt_preview = prompt[:SUMMARY_TRUNCATE_LENGTH] + (
+            "…" if len(prompt) > SUMMARY_TRUNCATE_LENGTH else ""
+        )
+        logger.info("Received user prompt: %s", prompt_preview)
 
-                # Create a comprehensive response
+        st.session_state.messages.append(
+            {"role": "user", "content": prompt, "sources": []}
+        )
+
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            stats_keywords = [
+                "how many",
+                "total files",
+                "count",
+                "database stats",
+                "how much",
+                "all files",
+                "files in",
+                "archive",
+                "database",
+                "list files",
+                "show files",
+                "what files",
+                "tell me about my files",
+                "about my files",
+                "my files",
+            ]
+            is_stats_query = any(
+                keyword in prompt.lower() for keyword in stats_keywords
+            )
+            logger.debug("Stats query detection: %s", is_stats_query)
+
+            if is_stats_query:
+                logger.info("Handling statistics query")
+                with st.spinner("Counting files in your archive..."):
+                    chroma_filters = build_chroma_filter(st.session_state.filters)
+                    stats = get_database_stats(
+                        chroma_filters if chroma_filters else None
+                    )
+
                 response_text = "**Database Statistics:**\n\n"
                 response_text += f"📁 **Total files:** {stats['total_count']}\n\n"
 
                 if stats["file_types"]:
                     response_text += "**File types breakdown:**\n"
                     for file_type, count in sorted(stats["file_types"].items()):
-                        response_text += (
-                            f"- {file_type}: {count} file{'s' if count != 1 else ''}\n"
-                        )
+                        plural = "s" if count != 1 else ""
+                        response_text += f"- {file_type}: {count} file{plural}\n"
                     response_text += "\n"
 
                 if stats["file_list"]:
@@ -531,61 +1334,59 @@ if prompt := st.chat_input("Ask me about your files..."):
 
                         flag_text = f" ({', '.join(flags)})" if flags else ""
 
-                        # Make it clean & copyable (Streamlit blocks file:// links)
                         response_text += f"{i}. **{name}** - {file_type}{flag_text}\n"
                         response_text += f"   📁 `{file_path}`\n"
                         response_text += f"   *{summary}*\n\n"
 
                 st.markdown(response_text)
-
-                # Add assistant message to session state
                 st.session_state.messages.append(
                     {"role": "assistant", "content": response_text, "sources": []}
                 )
-        else:
-            logger.info("Handling knowledge base query")
-            with st.spinner("Searching your archive..."):
-                # Build filters and query knowledge base
-                chroma_filters = build_chroma_filter(st.session_state.filters)
-                context = query_knowledge_base(prompt, chroma_filters)
 
-            if not context:
-                logger.info("No matching context found for prompt")
-                st.warning(
-                    "No relevant information found in your archive for this query."
-                )
-                # Add empty assistant message
-                st.session_state.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": "No relevant information found in your archive.",
-                        "sources": [],
-                    }
-                )
             else:
-                # Create placeholder for streaming response
-                response_placeholder = st.empty()
-                full_response = ""
+                logger.info("Handling knowledge base query")
+                with st.spinner("Searching your archive..."):
+                    chroma_filters = build_chroma_filter(st.session_state.filters)
+                    context = query_knowledge_base(prompt, chroma_filters)
 
-                # Stream the response
-                response_stream = generate_response(
-                    prompt, context, st.session_state.messages[:-1]
-                )
-                for chunk in response_stream:
-                    if chunk["message"]["content"]:
-                        full_response += chunk["message"]["content"]
-                        response_placeholder.markdown(full_response + "▌")
+                if not context:
+                    logger.info("No matching context found for prompt")
+                    st.warning(
+                        "No relevant information found in your archive for this query."
+                    )
+                    st.session_state.messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "No relevant information found in your archive.",
+                            "sources": [],
+                        }
+                    )
+                else:
+                    response_placeholder = st.empty()
+                    full_response = ""
 
-                # Final display without cursor
-                response_placeholder.markdown(full_response)
-                logger.info(
-                    "Streaming response completed (length=%d)", len(full_response)
-                )
+                    response_stream = generate_response(
+                        prompt, context, st.session_state.messages[:-1]
+                    )
+                    for chunk in response_stream:
+                        if chunk["message"]["content"]:
+                            full_response += chunk["message"]["content"]
+                            response_placeholder.markdown(full_response + "▌")
 
-                # Add assistant message with sources to session state
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": full_response, "sources": context}
-                )
+                    response_placeholder.markdown(full_response)
+                    logger.info(
+                        "Streaming response completed (length=%d)", len(full_response)
+                    )
 
-    # Rerun to update the UI with the new message
-    st.rerun()
+                    st.session_state.messages.append(
+                        {
+                            "role": "assistant",
+                            "content": full_response,
+                            "sources": context,
+                        }
+                    )
+
+        st.rerun()
+
+with browser_tab:
+    render_file_browser(st.session_state.filters)
