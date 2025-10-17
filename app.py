@@ -733,7 +733,7 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
         display_df,
         hide_index=True,
         num_rows="fixed",
-        column_order=["Action", "Name", "Details", "Summary"],
+        column_order=["Action", "Name", "Details", "Summary", "Path"],
         column_config={
             "Action": st.column_config.CheckboxColumn(
                 label="", default=False, width="small"
@@ -741,6 +741,7 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
             "Name": st.column_config.Column(disabled=True),
             "Details": st.column_config.Column(disabled=True),
             "Summary": st.column_config.Column(disabled=True),
+            "Path": st.column_config.TextColumn(disabled=True),
         },
         width="stretch",
         key="directory_browser_table",
