@@ -52,7 +52,9 @@ def analyze_text_content(text: str) -> dict[str, Any]:
             "JSON response with exactly two keys:\n\n"
             '- "summary": a concise paragraph summarizing the main points of the '
             "text.\n"
-            '- "mentioned_people": a list of names of people mentioned in the text.\n\n'
+            '- "mentioned_people": a list of names of people mentioned in the text. '
+            "These should be actual names, like 'David' or 'Brandy' or "
+            "'David Snider', not usernames like 'akanda'.\n\n"
             f"Text: {text}\n\n"
             "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
             "backticks. Return only the raw JSON object."
@@ -90,7 +92,8 @@ def analyze_text_content(text: str) -> dict[str, Any]:
             '- "summary": a concise paragraph summarizing the main points of this '
             "chunk.\n"
             '- "mentioned_people": a list of names of people mentioned in this '
-            "chunk.\n\n"
+            "chunk. These should be actual names, like 'David' or 'Brandy' or "
+            "'David Snider', not usernames like 'akanda'.\n\n"
             f"Text chunk: {chunk}\n\n"
             "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
             "backticks. Return only the raw JSON object."
