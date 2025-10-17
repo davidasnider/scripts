@@ -245,7 +245,7 @@ def extract_selected_rows(table_state: Any) -> list[int]:
         return []
 
     if isinstance(rows, dict):
-        rows = list(rows.values())
+        rows = list(rows.keys())
 
     if isinstance(rows, (list, tuple, set)):
         return [int(idx) for idx in rows]
