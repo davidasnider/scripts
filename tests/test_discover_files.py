@@ -178,8 +178,10 @@ def test_create_file_manifest_empty_directory(temp_directory_with_files):
 
 def test_create_file_manifest_non_existent_directory():
     """Verify that a ValueError is raised for a non-existent directory."""
-    with pytest.raises(ValueError):
-        discover_files.create_file_manifest(Path("/non/existent/dir"), Path("manifest.json"))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        non_existent_dir = Path(tmpdir) / "does_not_exist"
+        with pytest.raises(ValueError):
+            discover_files.create_file_manifest(non_existent_dir, Path("manifest.json"))
 
 
 def test_create_file_manifest_max_files(temp_directory_with_files):
