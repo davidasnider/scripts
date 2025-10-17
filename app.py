@@ -18,6 +18,9 @@ from PIL import Image
 
 from src.logging_utils import configure_logging
 
+# Truncation length for summary/description fields in tables
+SUMMARY_TRUNCATE_LENGTH = 120
+
 configure_logging()
 logger = logging.getLogger("file_catalog.app")
 logger.info("Streamlit UI initialized")
@@ -29,7 +32,7 @@ st.set_page_config(page_title="Local AI Digital Archive", layout="wide")
 st.title("🔎 Local AI Digital Archive")
 
 # Load config
-with open("config.yaml", "r") as f:
+with open("config.yaml", "r", encoding="utf-8") as f:
     config = yaml.safe_load(f)
 
 EMBEDDING_MODEL = config["models"]["embedding_model"]
@@ -195,9 +198,9 @@ def open_file_with_system(file_path: str) -> bool:
         if os.name == "nt" and hasattr(os, "startfile"):
             os.startfile(str(path))  # type: ignore[attr-defined]
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(path)])
+            subprocess.run(["open", str(path)], check=False)
         else:
-            subprocess.Popen(["xdg-open", str(path)])
+            subprocess.run(["xdg-open", str(path)], check=False)
         logger.info("Opening file with system handler: %s", file_path)
         return True
     except Exception as err:
@@ -206,14 +209,21 @@ def open_file_with_system(file_path: str) -> bool:
         return False
 
 
-# Sidebar helpers for manifest-driven browser
-def format_bytes(size: int | None) -> str:
+def format_bytes(size: int | float | None) -> str:
     """Convert bytes to a human readable string."""
     if size is None:
         return "Unknown"
+    if not isinstance(size, (int, float)):
+        raise TypeError(f"Expected int or float for size, got {type(size).__name__}")
 
     step = 1024.0
     units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    value = float(size)
+    for unit in units:
+        if value < step:
+            return f"{value:.1f} {unit}"
+        value /= step
+    return f"{value:.1f} EB"
     value = float(size)
     for unit in units:
         if value < step:
@@ -365,8 +375,9 @@ def compute_people_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, A
 @st.cache_data(show_spinner=False)
 def load_manifest_assets(manifest_path: str = "data/manifest.json") -> dict[str, Any]:
     """Load manifest entries and build reusable indexes."""
+    # manifest_path argument participates in the cache key to avoid stale cache
     try:
-        with open(manifest_path, "r") as file:
+        with open(manifest_path, "r", encoding="utf-8") as file:
             entries: list[dict[str, Any]] = json.load(file)
     except FileNotFoundError:
         logger.warning("Manifest not found at %s", manifest_path)
@@ -432,10 +443,7 @@ def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = F
     st.markdown("### File Details")
 
     if not file_entry:
-        if filtered_out:
-            st.warning("The previously selected file is hidden by the current filters.")
-        else:
-            st.info("Select a file to see its details.")
+        _render_file_detail_empty(filtered_out)
         return
 
     if filtered_out:
@@ -447,6 +455,36 @@ def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = F
     )
     mime_type = file_entry.get("mime_type") or "unknown/unknown"
 
+    _render_file_metadata(file_entry, file_path_str, file_name, mime_type)
+    _render_file_summary_description(file_entry)
+    preview_rendered = _render_file_previews(
+        file_entry, file_path_str, file_name, mime_type
+    )
+
+    if not preview_rendered and mime_type.startswith("image/"):
+        st.warning("Image preview unavailable; the file could not be located.")
+    elif not preview_rendered and file_entry.get("extracted_frames"):
+        st.warning("Extracted frame references were found but the images are missing.")
+
+    if file_entry.get("analysis_tasks"):
+        with st.expander("Analysis Tasks"):
+            st.json(file_entry["analysis_tasks"])
+
+    if file_entry.get("potential_red_flags"):
+        with st.expander("Potential Red Flags"):
+            st.write(file_entry["potential_red_flags"])
+
+
+def _render_file_detail_empty(filtered_out: bool):
+    if filtered_out:
+        st.warning("The previously selected file is hidden by the current filters.")
+    else:
+        st.info("Select a file to see its details.")
+
+
+def _render_file_metadata(
+    file_entry: dict[str, Any], file_path_str: str, file_name: str, mime_type: str
+):
     st.subheader(file_name)
     st.code(file_path_str)
 
@@ -471,10 +509,8 @@ def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = F
         meta_line += f" · **Modified:** {timestamp:%Y-%m-%d %H:%M:%S}"
     st.markdown(meta_line)
 
-    sha256 = file_entry.get("sha256")
-    if sha256:
-        st.caption(f"SHA256: `{sha256}`")
 
+def _render_file_summary_description(file_entry: dict[str, Any]):
     summary = file_entry.get("summary")
     description = file_entry.get("description")
 
@@ -484,10 +520,15 @@ def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = F
     st.markdown("**Description**")
     st.write(description if description else "_No description available._")
 
+
+def _render_file_previews(
+    file_entry: dict[str, Any], file_path_str: str, file_name: str, mime_type: str
+) -> bool:
+    file_path = Path(file_path_str)
     preview_rendered = False
 
     if mime_type.startswith("image/") and file_path.exists():
-        st.image(str(file_path), caption=file_name, use_container_width=True)
+        st.image(str(file_path), caption=file_name, width="stretch")
         preview_rendered = True
 
     frames = file_entry.get("extracted_frames") or []
@@ -499,23 +540,10 @@ def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = F
         columns = st.columns(min(3, len(existing_frames)))
         for idx, frame_path in enumerate(existing_frames[:9]):
             with columns[idx % len(columns)]:
-                st.image(
-                    str(frame_path), caption=frame_path.name, use_container_width=True
-                )
+                st.image(str(frame_path), caption=frame_path.name, width="stretch")
         preview_rendered = True
 
-    if not preview_rendered and mime_type.startswith("image/"):
-        st.warning("Image preview unavailable; the file could not be located.")
-    elif not preview_rendered and frames:
-        st.warning("Extracted frame references were found but the images are missing.")
-
-    if file_entry.get("analysis_tasks"):
-        with st.expander("Analysis Tasks"):
-            st.json(file_entry["analysis_tasks"])
-
-    if file_entry.get("potential_red_flags"):
-        with st.expander("Potential Red Flags"):
-            st.write(file_entry["potential_red_flags"])
+    return preview_rendered
 
 
 def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
@@ -591,7 +619,7 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
         file_path = item.get("file_path", "")
         file_name = item.get("file_name") or Path(file_path).name or "Unknown file"
         summary_text = (item.get("summary") or item.get("description") or "") or ""
-        summary_text = summary_text[:120]
+        summary_text = summary_text[:SUMMARY_TRUNCATE_LENGTH]
         file_size = item.get("file_size")
         details = format_bytes(file_size) if isinstance(file_size, int) else ""
 
@@ -699,7 +727,9 @@ def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
         {
             "File": item.get("file_name") or Path(item.get("file_path", "")).name,
             "Directory": str(Path(item.get("file_path", "")).parent),
-            "Summary": (item.get("summary") or item.get("description") or "")[:120],
+            "Summary": (item.get("summary") or item.get("description") or "")[
+                :SUMMARY_TRUNCATE_LENGTH
+            ],
         }
         for item in files
     ]
@@ -787,7 +817,9 @@ def render_people_browser(people_index: dict[str, dict[str, Any]]):
         {
             "File": item.get("file_name") or Path(item.get("file_path", "")).name,
             "Directory": str(Path(item.get("file_path", "")).parent),
-            "Summary": (item.get("summary") or item.get("description") or "")[:120],
+            "Summary": (item.get("summary") or item.get("description") or "")[
+                :SUMMARY_TRUNCATE_LENGTH
+            ],
         }
         for item in files
     ]
@@ -1002,14 +1034,11 @@ def get_database_stats(filters: dict = None) -> dict:
         total_count = len(results["metadatas"])
 
         # Load manifest to get proper summaries
-        import json
-
         try:
-            with open("data/manifest.json", "r") as f:
+            with open("data/manifest.json", "r", encoding="utf-8") as f:
                 manifest = json.load(f)
-            # Create a lookup dict by file path
             manifest_lookup = {item["file_path"]: item for item in manifest}
-        except Exception:
+        except (FileNotFoundError, json.JSONDecodeError):
             manifest_lookup = {}
 
         # Group by file type
@@ -1220,23 +1249,22 @@ with chat_tab:
                         display_source_with_thumbnail(source, i)
                         if i < len(message["sources"]) - 1:
                             st.write("---")
+    prompt = st.chat_input("Ask about your archive")
 
-    # Chat input handling
-    if prompt := st.chat_input("Ask me about your files..."):
-        prompt_preview = prompt[:120] + ("…" if len(prompt) > 120 else "")
+    if prompt:
+        prompt_preview = prompt[:SUMMARY_TRUNCATE_LENGTH] + (
+            "…" if len(prompt) > SUMMARY_TRUNCATE_LENGTH else ""
+        )
         logger.info("Received user prompt: %s", prompt_preview)
-        # Add user message to session state
+
         st.session_state.messages.append(
             {"role": "user", "content": prompt, "sources": []}
         )
 
-        # Display user message immediately
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate assistant response
         with st.chat_message("assistant"):
-            # Check if this is a database statistics query
             stats_keywords = [
                 "how many",
                 "total files",
@@ -1267,48 +1295,43 @@ with chat_tab:
                         chroma_filters if chroma_filters else None
                     )
 
-                    # Create a comprehensive response
-                    response_text = "**Database Statistics:**\n\n"
-                    response_text += f"📁 **Total files:** {stats['total_count']}\n\n"
+                response_text = "**Database Statistics:**\n\n"
+                response_text += f"📁 **Total files:** {stats['total_count']}\n\n"
 
-                    if stats["file_types"]:
-                        response_text += "**File types breakdown:**\n"
-                        for file_type, count in sorted(stats["file_types"].items()):
-                            plural = "s" if count != 1 else ""
-                            response_text += f"- {file_type}: {count} file{plural}\n"
-                        response_text += "\n"
+                if stats["file_types"]:
+                    response_text += "**File types breakdown:**\n"
+                    for file_type, count in sorted(stats["file_types"].items()):
+                        plural = "s" if count != 1 else ""
+                        response_text += f"- {file_type}: {count} file{plural}\n"
+                    response_text += "\n"
 
-                    if stats["file_list"]:
-                        response_text += "**Files in your archive:**\n\n"
-                        for i, file_info in enumerate(stats["file_list"], 1):
-                            name = file_info["name"]
-                            file_path = file_info["path"]
-                            file_type = file_info["type"]
-                            summary = file_info.get("summary", "No summary available")
-                            flags = []
-                            if file_info["is_nsfw"]:
-                                flags.append("NSFW")
-                            if file_info["has_red_flags"]:
-                                flags.append("🚩 Financial flags")
+                if stats["file_list"]:
+                    response_text += "**Files in your archive:**\n\n"
+                    for i, file_info in enumerate(stats["file_list"], 1):
+                        name = file_info["name"]
+                        file_path = file_info["path"]
+                        file_type = file_info["type"]
+                        summary = file_info.get("summary", "No summary available")
+                        flags = []
+                        if file_info["is_nsfw"]:
+                            flags.append("NSFW")
+                        if file_info["has_red_flags"]:
+                            flags.append("🚩 Financial flags")
 
-                            flag_text = f" ({', '.join(flags)})" if flags else ""
+                        flag_text = f" ({', '.join(flags)})" if flags else ""
 
-                            response_text += (
-                                f"{i}. **{name}** - {file_type}{flag_text}\n"
-                            )
-                            response_text += f"   📁 `{file_path}`\n"
-                            response_text += f"   *{summary}*\n\n"
+                        response_text += f"{i}. **{name}** - {file_type}{flag_text}\n"
+                        response_text += f"   📁 `{file_path}`\n"
+                        response_text += f"   *{summary}*\n\n"
 
-                    st.markdown(response_text)
+                st.markdown(response_text)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": response_text, "sources": []}
+                )
 
-                    # Add assistant message to session state
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": response_text, "sources": []}
-                    )
             else:
                 logger.info("Handling knowledge base query")
                 with st.spinner("Searching your archive..."):
-                    # Build filters and query knowledge base
                     chroma_filters = build_chroma_filter(st.session_state.filters)
                     context = query_knowledge_base(prompt, chroma_filters)
 
@@ -1317,7 +1340,6 @@ with chat_tab:
                     st.warning(
                         "No relevant information found in your archive for this query."
                     )
-                    # Add empty assistant message
                     st.session_state.messages.append(
                         {
                             "role": "assistant",
@@ -1326,11 +1348,9 @@ with chat_tab:
                         }
                     )
                 else:
-                    # Create placeholder for streaming response
                     response_placeholder = st.empty()
                     full_response = ""
 
-                    # Stream the response
                     response_stream = generate_response(
                         prompt, context, st.session_state.messages[:-1]
                     )
@@ -1339,13 +1359,11 @@ with chat_tab:
                             full_response += chunk["message"]["content"]
                             response_placeholder.markdown(full_response + "▌")
 
-                    # Final display without cursor
                     response_placeholder.markdown(full_response)
                     logger.info(
                         "Streaming response completed (length=%d)", len(full_response)
                     )
 
-                    # Add assistant message with sources to session state
                     st.session_state.messages.append(
                         {
                             "role": "assistant",
@@ -1354,7 +1372,6 @@ with chat_tab:
                         }
                     )
 
-        # Rerun to update the UI with the new message
         st.rerun()
 
 with browser_tab:
