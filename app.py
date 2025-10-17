@@ -265,6 +265,78 @@ def extract_selected_rows(table_state: Any) -> list[int]:
     return [int(rows)]
 
 
+def render_related_file_table(
+    table_rows: list[dict[str, str]],
+    files: list[dict[str, Any]],
+    *,
+    select_state_key: str,
+    table_state_key: str,
+    last_selection_state_key: str,
+    log_label: str,
+) -> None:
+    """Render shared selectbox + dataframe controls for related file tables."""
+    state_key = select_state_key
+    widget_key = f"{select_state_key}_widget"
+
+    if state_key not in st.session_state:
+        st.session_state[state_key] = -1
+
+    labels = [f"{row['File']} ({row['Directory']})" for row in table_rows]
+    selection_options = [-1] + list(range(len(files)))
+    try:
+        select_default = selection_options.index(st.session_state[state_key])
+    except ValueError:
+        select_default = 0
+
+    def format_option(idx: int) -> str:
+        if idx == -1:
+            return "-- Select a file --"
+        if 0 <= idx < len(labels):
+            return labels[idx]
+        return f"File {idx}"
+
+    selection = st.selectbox(
+        "Open file details",
+        options=selection_options,
+        format_func=format_option,
+        index=select_default,
+        key=widget_key,
+    )
+    if selection != -1 and 0 <= selection < len(files):
+        selected_path = files[selection].get("file_path")
+        st.session_state.file_browser_selected_file = selected_path
+        st.session_state[state_key] = selection
+    else:
+        st.session_state[state_key] = -1
+
+    table_df = pd.DataFrame(table_rows)
+    table_state = st.dataframe(
+        table_df,
+        hide_index=True,
+        width="stretch",
+        selection_mode="single-row",
+        on_select="rerun",
+        key=table_state_key,
+    )
+
+    selected_rows = extract_selected_rows(table_state)
+    previous_rows = st.session_state.get(last_selection_state_key, [])
+    if selected_rows != previous_rows:
+        st.session_state[last_selection_state_key] = selected_rows
+        if selected_rows:
+            selected_index = selected_rows[0]
+            if 0 <= selected_index < len(files):
+                selected_path = files[selected_index].get("file_path")
+                st.session_state.file_browser_selected_file = selected_path
+                st.session_state[state_key] = selected_index
+                if selected_path:
+                    logger.info("%s file selected: %s", log_label, selected_path)
+        else:
+            st.session_state[state_key] = -1
+            st.session_state.file_browser_selected_file = None
+            logger.info("%s selection cleared", log_label)
+
+
 def compute_directory_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Build an index of directories, their child folders, and contained files."""
     directory_files: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -737,53 +809,14 @@ def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
         for item in files
     ]
 
-    if "mime_file_select" not in st.session_state:
-        st.session_state.mime_file_select = -1
-
-    labels = [f"{row['File']} ({row['Directory']})" for row in table_rows]
-    selection_options = [-1] + list(range(len(files)))
-    try:
-        select_default = selection_options.index(st.session_state.mime_file_select)
-    except ValueError:
-        select_default = 0
-    selection = st.selectbox(
-        "Open file details",
-        options=selection_options,
-        format_func=lambda idx: "-- Select a file --" if idx == -1 else labels[idx],
-        index=select_default,
-        key="mime_file_select",
+    render_related_file_table(
+        table_rows,
+        files,
+        select_state_key="mime_file_select",
+        table_state_key="mime_file_table",
+        last_selection_state_key="mime_file_table_last_selection",
+        log_label="MIME view",
     )
-    if selection != -1:
-        selected_file = files[selection]
-        st.session_state.file_browser_selected_file = selected_file.get("file_path")
-
-    table_df = pd.DataFrame(table_rows)
-    table_state = st.dataframe(
-        table_df,
-        hide_index=True,
-        width="stretch",
-        selection_mode="single-row",
-        on_select="rerun",
-        key="mime_file_table",
-    )
-
-    selected_rows = extract_selected_rows(table_state)
-
-    previous_rows = st.session_state.get("mime_file_table_last_selection", [])
-    if selected_rows != previous_rows:
-        st.session_state.mime_file_table_last_selection = selected_rows
-        if selected_rows:
-            selected_index = selected_rows[0]
-            if 0 <= selected_index < len(files):
-                selected_path = files[selected_index].get("file_path")
-                st.session_state.file_browser_selected_file = selected_path
-                st.session_state.mime_file_select = selected_index
-                if selected_path:
-                    logger.info("MIME view file selected: %s", selected_path)
-        else:
-            st.session_state.mime_file_select = -1
-            st.session_state.file_browser_selected_file = None
-            logger.info("MIME view selection cleared")
 
 
 def render_people_browser(people_index: dict[str, dict[str, Any]]):
@@ -827,53 +860,14 @@ def render_people_browser(people_index: dict[str, dict[str, Any]]):
         for item in files
     ]
 
-    if "people_file_select" not in st.session_state:
-        st.session_state.people_file_select = -1
-
-    labels = [f"{row['File']} ({row['Directory']})" for row in table_rows]
-    selection_options = [-1] + list(range(len(files)))
-    try:
-        select_default = selection_options.index(st.session_state.people_file_select)
-    except ValueError:
-        select_default = 0
-    selection = st.selectbox(
-        "Open file details",
-        options=selection_options,
-        format_func=lambda idx: "-- Select a file --" if idx == -1 else labels[idx],
-        index=select_default,
-        key="people_file_select",
+    render_related_file_table(
+        table_rows,
+        files,
+        select_state_key="people_file_select",
+        table_state_key="people_file_table",
+        last_selection_state_key="people_file_table_last_selection",
+        log_label="People view",
     )
-    if selection != -1:
-        selected_file = files[selection]
-        st.session_state.file_browser_selected_file = selected_file.get("file_path")
-
-    table_df = pd.DataFrame(table_rows)
-    table_state = st.dataframe(
-        table_df,
-        hide_index=True,
-        width="stretch",
-        selection_mode="single-row",
-        on_select="rerun",
-        key="people_file_table",
-    )
-
-    selected_rows = extract_selected_rows(table_state)
-
-    previous_rows = st.session_state.get("people_file_table_last_selection", [])
-    if selected_rows != previous_rows:
-        st.session_state.people_file_table_last_selection = selected_rows
-        if selected_rows:
-            selected_index = selected_rows[0]
-            if 0 <= selected_index < len(files):
-                selected_path = files[selected_index].get("file_path")
-                st.session_state.file_browser_selected_file = selected_path
-                st.session_state.people_file_select = selected_index
-                if selected_path:
-                    logger.info("People view file selected: %s", selected_path)
-        else:
-            st.session_state.people_file_select = -1
-            st.session_state.file_browser_selected_file = None
-            logger.info("People view selection cleared")
 
 
 def render_file_browser(filter_state: dict[str, Any]):
