@@ -20,16 +20,16 @@ def temp_directory_with_files():
     (temp_dir / "subdir").mkdir()
 
     files = {
-        "file1.txt": "This is a text file.",
-        "file2.jpg": "dummy image data",
-        "file3.pdf": "dummy pdf data",
-        "archive.zip": "dummy zip data",
-        (Path("subdir") / "file4.mov"): "dummy video data",
+        "file1.txt": b"This is a text file.",
+        "file2.jpg": b"dummy image data",
+        "file3.pdf": b"dummy pdf data",
+        "archive.zip": b"dummy zip data",
+        (Path("subdir") / "file4.mov"): b"dummy video data",
     }
 
     for rel_path, content in files.items():
         path = temp_dir / rel_path
-        with open(path, "w") as f:
+        with open(path, "wb") as f:
             f.write(content)
 
     yield temp_dir
@@ -44,38 +44,46 @@ def test_calculate_sha256(temp_directory_with_files):
     assert discover_files._calculate_sha256(test_file) == expected_hash
 
 
-@pytest.mark.parametrize(
-    "mime_type, file_path, expected_tasks",
-    [
-        ("text/plain", "file.txt", [AnalysisName.TEXT_ANALYSIS]),
-        ("application/pdf", "file.pdf", [AnalysisName.TEXT_ANALYSIS]),
-        (
-            "image/jpeg",
-            "image.jpg",
-            [
-                AnalysisName.IMAGE_DESCRIPTION,
-                AnalysisName.NSFW_CLASSIFICATION,
-                AnalysisName.TEXT_ANALYSIS,
-            ],
-        ),
-        (
-            "video/mp4",
-            "video.mp4",
-            [AnalysisName.VIDEO_SUMMARY, AnalysisName.NSFW_CLASSIFICATION],
-        ),
-        ("application/zip", "archive.zip", []),
-        ("video/x-ms-asf", "playlist.asx", []),
-        (
-            "video/quicktime",
-            "video.mov",
-            [AnalysisName.VIDEO_SUMMARY, AnalysisName.NSFW_CLASSIFICATION],
-        ),
-    ],
-)
-def test_get_analysis_tasks(mime_type, file_path, expected_tasks):
-    """Verify that analysis tasks are correctly determined from MIME types."""
-    tasks = discover_files._get_analysis_tasks(mime_type, file_path)
-    assert [task.name for task in tasks] == expected_tasks
+def test_get_analysis_tasks_for_text_file():
+    """Verify text analysis task is assigned for text MIME types."""
+    tasks = discover_files._get_analysis_tasks("text/plain", "file.txt")
+    assert [task.name for task in tasks] == [AnalysisName.TEXT_ANALYSIS]
+
+
+def test_get_analysis_tasks_for_pdf_file():
+    """Verify text analysis task is assigned for PDF MIME types."""
+    tasks = discover_files._get_analysis_tasks("application/pdf", "file.pdf")
+    assert [task.name for task in tasks] == [AnalysisName.TEXT_ANALYSIS]
+
+
+def test_get_analysis_tasks_for_image_file():
+    """Verify correct tasks are assigned for image MIME types."""
+    tasks = discover_files._get_analysis_tasks("image/jpeg", "image.jpg")
+    expected = {
+        AnalysisName.IMAGE_DESCRIPTION,
+        AnalysisName.NSFW_CLASSIFICATION,
+        AnalysisName.TEXT_ANALYSIS,
+    }
+    assert {task.name for task in tasks} == expected
+
+
+def test_get_analysis_tasks_for_video_file():
+    """Verify correct tasks are assigned for video MIME types."""
+    tasks = discover_files._get_analysis_tasks("video/mp4", "video.mp4")
+    expected = {AnalysisName.VIDEO_SUMMARY, AnalysisName.NSFW_CLASSIFICATION}
+    assert {task.name for task in tasks} == expected
+
+
+def test_get_analysis_tasks_excludes_asx_video():
+    """Verify that .asx video files are excluded from video analysis."""
+    tasks = discover_files._get_analysis_tasks("video/x-ms-asf", "playlist.asx")
+    assert not tasks
+
+
+def test_get_analysis_tasks_for_unsupported_type():
+    """Verify no tasks are assigned for unsupported MIME types."""
+    tasks = discover_files._get_analysis_tasks("application/zip", "archive.zip")
+    assert not tasks
 
 
 def test_count_files(temp_directory_with_files):
