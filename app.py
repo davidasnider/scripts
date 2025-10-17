@@ -224,12 +224,6 @@ def format_bytes(size: int | float | None) -> str:
             return f"{value:.1f} {unit}"
         value /= step
     return f"{value:.1f} EB"
-    value = float(size)
-    for unit in units:
-        if value < step:
-            return f"{value:.1f} {unit}"
-        value /= step
-    return f"{value:.1f} EB"
 
 
 def extract_selected_rows(table_state: Any) -> list[int]:
