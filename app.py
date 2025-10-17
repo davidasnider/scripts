@@ -340,6 +340,11 @@ def render_related_file_table(
             logger.info("%s selection cleared", log_label)
 
 
+def get_entry_display_name(item: dict[str, Any]) -> str:
+    """Get the display name for a file entry, used for sorting."""
+    return (item.get("file_name") or Path(item.get("file_path", "")).name or "").lower()
+
+
 def compute_directory_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Build an index of directories, their child folders, and contained files."""
     directory_files: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -370,9 +375,7 @@ def compute_directory_index(entries: list[dict[str, Any]]) -> dict[str, dict[str
 
         files = sorted(
             directory_files.get(dir_path, []),
-            key=lambda item: (
-                item.get("file_name") or Path(item.get("file_path", "")).name or ""
-            ).lower(),
+            key=get_entry_display_name,
         )
         subdirs = sorted(
             subdir_map.get(dir_path, set()),
@@ -405,9 +408,7 @@ def compute_mime_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any
             "count": len(files),
             "files": sorted(
                 files,
-                key=lambda item: (
-                    item.get("file_name") or Path(item.get("file_path", "")).name or ""
-                ).lower(),
+                key=get_entry_display_name,
             ),
         }
 
@@ -436,9 +437,7 @@ def compute_people_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, A
             "count": len(files),
             "files": sorted(
                 files,
-                key=lambda item: (
-                    item.get("file_name") or Path(item.get("file_path", "")).name or ""
-                ).lower(),
+                key=get_entry_display_name,
             ),
         }
 
@@ -457,9 +456,7 @@ def compute_nsfw_index(entries: list[dict[str, Any]]) -> dict[str, Any]:
         "count": len(nsfw_files),
         "files": sorted(
             nsfw_files,
-            key=lambda item: (
-                item.get("file_name") or Path(item.get("file_path", "")).name or ""
-            ).lower(),
+            key=get_entry_display_name,
         ),
     }
 
