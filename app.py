@@ -340,6 +340,20 @@ def render_related_file_table(
             logger.info("%s selection cleared", log_label)
 
 
+def make_table_rows(files: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Create a list of table rows from a list of file entries."""
+    return [
+        {
+            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
+            "Directory": str(Path(item.get("file_path", "")).parent),
+            "Summary": (item.get("summary") or item.get("description") or "")[
+                :SUMMARY_TRUNCATE_LENGTH
+            ],
+        }
+        for item in files
+    ]
+
+
 def get_entry_display_name(item: dict[str, Any]) -> str:
     """Get the display name for a file entry, used for sorting."""
     return (item.get("file_name") or Path(item.get("file_path", "")).name or "").lower()
@@ -826,16 +840,7 @@ def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
 
     st.caption(f"{len(files)} file(s) with MIME type `{selected_mime}`.")
 
-    table_rows = [
-        {
-            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
-            "Directory": str(Path(item.get("file_path", "")).parent),
-            "Summary": (item.get("summary") or item.get("description") or "")[
-                :SUMMARY_TRUNCATE_LENGTH
-            ],
-        }
-        for item in files
-    ]
+    table_rows = make_table_rows(files)
 
     render_related_file_table(
         table_rows,
@@ -877,16 +882,7 @@ def render_people_browser(people_index: dict[str, dict[str, Any]]):
 
     st.caption(f"{len(files)} file(s) mention **{selected_person}**.")
 
-    table_rows = [
-        {
-            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
-            "Directory": str(Path(item.get("file_path", "")).parent),
-            "Summary": (item.get("summary") or item.get("description") or "")[
-                :SUMMARY_TRUNCATE_LENGTH
-            ],
-        }
-        for item in files
-    ]
+    table_rows = make_table_rows(files)
 
     render_related_file_table(
         table_rows,
@@ -907,16 +903,7 @@ def render_nsfw_browser(nsfw_index: dict[str, Any]):
     files = nsfw_index.get("files", [])
     st.caption(f"{len(files)} NSFW file(s) found.")
 
-    table_rows = [
-        {
-            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
-            "Directory": str(Path(item.get("file_path", "")).parent),
-            "Summary": (item.get("summary") or item.get("description") or "")[
-                :SUMMARY_TRUNCATE_LENGTH
-            ],
-        }
-        for item in files
-    ]
+    table_rows = make_table_rows(files)
 
     render_related_file_table(
         table_rows,
