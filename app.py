@@ -603,7 +603,7 @@ def _render_file_previews(
     preview_rendered = False
 
     if mime_type.startswith("image/") and file_path.exists():
-        st.image(str(file_path), caption=file_name, width="stretch")
+        st.image(str(file_path), caption=file_name)
         preview_rendered = True
 
     frames = file_entry.get("extracted_frames") or []
@@ -615,7 +615,7 @@ def _render_file_previews(
         columns = st.columns(min(3, len(existing_frames)))
         for idx, frame_path in enumerate(existing_frames[:9]):
             with columns[idx % len(columns)]:
-                st.image(str(frame_path), caption=frame_path.name, width="stretch")
+                st.image(str(frame_path), caption=frame_path.name)
         preview_rendered = True
 
     return preview_rendered
