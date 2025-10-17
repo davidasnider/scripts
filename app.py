@@ -577,7 +577,9 @@ def _render_file_metadata(
 
     file_size = file_entry.get("file_size")
     last_modified = file_entry.get("last_modified")
-    size_text = format_bytes(file_size) if isinstance(file_size, int) else "Unknown"
+    size_text = (
+        format_bytes(file_size) if isinstance(file_size, (int, float)) else "Unknown"
+    )
     meta_line = f"**Type:** {mime_type} · **Size:** {size_text}"
     if isinstance(last_modified, (int, float)):
         timestamp = datetime.fromtimestamp(last_modified)
@@ -696,7 +698,7 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
         summary_text = (item.get("summary") or item.get("description") or "") or ""
         summary_text = summary_text[:SUMMARY_TRUNCATE_LENGTH]
         file_size = item.get("file_size")
-        details = format_bytes(file_size) if isinstance(file_size, int) else ""
+        details = format_bytes(file_size) if isinstance(file_size, (int, float)) else ""
 
         combined_entries.append({"path": file_path, "is_dir": False})
         display_label = f"📄 {file_name}"
