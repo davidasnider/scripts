@@ -245,10 +245,19 @@ def extract_selected_rows(table_state: Any) -> list[int]:
         return []
 
     if isinstance(rows, dict):
-        rows = rows.values()
+        rows = list(rows.values())
 
     if isinstance(rows, (list, tuple, set)):
         return [int(idx) for idx in rows]
+
+    # Handle other iterable views (e.g., dict_values) that are not list/tuple/set
+    try:
+        if rows is not None and not isinstance(rows, (str, bytes)):
+            rows_iter = list(rows)  # type: ignore[arg-type]
+            if rows_iter:
+                return [int(idx) for idx in rows_iter]
+    except TypeError:
+        pass
 
     if rows is None:
         return []
