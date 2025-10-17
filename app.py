@@ -340,6 +340,25 @@ def render_related_file_table(
             logger.info("%s selection cleared", log_label)
 
 
+def make_table_rows(files: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Create a list of table rows from a list of file entries."""
+    return [
+        {
+            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
+            "Directory": str(Path(item.get("file_path", "")).parent),
+            "Summary": (item.get("summary") or item.get("description") or "")[
+                :SUMMARY_TRUNCATE_LENGTH
+            ],
+        }
+        for item in files
+    ]
+
+
+def get_entry_display_name(item: dict[str, Any]) -> str:
+    """Get the display name for a file entry, used for sorting."""
+    return (item.get("file_name") or Path(item.get("file_path", "")).name or "").lower()
+
+
 def compute_directory_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Build an index of directories, their child folders, and contained files."""
     directory_files: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -370,9 +389,7 @@ def compute_directory_index(entries: list[dict[str, Any]]) -> dict[str, dict[str
 
         files = sorted(
             directory_files.get(dir_path, []),
-            key=lambda item: (
-                item.get("file_name") or Path(item.get("file_path", "")).name or ""
-            ).lower(),
+            key=get_entry_display_name,
         )
         subdirs = sorted(
             subdir_map.get(dir_path, set()),
@@ -405,9 +422,7 @@ def compute_mime_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any
             "count": len(files),
             "files": sorted(
                 files,
-                key=lambda item: (
-                    item.get("file_name") or Path(item.get("file_path", "")).name or ""
-                ).lower(),
+                key=get_entry_display_name,
             ),
         }
 
@@ -436,9 +451,7 @@ def compute_people_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, A
             "count": len(files),
             "files": sorted(
                 files,
-                key=lambda item: (
-                    item.get("file_name") or Path(item.get("file_path", "")).name or ""
-                ).lower(),
+                key=get_entry_display_name,
             ),
         }
 
@@ -448,6 +461,18 @@ def compute_people_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, A
             key=lambda item: (-item[1]["count"], item[0].lower()),
         )
     )
+
+
+def compute_nsfw_index(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create an index of NSFW files."""
+    nsfw_files = [entry for entry in entries if entry.get("is_nsfw")]
+    return {
+        "count": len(nsfw_files),
+        "files": sorted(
+            nsfw_files,
+            key=get_entry_display_name,
+        ),
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -815,16 +840,7 @@ def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
 
     st.caption(f"{len(files)} file(s) with MIME type `{selected_mime}`.")
 
-    table_rows = [
-        {
-            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
-            "Directory": str(Path(item.get("file_path", "")).parent),
-            "Summary": (item.get("summary") or item.get("description") or "")[
-                :SUMMARY_TRUNCATE_LENGTH
-            ],
-        }
-        for item in files
-    ]
+    table_rows = make_table_rows(files)
 
     render_related_file_table(
         table_rows,
@@ -866,16 +882,7 @@ def render_people_browser(people_index: dict[str, dict[str, Any]]):
 
     st.caption(f"{len(files)} file(s) mention **{selected_person}**.")
 
-    table_rows = [
-        {
-            "File": item.get("file_name") or Path(item.get("file_path", "")).name,
-            "Directory": str(Path(item.get("file_path", "")).parent),
-            "Summary": (item.get("summary") or item.get("description") or "")[
-                :SUMMARY_TRUNCATE_LENGTH
-            ],
-        }
-        for item in files
-    ]
+    table_rows = make_table_rows(files)
 
     render_related_file_table(
         table_rows,
@@ -884,6 +891,27 @@ def render_people_browser(people_index: dict[str, dict[str, Any]]):
         table_state_key="people_file_table",
         last_selection_state_key="people_file_table_last_selection",
         log_label="People view",
+    )
+
+
+def render_nsfw_browser(nsfw_index: dict[str, Any]):
+    """Render controls for browsing NSFW files."""
+    if not nsfw_index or not nsfw_index.get("files"):
+        st.info("No NSFW files found for the current filters.")
+        return
+
+    files = nsfw_index.get("files", [])
+    st.caption(f"{len(files)} NSFW file(s) found.")
+
+    table_rows = make_table_rows(files)
+
+    render_related_file_table(
+        table_rows,
+        files,
+        select_state_key="nsfw_file_select",
+        table_state_key="nsfw_file_table",
+        last_selection_state_key="nsfw_file_table_last_selection",
+        log_label="NSFW view",
     )
 
 
@@ -908,6 +936,7 @@ def render_file_browser(filter_state: dict[str, Any]):
     directory_index = compute_directory_index(filtered_entries)
     mime_index = compute_mime_index(filtered_entries)
     people_index = compute_people_index(filtered_entries)
+    nsfw_index = compute_nsfw_index(filtered_entries)
     filtered_lookup = {
         entry["file_path"]: entry
         for entry in filtered_entries
@@ -919,12 +948,14 @@ def render_file_browser(filter_state: dict[str, Any]):
     total_directories = len(directory_index)
     total_mime_types = len(mime_index)
     total_people = len(people_index)
+    total_nsfw = nsfw_index.get("count", 0)
 
-    met_col1, met_col2, met_col3, met_col4 = st.columns(4)
+    met_col1, met_col2, met_col3, met_col4, met_col5 = st.columns(5)
     met_col1.metric("Files", f"{total_files:,}")
     met_col2.metric("Directories", f"{total_directories:,}")
     met_col3.metric("MIME types", f"{total_mime_types:,}")
     met_col4.metric("People", f"{total_people:,}")
+    met_col5.metric("NSFW", f"{total_nsfw:,}")
 
     if "file_browser_view_mode" not in st.session_state:
         st.session_state.file_browser_view_mode = "Directory"
@@ -932,12 +963,13 @@ def render_file_browser(filter_state: dict[str, Any]):
         "Directory",
         "MIME type",
         "People",
+        "NSFW",
     }:
         st.session_state.file_browser_view_mode = "Directory"
 
     view_mode = st.radio(
         "Browse files by",
-        ["Directory", "MIME type", "People"],
+        ["Directory", "MIME type", "People", "NSFW"],
         horizontal=True,
         key="file_browser_view_mode",
     )
@@ -948,8 +980,10 @@ def render_file_browser(filter_state: dict[str, Any]):
             render_directory_browser(directory_index)
         elif view_mode == "MIME type":
             render_mime_browser(mime_index)
-        else:
+        elif view_mode == "People":
             render_people_browser(people_index)
+        elif view_mode == "NSFW":
+            render_nsfw_browser(nsfw_index)
 
     selected_path = st.session_state.get("file_browser_selected_file")
     selected_entry = filtered_lookup.get(selected_path)
