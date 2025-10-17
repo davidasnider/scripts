@@ -3,7 +3,6 @@ import logging
 import os
 import subprocess
 import sys
-import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -221,6 +220,36 @@ def format_bytes(size: int | None) -> str:
             return f"{value:.1f} {unit}"
         value /= step
     return f"{value:.1f} EB"
+
+
+def extract_selected_rows(table_state: Any) -> list[int]:
+    """Normalize Streamlit table selection data into a list of row indices."""
+    if table_state is None:
+        return []
+
+    if hasattr(table_state, "selection"):
+        rows = table_state.selection.get("rows", [])
+    elif isinstance(table_state, str):
+        try:
+            parsed_state = json.loads(table_state)
+        except json.JSONDecodeError:
+            return []
+        rows = parsed_state.get("selection", {}).get("rows", [])
+    elif isinstance(table_state, dict):
+        rows = table_state.get("selection", {}).get("rows", [])
+    else:
+        return []
+
+    if isinstance(rows, dict):
+        rows = rows.values()
+
+    if isinstance(rows, (list, tuple, set)):
+        return [int(idx) for idx in rows]
+
+    if rows is None:
+        return []
+
+    return [int(rows)]
 
 
 def compute_directory_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -530,6 +559,8 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
     combined_entries: list[dict[str, Any]] = []
     table_rows: list[dict[str, str]] = []
 
+    selected_file_path = st.session_state.get("file_browser_selected_file")
+
     if parent_path and parent_path in directory_index:
         parent_name = Path(parent_path).name or parent_path
         combined_entries.append(
@@ -538,7 +569,6 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
         table_rows.append(
             {
                 "Name": "↩︎ Parent Directory",
-                "Kind": "Folder",
                 "Details": parent_name,
                 "Summary": "",
             }
@@ -552,7 +582,6 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
         table_rows.append(
             {
                 "Name": f"📁 {display_name}",
-                "Kind": "Folder",
                 "Details": f"{item_count} item{'s' if item_count != 1 else ''}",
                 "Summary": "",
             }
@@ -565,83 +594,77 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
         summary_text = summary_text[:120]
         file_size = item.get("file_size")
         details = format_bytes(file_size) if isinstance(file_size, int) else ""
-        mime_type = item.get("mime_type", "unknown/unknown")
 
         combined_entries.append({"path": file_path, "is_dir": False})
+        display_label = f"📄 {file_name}"
+        if file_path == selected_file_path:
+            display_label = f"✅ {display_label}"
+
         table_rows.append(
             {
-                "Name": f"📄 {file_name}",
-                "Kind": mime_type,
+                "Name": display_label,
                 "Details": details,
                 "Summary": summary_text,
             }
         )
 
     display_df = pd.DataFrame(table_rows)
-    st.data_editor(
+
+    action_state = st.session_state.get("directory_action_flags")
+    if not isinstance(action_state, list) or len(action_state) != len(combined_entries):
+        action_state = [False] * len(combined_entries)
+    action_state = [bool(flag) for flag in action_state]
+    display_df.insert(0, "Action", action_state)
+
+    editor_state = st.data_editor(
         display_df,
         hide_index=True,
         num_rows="fixed",
-        column_order=["Name", "Kind", "Details", "Summary"],
+        column_order=["Action", "Name", "Details", "Summary"],
         column_config={
+            "Action": st.column_config.CheckboxColumn(
+                label="", default=False, width="small"
+            ),
             "Name": st.column_config.Column(disabled=True),
-            "Kind": st.column_config.Column(disabled=True),
             "Details": st.column_config.Column(disabled=True),
             "Summary": st.column_config.Column(disabled=True),
         },
-        use_container_width=True,
+        width="stretch",
         key="directory_browser_table",
     )
 
-    selection_state = st.session_state.get("directory_browser_table") or {}
-    selected_rows = selection_state.get("selection", {}).get("rows", [])
-    st.session_state.directory_browser_table_last_selection = selected_rows
+    if editor_state is not None and "Action" in editor_state:
+        current_flags = editor_state["Action"].astype(bool).tolist()
+    else:
+        current_flags = [False] * len(combined_entries)
 
-    last_click = st.session_state.setdefault(
-        "directory_last_click", {"path": None, "ts": 0.0}
-    )
+    previous_flags = action_state
+    trigger_index = None
+    for idx, (current, previous) in enumerate(zip(current_flags, previous_flags)):
+        if current and not previous:
+            trigger_index = idx
+            break
 
-    if selected_rows:
-        selected_index = selected_rows[0]
-        if 0 <= selected_index < len(combined_entries):
-            entry_meta = combined_entries[selected_index]
-            entry_path = entry_meta["path"]
-            now = time.monotonic()
-            double_click = (
-                last_click["path"] == entry_path and (now - last_click["ts"]) < 0.8
-            )
+    if trigger_index is not None and 0 <= trigger_index < len(combined_entries):
+        entry_meta = combined_entries[trigger_index]
+        entry_path = entry_meta["path"]
 
-            if entry_meta.get("is_parent"):
-                st.session_state.file_browser_selected_dir = entry_path
-                st.session_state.file_browser_selected_file = None
-                last_click["path"] = None
-                last_click["ts"] = 0.0
-                st.session_state.pop("directory_browser_table", None)
-                st.session_state.pop("directory_browser_table_last_selection", None)
-                st.rerun()
-            elif entry_meta["is_dir"]:
-                if double_click:
-                    st.session_state.file_browser_selected_dir = entry_path
-                    st.session_state.file_browser_selected_file = None
-                    last_click["path"] = None
-                    last_click["ts"] = 0.0
-                    st.session_state.pop("directory_browser_table", None)
-                    st.session_state.pop("directory_browser_table_last_selection", None)
-                    st.rerun()
-                else:
-                    last_click["path"] = entry_path
-                    last_click["ts"] = now
-                    st.session_state.file_browser_selected_file = None
-                    st.session_state.pop("directory_browser_table", None)
-                    st.session_state.pop("directory_browser_table_last_selection", None)
-                    st.rerun()
+        if entry_meta.get("is_parent"):
+            st.session_state.file_browser_selected_dir = entry_path
+            st.session_state.file_browser_selected_file = None
+            logger.info("Directory view parent opened via action: %s", entry_path)
+        elif entry_meta["is_dir"]:
+            st.session_state.file_browser_selected_dir = entry_path
+            st.session_state.file_browser_selected_file = None
+            logger.info("Directory view folder opened via action: %s", entry_path)
         else:
             st.session_state.file_browser_selected_file = entry_path
-            last_click["path"] = entry_path
-            last_click["ts"] = now
-            st.session_state.pop("directory_browser_table", None)
-            st.session_state.pop("directory_browser_table_last_selection", None)
-            logger.info("Directory view file selected: %s", entry_path)
+            logger.info("Directory view file selected via action: %s", entry_path)
+
+        st.session_state.directory_action_flags = [False] * len(combined_entries)
+        st.rerun()
+    else:
+        st.session_state.directory_action_flags = current_flags
 
 
 def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
@@ -702,16 +725,16 @@ def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
         st.session_state.file_browser_selected_file = selected_file.get("file_path")
 
     table_df = pd.DataFrame(table_rows)
-    st.data_editor(
+    table_state = st.dataframe(
         table_df,
         hide_index=True,
-        disabled=True,
-        num_rows="fixed",
+        width="stretch",
+        selection_mode="single-row",
+        on_select="rerun",
         key="mime_file_table",
     )
 
-    selection_state = st.session_state.get("mime_file_table") or {}
-    selected_rows = selection_state.get("selection", {}).get("rows", [])
+    selected_rows = extract_selected_rows(table_state)
 
     previous_rows = st.session_state.get("mime_file_table_last_selection", [])
     if selected_rows != previous_rows:
@@ -719,14 +742,15 @@ def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
         if selected_rows:
             selected_index = selected_rows[0]
             if 0 <= selected_index < len(files):
-                st.session_state.file_browser_selected_file = files[selected_index].get(
-                    "file_path"
-                )
+                selected_path = files[selected_index].get("file_path")
+                st.session_state.file_browser_selected_file = selected_path
                 st.session_state.mime_file_select = selected_index
+                if selected_path:
+                    logger.info("MIME view file selected: %s", selected_path)
         else:
             st.session_state.mime_file_select = -1
             st.session_state.file_browser_selected_file = None
-        st.rerun()
+            logger.info("MIME view selection cleared")
 
 
 def render_people_browser(people_index: dict[str, dict[str, Any]]):
@@ -789,16 +813,16 @@ def render_people_browser(people_index: dict[str, dict[str, Any]]):
         st.session_state.file_browser_selected_file = selected_file.get("file_path")
 
     table_df = pd.DataFrame(table_rows)
-    st.data_editor(
+    table_state = st.dataframe(
         table_df,
         hide_index=True,
-        disabled=True,
-        num_rows="fixed",
+        width="stretch",
+        selection_mode="single-row",
+        on_select="rerun",
         key="people_file_table",
     )
 
-    selection_state = st.session_state.get("people_file_table") or {}
-    selected_rows = selection_state.get("selection", {}).get("rows", [])
+    selected_rows = extract_selected_rows(table_state)
 
     previous_rows = st.session_state.get("people_file_table_last_selection", [])
     if selected_rows != previous_rows:
@@ -806,14 +830,15 @@ def render_people_browser(people_index: dict[str, dict[str, Any]]):
         if selected_rows:
             selected_index = selected_rows[0]
             if 0 <= selected_index < len(files):
-                st.session_state.file_browser_selected_file = files[selected_index].get(
-                    "file_path"
-                )
+                selected_path = files[selected_index].get("file_path")
+                st.session_state.file_browser_selected_file = selected_path
                 st.session_state.people_file_select = selected_index
+                if selected_path:
+                    logger.info("People view file selected: %s", selected_path)
         else:
             st.session_state.people_file_select = -1
             st.session_state.file_browser_selected_file = None
-        st.rerun()
+            logger.info("People view selection cleared")
 
 
 def render_file_browser(filter_state: dict[str, Any]):
