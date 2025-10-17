@@ -998,7 +998,7 @@ def render_file_browser(filter_state: dict[str, Any]):
             render_mime_browser(mime_index)
         elif view_mode == "People":
             render_people_browser(people_index)
-        else:
+        elif view_mode == "NSFW":
             render_nsfw_browser(nsfw_index)
 
     selected_path = st.session_state.get("file_browser_selected_file")
