@@ -713,13 +713,18 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
             }
         )
 
+    entry_lookup = {entry["path"]: entry for entry in combined_entries}
+    paths = [entry["path"] for entry in combined_entries]
+
     display_df = pd.DataFrame(table_rows)
 
-    action_state = st.session_state.get("directory_action_flags")
-    if not isinstance(action_state, list) or len(action_state) != len(combined_entries):
-        action_state = [False] * len(combined_entries)
-    action_state = [bool(flag) for flag in action_state]
-    display_df.insert(0, "Action", action_state)
+    action_state_map = st.session_state.get("directory_action_flags")
+    if not isinstance(action_state_map, dict):
+        action_state_map = {}
+
+    action_values = [bool(action_state_map.get(path, False)) for path in paths]
+    display_df.insert(0, "Action", action_values)
+    display_df["Path"] = paths
 
     editor_state = st.data_editor(
         display_df,
@@ -738,35 +743,41 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
         key="directory_browser_table",
     )
 
-    if editor_state is not None and "Action" in editor_state:
-        current_flags = editor_state["Action"].astype(bool).tolist()
+    if editor_state is not None and "Action" in editor_state and "Path" in editor_state:
+        current_flags = dict(
+            zip(
+                editor_state["Path"],
+                editor_state["Action"].astype(bool),
+            )
+        )
     else:
-        current_flags = [False] * len(combined_entries)
+        current_flags = {path: False for path in paths}
 
-    previous_flags = action_state
-    trigger_index = None
-    for idx, (current, previous) in enumerate(zip(current_flags, previous_flags)):
-        if current and not previous:
-            trigger_index = idx
+    previous_flags = action_state_map if isinstance(action_state_map, dict) else {}
+
+    trigger_path = None
+    for path, is_checked in current_flags.items():
+        if is_checked and not previous_flags.get(path, False):
+            trigger_path = path
             break
 
-    if trigger_index is not None and 0 <= trigger_index < len(combined_entries):
-        entry_meta = combined_entries[trigger_index]
-        entry_path = entry_meta["path"]
+    if trigger_path:
+        entry_meta = entry_lookup.get(trigger_path)
+        if entry_meta:
+            entry_path = entry_meta["path"]
+            if entry_meta.get("is_parent"):
+                st.session_state.file_browser_selected_dir = entry_path
+                st.session_state.file_browser_selected_file = None
+                logger.info("Directory view parent opened via action: %s", entry_path)
+            elif entry_meta["is_dir"]:
+                st.session_state.file_browser_selected_dir = entry_path
+                st.session_state.file_browser_selected_file = None
+                logger.info("Directory view folder opened via action: %s", entry_path)
+            else:
+                st.session_state.file_browser_selected_file = entry_path
+                logger.info("Directory view file selected via action: %s", entry_path)
 
-        if entry_meta.get("is_parent"):
-            st.session_state.file_browser_selected_dir = entry_path
-            st.session_state.file_browser_selected_file = None
-            logger.info("Directory view parent opened via action: %s", entry_path)
-        elif entry_meta["is_dir"]:
-            st.session_state.file_browser_selected_dir = entry_path
-            st.session_state.file_browser_selected_file = None
-            logger.info("Directory view folder opened via action: %s", entry_path)
-        else:
-            st.session_state.file_browser_selected_file = entry_path
-            logger.info("Directory view file selected via action: %s", entry_path)
-
-        st.session_state.directory_action_flags = [False] * len(combined_entries)
+        st.session_state.directory_action_flags = {path: False for path in paths}
         st.rerun()
     else:
         st.session_state.directory_action_flags = current_flags
