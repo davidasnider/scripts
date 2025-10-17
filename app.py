@@ -319,7 +319,10 @@ def render_related_file_table(
         key=table_state_key,
     )
 
-    selected_rows = extract_selected_rows(table_state)
+    widget_state = st.session_state.get(table_state_key)
+    state_payload = widget_state if widget_state is not None else table_state
+
+    selected_rows = extract_selected_rows(state_payload)
     previous_rows = st.session_state.get(last_selection_state_key, [])
     if selected_rows != previous_rows:
         st.session_state[last_selection_state_key] = selected_rows
