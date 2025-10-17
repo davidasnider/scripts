@@ -463,17 +463,15 @@ def compute_people_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, A
     )
 
 
-def compute_nsfw_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Create an index of NSFW files, keyed by 'nsfw'."""
+def compute_nsfw_index(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create an index of NSFW files."""
     nsfw_files = [entry for entry in entries if entry.get("is_nsfw")]
     return {
-        "nsfw": {
-            "count": len(nsfw_files),
-            "files": sorted(
-                nsfw_files,
-                key=get_entry_display_name,
-            ),
-        }
+        "count": len(nsfw_files),
+        "files": sorted(
+            nsfw_files,
+            key=get_entry_display_name,
+        ),
     }
 
 
@@ -950,7 +948,7 @@ def render_file_browser(filter_state: dict[str, Any]):
     total_directories = len(directory_index)
     total_mime_types = len(mime_index)
     total_people = len(people_index)
-    total_nsfw = nsfw_index["count"]
+    total_nsfw = nsfw_index.get("count", 0)
 
     met_col1, met_col2, met_col3, met_col4, met_col5 = st.columns(5)
     met_col1.metric("Files", f"{total_files:,}")
