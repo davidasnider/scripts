@@ -246,9 +246,8 @@ def test_main_failure(
 ):
     """Verify that the main function handles exceptions and returns a non-zero exit code."""
     argv = [str(temp_directory_with_files)]
-    # We are mocking configure_logging, so we need to add a handler to capture logs
+    # We are mocking configure_logging, so caplog will capture logs at the desired level
     logger = logging.getLogger("src.discover_files")
-    logger.addHandler(caplog.handler)
 
     with caplog.at_level(logging.ERROR):
         return_code = discover_files.main(argv)
