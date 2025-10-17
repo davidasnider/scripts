@@ -463,15 +463,17 @@ def compute_people_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, A
     )
 
 
-def compute_nsfw_index(entries: list[dict[str, Any]]) -> dict[str, Any]:
-    """Create an index of NSFW files."""
+def compute_nsfw_index(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Create an index of NSFW files, keyed by 'nsfw'."""
     nsfw_files = [entry for entry in entries if entry.get("is_nsfw")]
     return {
-        "count": len(nsfw_files),
-        "files": sorted(
-            nsfw_files,
-            key=get_entry_display_name,
-        ),
+        "nsfw": {
+            "count": len(nsfw_files),
+            "files": sorted(
+                nsfw_files,
+                key=get_entry_display_name,
+            ),
+        }
     }
 
 
