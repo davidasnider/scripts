@@ -24,3 +24,4 @@ dist/
 .DS_Store
 file_catalog.log
 processed.csv
+.coverage

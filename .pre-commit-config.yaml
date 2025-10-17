@@ -26,3 +26,11 @@ repos:
     rev: v0.45.0
     hooks:
       - id: markdownlint
+  - repo: local
+    hooks:
+      - id: pytest-cov
+        name: pytest-cov
+        entry: uv run pytest
+        language: python
+        types: [python]
+        pass_filenames: false
