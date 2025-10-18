@@ -998,32 +998,31 @@ def render_file_browser(filter_state: dict[str, Any]):
 
 # Inline filters panel at the top of the page
 with st.container():
-    st.subheader("Search Filters")
-    st.caption("Refine the catalog using the controls below.")
-
-    st.session_state.filters["file_type"] = st.multiselect(
-        "Filter by file type:",
-        options=[
-            "application/pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "image/jpeg",
-            "image/png",
-            "video/mp4",
-            "video/quicktime",
-        ],
-        default=st.session_state.filters["file_type"],
-    )
-
-    checkbox_col1, checkbox_col2 = st.columns(2)
-    with checkbox_col1:
+    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 3, 1, 1])
+    with filter_col1:
+        st.write("Filter by file type:")
+    with filter_col2:
+        st.session_state.filters["file_type"] = st.multiselect(
+            "Filter by file type:",
+            options=[
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "image/jpeg",
+                "image/png",
+                "video/mp4",
+                "video/quicktime",
+            ],
+            default=st.session_state.filters["file_type"],
+            label_visibility="collapsed",
+        )
+    with filter_col3:
         st.session_state.filters["hide_nsfw"] = st.checkbox(
             "Hide NSFW content", value=st.session_state.filters["hide_nsfw"]
         )
-
-    with checkbox_col2:
+    with filter_col4:
         st.session_state.filters["red_flags"] = st.checkbox(
-            "Show only files with financial red flags",
+            "Financial Red flags only",
             value=st.session_state.filters["red_flags"],
         )
 
