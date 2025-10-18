@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import logging
 
-from src.schema import ANALYSIS_TASK_VERSIONS, AnalysisName, AnalysisTask
+from src.schema import (
+    ANALYSIS_TASK_VERSIONS,
+    AnalysisName,
+    AnalysisStatus,
+    AnalysisTask,
+    FileRecord,
+)
 
 logger = logging.getLogger("file_catalog.task_selection")
 
@@ -66,3 +72,16 @@ def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[Analys
         )
 
     return tasks
+
+
+def ensure_required_tasks(file_record: FileRecord) -> None:
+    """Add any missing analysis tasks to the record based on its MIME type."""
+
+    existing = {task.name for task in file_record.analysis_tasks}
+    required = determine_analysis_tasks(file_record.mime_type, file_record.file_path)
+
+    for task in required:
+        if task.name not in existing:
+            task.status = AnalysisStatus.PENDING
+            task.error_message = None
+            file_record.analysis_tasks.append(task)

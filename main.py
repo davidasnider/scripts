@@ -56,7 +56,7 @@ from src.schema import (
     AnalysisStatus,
     FileRecord,
 )
-from src.task_utils import determine_analysis_tasks
+from src.task_utils import ensure_required_tasks
 
 
 class AnalysisModel(str, Enum):
@@ -291,16 +291,7 @@ def extraction_worker(worker_id: int) -> None:
                     file_record.extracted_frames = extracted_frames
 
                 elif file_record.mime_type == "application/x-msaccess":
-                    existing_task_names = {
-                        task.name for task in file_record.analysis_tasks
-                    }
-                    required_tasks = determine_analysis_tasks(
-                        file_record.mime_type, file_record.file_path
-                    )
-                    for task in required_tasks:
-                        if task.name not in existing_task_names:
-                            task.status = AnalysisStatus.PENDING
-                            file_record.analysis_tasks.append(task)
+                    ensure_required_tasks(file_record)
 
                 extraction_duration = time.time() - stage_start
                 extracted_text_len = len(file_record.extracted_text or "")
