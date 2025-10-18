@@ -60,6 +60,9 @@ NEGATIVE_WORDS = {
     "problem",
     "decrease",
 }
+SENTIMENT_SCORES = {word: 1 for word in POSITIVE_WORDS} | {
+    word: -1 for word in NEGATIVE_WORDS
+}
 STOP_WORDS = {
     "the",
     "and",
@@ -394,12 +397,7 @@ def _analyze_sentiment(text: str) -> SentimentResult:
         re.sub(r"[^a-zA-Z]", "", token.lower()) for token in text.split() if token
     ]
     total = len(tokens) or 1
-    score = 0
-    for token in tokens:
-        if token in POSITIVE_WORDS:
-            score += 1
-        elif token in NEGATIVE_WORDS:
-            score -= 1
+    score = sum(SENTIMENT_SCORES.get(token, 0) for token in tokens)
     normalized = score / total
     if normalized > 0.05:
         label = "positive"
