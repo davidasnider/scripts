@@ -41,6 +41,7 @@ from src.content_extractor import (
 )
 from src.database_manager import add_file_to_db, initialize_db
 from src.logging_utils import configure_logging
+from src.manifest_utils import reset_outdated_analysis_tasks
 from src.nsfw_classifier import NSFWClassifier
 from src.schema import (
     COMPLETE,
@@ -51,7 +52,6 @@ from src.schema import (
     AnalysisStatus,
     FileRecord,
 )
-from src.manifest_utils import reset_outdated_analysis_tasks
 
 
 class AnalysisModel(str, Enum):
@@ -75,6 +75,11 @@ class WorkItem:
 # Constants
 MANIFEST_PATH = Path("data/manifest.json")
 DB_PATH = Path("data/chromadb")
+
+TEXT_BASED_ANALYSES = {
+    AnalysisName.TEXT_ANALYSIS,
+    AnalysisName.PEOPLE_ANALYSIS,
+}
 
 
 # Threading configuration
@@ -360,10 +365,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             continue
 
                         try:
-                            if task.name in {
-                                AnalysisName.TEXT_ANALYSIS,
-                                AnalysisName.PEOPLE_ANALYSIS,
-                            }:
+                            if task.name in TEXT_BASED_ANALYSES:
                                 if file_record.extracted_text:
                                     if text_analysis_result is None:
                                         text_analysis_result = analyze_text_content(
@@ -780,9 +782,7 @@ def main(
 
     reset_count = reset_outdated_analysis_tasks(full_manifest)
     if reset_count:
-        run_logger.info(
-            "Reset %d analysis tasks due to version changes", reset_count
-        )
+        run_logger.info("Reset %d analysis tasks due to version changes", reset_count)
 
     # Set up signal handlers for safe shutdown
     global current_manifest
