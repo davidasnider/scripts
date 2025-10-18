@@ -910,7 +910,10 @@ def main(
             ) and not file_record.file_path.lower().endswith(".asx")
         elif model is AnalysisModel.IMAGE_DESCRIBER:
             should_process = file_record.mime_type.startswith("image/")
-        elif model in {AnalysisModel.TEXT_ANALYZER, AnalysisModel.PEOPLE_ANALYZER}:
+        elif (
+            model is AnalysisModel.TEXT_ANALYZER
+            or model is AnalysisModel.PEOPLE_ANALYZER
+        ):
             should_process = (
                 file_record.mime_type.startswith("text/")
                 or file_record.mime_type == "application/pdf"
@@ -918,7 +921,6 @@ def main(
                 or file_record.mime_type.endswith("document")
                 or file_record.mime_type.endswith("sheet")
             )
-        # For model.ALL or other models, process all files
 
         if not should_process:
             run_logger.debug(
