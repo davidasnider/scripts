@@ -226,7 +226,7 @@ def load_access_tables(file_path: str) -> dict[str, pd.DataFrame]:
 
     if AccessParser is None:  # pragma: no cover - runtime guard
         raise AccessAnalysisError(
-            "access_parser is not installed; cannot load Access databases."
+            "access_parser is not installed; install it with 'pip install access-parser' to enable Access database support."
         )
 
     parser = AccessParser(file_path)
