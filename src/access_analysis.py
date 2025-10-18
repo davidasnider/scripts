@@ -544,8 +544,8 @@ def _ensure_path_from_upload(
         if hasattr(file_reference, "seek"):
             try:
                 file_reference.seek(0)
-            except (OSError, AttributeError):
-                pass
+            except (OSError, AttributeError) as exc:
+                logger.debug("Failed to rewind uploaded file-like object: %s", exc)
         data = file_reference.read()  # type: ignore[assignment]
     if not data:
         raise AccessAnalysisError("Uploaded file is empty.")
@@ -556,8 +556,10 @@ def _ensure_path_from_upload(
     if not isinstance(file_reference, bytes) and hasattr(file_reference, "seek"):
         try:
             file_reference.seek(0)
-        except (OSError, AttributeError):
-            pass
+        except (OSError, AttributeError) as exc:
+            logger.debug(
+                "Failed to restore position on uploaded file-like object: %s", exc
+            )
     return Path(temp_path)
 
 
