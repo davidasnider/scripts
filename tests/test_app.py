@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import apply_manifest_filters
+from src.filters import apply_manifest_filters
 from src.schema import (
     COMPLETE,
     PENDING_ANALYSIS,
