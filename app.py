@@ -1022,7 +1022,7 @@ with st.container():
         )
     with filter_col4:
         st.session_state.filters["red_flags"] = st.checkbox(
-            "Financial Red flags only",
+            "Financial red flags only",
             value=st.session_state.filters["red_flags"],
         )
 
