@@ -16,7 +16,9 @@ import streamlit as st
 import yaml
 from PIL import Image
 
+from src.filters import apply_manifest_filters
 from src.logging_utils import configure_logging
+from src.schema import AnalysisName
 
 # Truncation length for summary/description fields in tables
 SUMMARY_TRUNCATE_LENGTH = 120
@@ -54,7 +56,14 @@ if "messages" not in st.session_state:
     ]
 
 if "filters" not in st.session_state:
-    st.session_state.filters = {"file_type": [], "hide_nsfw": True, "red_flags": False}
+    st.session_state.filters = {
+        "file_type": [],
+        "hide_nsfw": True,
+        "red_flags": False,
+        "fully_analyzed": False,
+        "analysis_tasks": [],
+        "no_tasks_complete": False,
+    }
 
 
 def create_thumbnail(file_path: str, mime_type: str, max_size: tuple = (200, 200)):
@@ -520,27 +529,6 @@ def load_manifest_assets(manifest_path: str = "data/manifest.json") -> dict[str,
     }
 
 
-def apply_manifest_filters(
-    entries: list[dict[str, Any]], filter_state: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """Apply filters from the inline panel to manifest rows."""
-    filtered: list[dict[str, Any]] = []
-    file_types = filter_state.get("file_type") or []
-    hide_nsfw = filter_state.get("hide_nsfw", False)
-    only_red_flags = filter_state.get("red_flags", False)
-
-    for entry in entries:
-        if hide_nsfw and entry.get("is_nsfw"):
-            continue
-        if file_types and entry.get("mime_type") not in file_types:
-            continue
-        if only_red_flags and not entry.get("has_financial_red_flags"):
-            continue
-        filtered.append(entry)
-
-    return filtered
-
-
 def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = False):
     """Show metadata, summary, and previews for a selected file."""
     st.markdown("### File Details")
@@ -812,16 +800,27 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
         st.session_state.directory_action_flags = current_flags
 
 
-def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
-    """Render controls for browsing by MIME type."""
-    if not mime_index:
+def render_mime_browser(
+    mime_index: dict[str, dict[str, Any]], all_files: list[dict[str, Any]]
+):
+    """
+    Render controls for browsing files by MIME type.
+
+    Parameters:
+        mime_index (dict[str, dict[str, Any]]): Index mapping MIME types to file info.
+        all_files (list[dict[str, Any]]): List of all files after filtering.
+
+    Notes:
+        Selecting "ALL" will show all filtered files regardless of MIME type.
+    """
+    if not mime_index and not all_files:
         st.info("No MIME types found for the current filters.")
         return
 
     if "file_browser_selected_mime" not in st.session_state:
-        st.session_state.file_browser_selected_mime = next(iter(mime_index))
+        st.session_state.file_browser_selected_mime = "ALL"
 
-    options = list(mime_index.keys())
+    options = ["ALL"] + list(mime_index.keys())
     try:
         default_index = options.index(st.session_state.file_browser_selected_mime)
     except ValueError:
@@ -835,10 +834,13 @@ def render_mime_browser(mime_index: dict[str, dict[str, Any]]):
     )
     st.session_state.file_browser_selected_mime = selected_mime
 
-    mime_info = mime_index[selected_mime]
-    files = mime_info.get("files", [])
-
-    st.caption(f"{len(files)} file(s) with MIME type `{selected_mime}`.")
+    if selected_mime == "ALL":
+        files = sorted(all_files, key=get_entry_display_name)
+        st.caption(f"{len(files)} total file(s).")
+    else:
+        mime_info = mime_index.get(selected_mime, {})
+        files = sorted(mime_info.get("files", []), key=get_entry_display_name)
+        st.caption(f"{len(files)} file(s) with MIME type `{selected_mime}`.")
 
     table_rows = make_table_rows(files)
 
@@ -979,7 +981,7 @@ def render_file_browser(filter_state: dict[str, Any]):
         if view_mode == "Directory":
             render_directory_browser(directory_index)
         elif view_mode == "MIME type":
-            render_mime_browser(mime_index)
+            render_mime_browser(mime_index, filtered_entries)
         elif view_mode == "People":
             render_people_browser(people_index)
         elif view_mode == "NSFW":
@@ -998,12 +1000,17 @@ def render_file_browser(filter_state: dict[str, Any]):
 
 # Inline filters panel at the top of the page
 with st.container():
-    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 3, 1, 1])
+    (
+        filter_col1,
+        filter_col2,
+        filter_col3,
+        filter_col4,
+        filter_col5,
+        filter_col6,
+    ) = st.columns([1.5, 0.5, 0.5, 0.5, 1, 1.5])
     with filter_col1:
-        st.write("Filter by file type:")
-    with filter_col2:
         st.session_state.filters["file_type"] = st.multiselect(
-            "Filter by file type:",
+            "File type:",
             options=[
                 "application/pdf",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1014,16 +1021,30 @@ with st.container():
                 "video/quicktime",
             ],
             default=st.session_state.filters["file_type"],
-            label_visibility="collapsed",
+        )
+    with filter_col2:
+        st.session_state.filters["hide_nsfw"] = st.checkbox(
+            "Hide NSFW", value=st.session_state.filters["hide_nsfw"]
         )
     with filter_col3:
-        st.session_state.filters["hide_nsfw"] = st.checkbox(
-            "Hide NSFW content", value=st.session_state.filters["hide_nsfw"]
+        st.session_state.filters["red_flags"] = st.checkbox(
+            "Red flags",
+            value=st.session_state.filters["red_flags"],
         )
     with filter_col4:
-        st.session_state.filters["red_flags"] = st.checkbox(
-            "Financial red flags only",
-            value=st.session_state.filters["red_flags"],
+        st.session_state.filters["fully_analyzed"] = st.checkbox(
+            "Fully analyzed", value=st.session_state.filters["fully_analyzed"]
+        )
+    with filter_col5:
+        st.session_state.filters["no_tasks_complete"] = st.checkbox(
+            "No analysis tasks (file complete)",
+            value=st.session_state.filters["no_tasks_complete"],
+        )
+    with filter_col6:
+        st.session_state.filters["analysis_tasks"] = st.multiselect(
+            "Completed analyses:",
+            options=[task.value for task in AnalysisName],
+            default=st.session_state.filters["analysis_tasks"],
         )
 
 # Initialize ChromaDB client
