@@ -1,14 +1,13 @@
 import hashlib
 import json
 import logging
-import mimetypes
-import os
 import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from src import discover_files
 from src.schema import ANALYSIS_TASK_VERSIONS, AnalysisName
 
@@ -70,6 +69,19 @@ def test_get_analysis_tasks_for_pdf_file():
     """Verify text analysis task is assigned for PDF MIME types."""
     tasks = discover_files._get_analysis_tasks("application/pdf", "file.pdf")
     expected = {AnalysisName.TEXT_ANALYSIS, AnalysisName.PEOPLE_ANALYSIS}
+    assert {task.name for task in tasks} == expected
+
+
+def test_get_analysis_tasks_for_access_file():
+    """Verify Access databases receive Access plus text analyses."""
+    tasks = discover_files._get_analysis_tasks(
+        "application/x-msaccess", "inventory.mdb"
+    )
+    expected = {
+        AnalysisName.ACCESS_DB_ANALYSIS,
+        AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.PEOPLE_ANALYSIS,
+    }
     assert {task.name for task in tasks} == expected
 
 
@@ -262,10 +274,11 @@ def test_main_success(
 def test_main_failure(
     mock_configure_logging, mock_create_manifest, temp_directory_with_files, caplog
 ):
-    """Verify that the main function handles exceptions and returns a non-zero exit code."""
+    """
+    Verify that the main function handles exceptions and returns a non-zero exit code.
+    """
     argv = [str(temp_directory_with_files)]
     # We are mocking configure_logging, so caplog will capture logs at the desired level
-    logger = logging.getLogger("src.discover_files")
 
     with caplog.at_level(logging.ERROR):
         return_code = discover_files.main(argv)

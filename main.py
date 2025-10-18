@@ -26,6 +26,7 @@ import pandas as pd
 import typer
 from typing_extensions import Annotated
 
+from src.access_analysis import analyze_access_database
 from src.ai_analyzer import (
     analyze_financial_document,
     analyze_text_content,
@@ -41,7 +42,10 @@ from src.content_extractor import (
 )
 from src.database_manager import add_file_to_db, initialize_db
 from src.logging_utils import configure_logging
-from src.manifest_utils import reset_outdated_analysis_tasks
+from src.manifest_utils import (
+    reset_file_record_for_rescan,
+    reset_outdated_analysis_tasks,
+)
 from src.nsfw_classifier import NSFWClassifier
 from src.schema import (
     COMPLETE,
@@ -52,6 +56,7 @@ from src.schema import (
     AnalysisStatus,
     FileRecord,
 )
+from src.task_utils import ensure_required_tasks
 
 
 class AnalysisModel(str, Enum):
@@ -95,6 +100,7 @@ analysis_queue = queue.Queue()
 database_queue = queue.Queue()
 completed_files = set()
 failed_files = set()
+in_progress_files: dict[str, str] = {}
 lock = threading.Lock()
 
 # Global manifest for signal handlers
@@ -105,6 +111,15 @@ pipeline_logger = logging.getLogger(LOGGER_NAME)
 extraction_logger = logging.getLogger(f"{LOGGER_NAME}.extraction")
 analysis_logger = logging.getLogger(f"{LOGGER_NAME}.analysis")
 database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
+
+
+def _format_active_files(active: list[str], limit: int = 3) -> str:
+    """Build a short preview of active files for logging."""
+
+    if not active:
+        return ""
+    preview = ", ".join(active[:limit])
+    return preview + ("..." if len(active) > limit else "")
 
 
 def signal_handler(signum, frame):
@@ -154,6 +169,31 @@ def log_unprocessed_file(
                     additional_info,
                 ]
             )
+
+
+def filter_records_by_search_term(
+    records: list[FileRecord], search_term: str
+) -> list[FileRecord]:
+    """Return manifest records whose path or basename matches the search term.
+
+    Performs case-insensitive substring matching on the full path and requires an
+    exact, case-insensitive match on the filename to align with the CLI help text.
+    """
+    normalized_term = search_term.strip().lower()
+    if not normalized_term:
+        return []
+
+    matches: list[FileRecord] = []
+    for record in records:
+        record_path_lower = record.file_path.lower()
+        if normalized_term in record_path_lower:
+            matches.append(record)
+            continue
+
+        if Path(record.file_path).name.lower() == normalized_term:
+            matches.append(record)
+
+    return matches
 
 
 def extract_text_from_svg(file_path: str) -> str:
@@ -275,6 +315,9 @@ def extraction_worker(worker_id: int) -> None:
                     )
                     file_record.extracted_frames = extracted_frames
 
+                elif file_record.mime_type == "application/x-msaccess":
+                    ensure_required_tasks(file_record)
+
                 extraction_duration = time.time() - stage_start
                 extracted_text_len = len(file_record.extracted_text or "")
                 extracted_frame_count = len(file_record.extracted_frames or [])
@@ -346,6 +389,11 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
             file_record = work_item.file_record
             correlation_id = work_item.correlation_id
 
+            with lock:
+                in_progress_files[correlation_id] = (
+                    file_record.file_name or Path(file_record.file_path).name
+                )
+
             worker_logger.debug(
                 "Worker %d analyzing content from %s [%s]",
                 worker_id,
@@ -370,8 +418,13 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             if task.name in TEXT_BASED_ANALYSES:
                                 if file_record.extracted_text:
                                     if text_analysis_result is None:
+                                        source_name = (
+                                            file_record.file_name
+                                            or Path(file_record.file_path).name
+                                        )
                                         text_analysis_result = analyze_text_content(
-                                            file_record.extracted_text
+                                            file_record.extracted_text,
+                                            source_name=source_name,
                                         )
                                     if task.name == AnalysisName.TEXT_ANALYSIS:
                                         file_record.summary = text_analysis_result.get(
@@ -480,8 +533,13 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     "financial" in file_record.extracted_text.lower()
                                     or "account" in file_record.extracted_text.lower()
                                 ):
+                                    source_name = (
+                                        file_record.file_name
+                                        or Path(file_record.file_path).name
+                                    )
                                     financial_analysis = analyze_financial_document(
-                                        file_record.extracted_text
+                                        file_record.extracted_text,
+                                        source_name=source_name,
                                     )
                                     file_record.summary = financial_analysis.get(
                                         "summary"
@@ -497,6 +555,37 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     )
                                     file_record.has_financial_red_flags = bool(
                                         financial_analysis.get("potential_red_flags")
+                                    )
+
+                            elif task.name == AnalysisName.ACCESS_DB_ANALYSIS:
+                                result = analyze_access_database(file_record.file_path)
+                                if result.combined_text:
+                                    existing_text = file_record.extracted_text or ""
+                                    if existing_text:
+                                        if result.combined_text not in existing_text:
+                                            file_record.extracted_text = "\n\n".join(
+                                                [existing_text, result.combined_text]
+                                            )
+                                    else:
+                                        file_record.extracted_text = (
+                                            result.combined_text
+                                        )
+                                if result.text_analysis:
+                                    first_text_analysis = next(
+                                        iter(result.text_analysis), None
+                                    )
+                                    if (
+                                        first_text_analysis is not None
+                                        and not file_record.summary
+                                    ):
+                                        file_record.summary = (
+                                            first_text_analysis.summary
+                                        )
+                                if result.financial_analysis:
+                                    worker_logger.info(
+                                        "Financial analysis for %s: %s",
+                                        file_record.file_path,
+                                        result.financial_analysis,
                                     )
 
                             task.status = AnalysisStatus.COMPLETE
@@ -547,7 +636,6 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                     file_record.file_path,
                     correlation_id,
                 )
-
             except Exception as e:
                 worker_logger.error(
                     "Worker %d failed to analyze content from %s [%s]: %s",
@@ -564,6 +652,9 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                 )
                 with lock:
                     failed_files.add(correlation_id)
+            finally:
+                with lock:
+                    in_progress_files.pop(correlation_id, None)
 
             analysis_queue.task_done()
 
@@ -793,43 +884,93 @@ def main(
     signal.signal(signal.SIGTERM, signal_handler)
     run_logger.debug("Signal handlers installed for safe manifest saving")
 
-    if batch_size > 0:
-        unprocessed_files = [f for f in full_manifest if f.status != COMPLETE]
-        processing_manifest = unprocessed_files[:batch_size]
+    if target_filename:
+        candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
         run_logger.info(
-            "Found %d unprocessed files. Processing batch of %d files.",
-            len(unprocessed_files),
-            len(processing_manifest),
+            "Targeted run enabled; evaluating %d incomplete file(s) for %r.",
+            len(candidate_manifest),
+            target_filename,
         )
     else:
-        processing_manifest = [f for f in full_manifest if f.status != COMPLETE]
+        candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
         run_logger.info(
-            "Found %d unprocessed files. Processing all remaining files.",
-            len(processing_manifest),
+            "Found %d unprocessed files.",
+            len(candidate_manifest),
         )
 
+    processing_manifest = candidate_manifest
+
     if target_filename:
-        search_term = target_filename.lower()
-        filtered_manifest = [
-            record
-            for record in processing_manifest
-            if search_term in record.file_path.lower()
-            or Path(record.file_path).name.lower() == search_term
-        ]
+        filtered_manifest = filter_records_by_search_term(
+            processing_manifest, target_filename
+        )
 
         if not filtered_manifest:
-            run_logger.warning(
-                "No files matched the filter %r. Nothing to process.",
-                target_filename,
+            fallback_manifest = filter_records_by_search_term(
+                full_manifest, target_filename
             )
-            return 0
+            if fallback_manifest:
+                run_logger.info(
+                    "Target %r already complete; reprocessing %d file(s).",
+                    target_filename,
+                    len(fallback_manifest),
+                )
+                filtered_manifest = fallback_manifest
+            else:
+                run_logger.warning(
+                    "No files matched the filter %r. Nothing to process.",
+                    target_filename,
+                )
+                return 0
+
+        for record in filtered_manifest:
+            reset_file_record_for_rescan(record)
+            try:
+                with lock:
+                    collection.delete(ids=[record.file_path])
+                run_logger.debug(
+                    "Cleared previous database entry for %s", record.file_path
+                )
+            except Exception as exc:  # pragma: no cover - depends on chromadb impl
+                run_logger.debug(
+                    "No existing database entry to clear for %s: %s",
+                    record.file_path,
+                    exc,
+                )
 
         processing_manifest = filtered_manifest
         run_logger.info(
-            "Filtered manifest to %d file(s) matching %r.",
+            "Filtered manifest to %d file(s) matching %r and reset prior analysis.",
             len(processing_manifest),
             target_filename,
         )
+    elif batch_size > 0:
+        processing_manifest = candidate_manifest[:batch_size]
+        run_logger.info(
+            "Processing batch of %d file(s) from %d available.",
+            len(processing_manifest),
+            len(candidate_manifest),
+        )
+    else:
+        run_logger.info(
+            "Processing all remaining files (%d).", len(processing_manifest)
+        )
+
+    if batch_size > 0 and target_filename:
+        limited_manifest = processing_manifest[:batch_size]
+        if not limited_manifest:
+            run_logger.warning(
+                "Batch size %d left no files to process after filtering.",
+                batch_size,
+            )
+            return 0
+        if len(limited_manifest) < len(processing_manifest):
+            run_logger.info(
+                "Batch size limit reduced targeted set to %d file(s) (from %d).",
+                len(limited_manifest),
+                len(processing_manifest),
+            )
+        processing_manifest = limited_manifest
 
     if per_mime_limit > 0:
         mime_counts: dict[str, int] = {}
@@ -972,6 +1113,7 @@ def main(
             with lock:
                 completed_count = len(completed_files)
                 failed_count = len(failed_files)
+                active_files = list(in_progress_files.values())
 
             processed_count = completed_count + failed_count
             remaining = pending_files - processed_count
@@ -982,24 +1124,48 @@ def main(
                 if processed_count > 0:
                     estimated_total = elapsed * pending_files / processed_count
                     estimated_remaining = estimated_total - elapsed
-                    run_logger.info(
-                        "Progress: %d/%d completed, %d failed, %d remaining "
-                        "(%.1f%% complete, ~%.1f minutes remaining)",
-                        completed_count,
-                        pending_files,
-                        failed_count,
-                        remaining,
-                        (processed_count / pending_files) * 100,
-                        estimated_remaining / 60,
-                    )
+                    if active_files:
+                        run_logger.info(
+                            "Progress: %d/%d completed, %d failed, %d remaining "
+                            "(%.1f%% complete, ~%.1f minutes remaining) | active: %s",
+                            completed_count,
+                            pending_files,
+                            failed_count,
+                            remaining,
+                            (processed_count / pending_files) * 100,
+                            estimated_remaining / 60,
+                            _format_active_files(active_files),
+                        )
+                    else:
+                        run_logger.info(
+                            "Progress: %d/%d completed, %d failed, %d remaining "
+                            "(%.1f%% complete, ~%.1f minutes remaining)",
+                            completed_count,
+                            pending_files,
+                            failed_count,
+                            remaining,
+                            (processed_count / pending_files) * 100,
+                            estimated_remaining / 60,
+                        )
                 else:
-                    run_logger.info(
-                        "Progress: %d/%d completed, %d failed, %d remaining",
-                        completed_count,
-                        pending_files,
-                        failed_count,
-                        remaining,
-                    )
+                    if active_files:
+                        run_logger.info(
+                            "Progress: %d/%d completed, %d failed, %d remaining | "
+                            "active: %s",
+                            completed_count,
+                            pending_files,
+                            failed_count,
+                            remaining,
+                            _format_active_files(active_files),
+                        )
+                    else:
+                        run_logger.info(
+                            "Progress: %d/%d completed, %d failed, %d remaining",
+                            completed_count,
+                            pending_files,
+                            failed_count,
+                            remaining,
+                        )
                 last_progress_time = current_time
 
             if remaining <= 0:

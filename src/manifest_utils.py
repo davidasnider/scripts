@@ -7,9 +7,11 @@ from src.schema import (
     COMPLETE,
     FAILED,
     PENDING_ANALYSIS,
+    PENDING_EXTRACTION,
     AnalysisStatus,
     FileRecord,
 )
+from src.task_utils import determine_analysis_tasks
 
 logger = logging.getLogger("file_catalog.analysis.versioning")
 
@@ -50,3 +52,29 @@ def reset_outdated_analysis_tasks(manifest: list[FileRecord]) -> int:
             file_record.status = PENDING_ANALYSIS
 
     return reset_count
+
+
+def reset_file_record_for_rescan(file_record: FileRecord) -> None:
+    """Clear previous analysis state so the file is treated as freshly discovered."""
+
+    tasks = determine_analysis_tasks(file_record.mime_type, file_record.file_path)
+
+    file_record.status = PENDING_EXTRACTION
+    file_record.extracted_text = None
+    file_record.extracted_frames = None
+    file_record.summary = None
+    file_record.description = None
+    file_record.mentioned_people = []
+    file_record.is_nsfw = None
+    file_record.has_financial_red_flags = None
+    file_record.potential_red_flags = []
+    file_record.incriminating_items = []
+    file_record.confidence_score = None
+
+    file_record.analysis_tasks = tasks
+
+    for task in file_record.analysis_tasks:
+        task.status = AnalysisStatus.PENDING
+        task.error_message = None
+        if task.name in ANALYSIS_TASK_VERSIONS:
+            task.version = ANALYSIS_TASK_VERSIONS[task.name]
