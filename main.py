@@ -58,6 +58,7 @@ class AnalysisModel(str, Enum):
     """Enum for the analysis models."""
 
     TEXT_ANALYZER = "text_analysis"
+    PEOPLE_ANALYZER = "people_analysis"
     CODE_ANALYZER = "code_analysis"
     IMAGE_DESCRIBER = "image_description"
     VIDEO_ANALYZER = "video_summary"
@@ -903,13 +904,13 @@ def main(
 
         # Filter files based on model type before queuing
         should_process = True
-        if model.value == "video_summary":
+        if model is AnalysisModel.VIDEO_ANALYZER:
             should_process = file_record.mime_type.startswith(
                 "video/"
             ) and not file_record.file_path.lower().endswith(".asx")
-        elif model.value == "image_description":
+        elif model is AnalysisModel.IMAGE_DESCRIBER:
             should_process = file_record.mime_type.startswith("image/")
-        elif model.value == "text_analysis":
+        elif model in {AnalysisModel.TEXT_ANALYZER, AnalysisModel.PEOPLE_ANALYZER}:
             should_process = (
                 file_record.mime_type.startswith("text/")
                 or file_record.mime_type == "application/pdf"
