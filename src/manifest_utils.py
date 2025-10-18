@@ -22,7 +22,16 @@ def reset_outdated_analysis_tasks(manifest: list[FileRecord]) -> int:
     for file_record in manifest:
         record_updated = False
         for task in file_record.analysis_tasks:
-            expected_version = ANALYSIS_TASK_VERSIONS.get(task.name, task.version)
+            if task.name not in ANALYSIS_TASK_VERSIONS:
+                logger.warning(
+                    "Unknown analysis task %s for %s; using stored version %d",
+                    getattr(task.name, "value", task.name),
+                    file_record.file_path,
+                    task.version,
+                )
+                expected_version = task.version
+            else:
+                expected_version = ANALYSIS_TASK_VERSIONS[task.name]
             if task.version < expected_version:
                 logger.info(
                     "Updating %s for %s to version %d (was %d)",
