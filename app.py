@@ -16,12 +16,18 @@ import streamlit as st
 import yaml
 from PIL import Image
 
+from src.access_analysis import (
+    AccessAnalysisError,
+    AccessAnalysisResult,
+    analyze_access_database,
+)
 from src.filters import apply_manifest_filters
 from src.logging_utils import configure_logging
 from src.schema import AnalysisName
 
 # Truncation length for summary/description fields in tables
 SUMMARY_TRUNCATE_LENGTH = 120
+ACCESS_TABLE_PREVIEW_ROWS = 50
 
 configure_logging()
 logger = logging.getLogger("file_catalog.app")
@@ -32,6 +38,8 @@ st.set_page_config(page_title="Local AI Digital Archive", layout="wide")
 
 # Main title
 st.title("🔎 Local AI Digital Archive")
+
+render_access_database_analyzer()
 
 # Load config
 with open("config.yaml", "r", encoding="utf-8") as f:
@@ -216,6 +224,120 @@ def open_file_with_system(file_path: str) -> bool:
         st.error(f"Failed to open file: {err}")
         logger.exception("Failed to open file %s", file_path)
         return False
+
+
+def _render_access_text_insights(result: AccessAnalysisResult) -> None:
+    if not result.text_analysis:
+        st.info("No text-based columns were detected in the uploaded database.")
+        return
+
+    for insight in result.text_analysis:
+        st.markdown(f"#### {insight.table_name}")
+        st.markdown(f"**Summary:** {insight.summary}")
+        if insight.key_themes:
+            st.markdown("**Key Themes:** " + ", ".join(insight.key_themes))
+        else:
+            st.markdown("**Key Themes:** Not detected")
+        st.markdown(
+            f"**Sentiment:** {insight.sentiment.label.title()}"
+            f" ({insight.sentiment.score:.2f})"
+        )
+        if insight.named_entities:
+            st.markdown("**Named Entities:** " + ", ".join(insight.named_entities))
+        else:
+            st.markdown("**Named Entities:** None detected")
+
+
+def _render_access_financial_insights(result: AccessAnalysisResult) -> None:
+    if not result.financial_analysis:
+        st.info("No financial indicators were identified in the uploaded database.")
+        return
+
+    for insight in result.financial_analysis:
+        st.markdown(f"#### {insight.table_name}")
+        st.caption(f"Records analyzed: {insight.record_count}")
+
+        if insight.metrics:
+            metrics_df = pd.DataFrame(
+                [
+                    {
+                        "Column": metric.column,
+                        "Total": metric.total,
+                        "Average": metric.average,
+                        "Minimum": metric.minimum,
+                        "Maximum": metric.maximum,
+                    }
+                    for metric in insight.metrics
+                ]
+            )
+            st.dataframe(metrics_df, hide_index=True)
+        else:
+            st.caption("No numeric columns available for aggregation.")
+
+        for trend in insight.trends:
+            trend_df = pd.DataFrame(
+                {
+                    "Period": [point.period for point in trend.points],
+                    "Total": [point.total for point in trend.points],
+                }
+            )
+            if trend_df.empty:
+                continue
+            chart_key = f"trend_chart_{abs(hash((insight.table_name, trend.column)))}"
+            st.line_chart(
+                trend_df.set_index("Period"),
+                height=240,
+                use_container_width=True,
+                key=chart_key,
+            )
+
+
+def render_access_database_analyzer() -> None:
+    with st.expander("Microsoft Access Database Analyzer", expanded=False):
+        st.write(
+            "Upload a legacy Microsoft Access database (.mdb or .accdb) to run "
+            "automated text and financial analysis."
+        )
+        uploaded_file = st.file_uploader(
+            "Select an Access database", type=["mdb", "accdb"], key="access_uploader"
+        )
+
+        if uploaded_file is None:
+            return
+
+        try:
+            with st.spinner("Parsing and analyzing Access database..."):
+                result = analyze_access_database(
+                    uploaded_file, filename=getattr(uploaded_file, "name", None)
+                )
+        except AccessAnalysisError as exc:
+            st.error(f"Failed to analyze Access database: {exc}")
+            logger.warning("Access analysis failed: %s", exc)
+            return
+        except Exception as exc:  # pragma: no cover - safety net for runtime issues
+            st.error(
+                "An unexpected error occurred while analyzing the Access database."
+            )
+            logger.exception("Unexpected error during Access analysis: %s", exc)
+            return
+
+        st.success("Access database processed successfully.")
+
+        for table_name, table_df in result.tables.items():
+            st.markdown(f"### Table: {table_name}")
+            preview_df = table_df.head(ACCESS_TABLE_PREVIEW_ROWS)
+            st.dataframe(preview_df, hide_index=True, use_container_width=True)
+            if len(table_df) > ACCESS_TABLE_PREVIEW_ROWS:
+                st.caption(
+                    f"Previewing the first {ACCESS_TABLE_PREVIEW_ROWS} rows of "
+                    f"{len(table_df)} total."
+                )
+
+        text_tab, financial_tab = st.tabs(["Text Analysis", "Financial Analysis"])
+        with text_tab:
+            _render_access_text_insights(result)
+        with financial_tab:
+            _render_access_financial_insights(result)
 
 
 def format_bytes(size: int | float | None) -> str:
