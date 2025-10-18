@@ -444,7 +444,7 @@ def _ensure_path_from_upload(
     if not data:
         raise AccessAnalysisError("Uploaded file is empty.")
 
-    temp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    temp_file = tempfile.NamedTemporaryFile(mode='wb', suffix=suffix, delete=False)
     temp_file.write(data)
     temp_file.flush()
     temp_file.close()
