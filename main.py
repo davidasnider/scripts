@@ -51,6 +51,7 @@ from src.schema import (
     AnalysisStatus,
     FileRecord,
 )
+from src.manifest_utils import reset_outdated_analysis_tasks
 
 
 class AnalysisModel(str, Enum):
@@ -348,6 +349,8 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
             try:
                 stage_start = time.time()
 
+                text_analysis_result: dict[str, Any] | None = None
+
                 for task in file_record.analysis_tasks:
                     if task.status == AnalysisStatus.PENDING:
                         if (
@@ -357,15 +360,25 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             continue
 
                         try:
-                            if task.name == AnalysisName.TEXT_ANALYSIS:
+                            if task.name in {
+                                AnalysisName.TEXT_ANALYSIS,
+                                AnalysisName.PEOPLE_ANALYSIS,
+                            }:
                                 if file_record.extracted_text:
-                                    analysis = analyze_text_content(
-                                        file_record.extracted_text
-                                    )
-                                    file_record.summary = analysis.get("summary")
-                                    file_record.mentioned_people = analysis.get(
-                                        "mentioned_people"
-                                    )
+                                    if text_analysis_result is None:
+                                        text_analysis_result = analyze_text_content(
+                                            file_record.extracted_text
+                                        )
+                                    if task.name == AnalysisName.TEXT_ANALYSIS:
+                                        file_record.summary = text_analysis_result.get(
+                                            "summary"
+                                        )
+                                    else:
+                                        file_record.mentioned_people = (
+                                            text_analysis_result.get(
+                                                "mentioned_people", []
+                                            )
+                                        )
 
                             elif task.name == AnalysisName.IMAGE_DESCRIPTION:
                                 if file_record.mime_type.startswith("image/"):
@@ -764,6 +777,12 @@ def main(
 
     full_manifest = load_manifest()
     run_logger.info("Loaded %d files from manifest", len(full_manifest))
+
+    reset_count = reset_outdated_analysis_tasks(full_manifest)
+    if reset_count:
+        run_logger.info(
+            "Reset %d analysis tasks due to version changes", reset_count
+        )
 
     # Set up signal handlers for safe shutdown
     global current_manifest

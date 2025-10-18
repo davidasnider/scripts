@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from src.logging_utils import configure_logging
-from src.schema import AnalysisName, AnalysisTask, FileRecord
+from src.schema import (
+    ANALYSIS_TASK_VERSIONS,
+    AnalysisName,
+    AnalysisTask,
+    FileRecord,
+)
 
 try:
     import magic  # type: ignore[import-not-found]
@@ -44,14 +49,56 @@ def _get_analysis_tasks(mime_type: str, file_path: str = "") -> list[AnalysisTas
         or mime_type.endswith("document")
         or mime_type.endswith("sheet")
     ):
-        tasks.append(AnalysisTask(name=AnalysisName.TEXT_ANALYSIS))
+        tasks.extend(
+            (
+                AnalysisTask(
+                    name=AnalysisName.TEXT_ANALYSIS,
+                    version=ANALYSIS_TASK_VERSIONS[AnalysisName.TEXT_ANALYSIS],
+                ),
+                AnalysisTask(
+                    name=AnalysisName.PEOPLE_ANALYSIS,
+                    version=ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS],
+                ),
+            )
+        )
     if mime_type.startswith("image/"):
-        tasks.append(AnalysisTask(name=AnalysisName.IMAGE_DESCRIPTION))
-        tasks.append(AnalysisTask(name=AnalysisName.NSFW_CLASSIFICATION))
-        tasks.append(AnalysisTask(name=AnalysisName.TEXT_ANALYSIS))
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.IMAGE_DESCRIPTION,
+                version=ANALYSIS_TASK_VERSIONS[AnalysisName.IMAGE_DESCRIPTION],
+            )
+        )
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.NSFW_CLASSIFICATION,
+                version=ANALYSIS_TASK_VERSIONS[AnalysisName.NSFW_CLASSIFICATION],
+            )
+        )
+        tasks.extend(
+            (
+                AnalysisTask(
+                    name=AnalysisName.TEXT_ANALYSIS,
+                    version=ANALYSIS_TASK_VERSIONS[AnalysisName.TEXT_ANALYSIS],
+                ),
+                AnalysisTask(
+                    name=AnalysisName.PEOPLE_ANALYSIS,
+                    version=ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS],
+                ),
+            )
+        )
     if mime_type.startswith("video/") and not file_path.lower().endswith(".asx"):
-        tasks.append(AnalysisTask(name=AnalysisName.VIDEO_SUMMARY))
-        tasks.append(AnalysisTask(name=AnalysisName.NSFW_CLASSIFICATION))
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.VIDEO_SUMMARY,
+                version=ANALYSIS_TASK_VERSIONS[AnalysisName.VIDEO_SUMMARY],
+            )
+        )
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.NSFW_CLASSIFICATION,
+                version=ANALYSIS_TASK_VERSIONS[AnalysisName.NSFW_CLASSIFICATION],
+            )
+        )
 
     return tasks
 
