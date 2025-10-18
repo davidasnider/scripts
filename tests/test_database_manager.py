@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 
 class _DummyTokenizer:
@@ -14,7 +15,7 @@ class _DummyTokenizer:
 
 
 # Use a pytest fixture to patch the tokenizer and import database_manager
-import types
+
 
 @pytest.fixture(autouse=True, scope="module")
 def patch_tokenizer_and_import_db_manager():
@@ -27,6 +28,8 @@ def patch_tokenizer_and_import_db_manager():
         generate_embedding = database_manager.generate_embedding
         initialize_db = database_manager.initialize_db
         yield
+
+
 class TestDatabaseManager(unittest.TestCase):
     @patch("src.database_manager.chromadb.PersistentClient")
     def test_initialize_db(self, mock_persistent_client):
@@ -56,13 +59,12 @@ class TestDatabaseManager(unittest.TestCase):
         """Test embedding generation failure."""
         mock_ollama_embeddings.side_effect = Exception("Ollama broke")
         embedding = generate_embedding("some text")
-        self.assertEqual(embedding, [0.0] * 768)
+        zeros = [0.0] * database_manager.DEFAULT_EMBEDDING_DIM
+        self.assertEqual(embedding, zeros)
 
     @patch("src.database_manager.chunk_text")
     @patch("src.database_manager.ollama.embeddings")
-    def test_generate_embedding_chunking(
-        self, mock_ollama_embeddings, mock_chunk_text
-    ):
+    def test_generate_embedding_chunking(self, mock_ollama_embeddings, mock_chunk_text):
         """Test embedding generation with chunking and averaging."""
         # Simulate two chunks
         mock_chunk_text.return_value = ["chunk1", "chunk2"]
@@ -71,9 +73,9 @@ class TestDatabaseManager(unittest.TestCase):
             {"embedding": [0.3, 0.4, 0.5]},
         ]
         embedding = generate_embedding("some long text")
-        expected_embedding = (
-            np.mean([[0.1, 0.2, 0.3], [0.3, 0.4, 0.5]], axis=0).tolist()
-        )
+        expected_embedding = np.mean(
+            [[0.1, 0.2, 0.3], [0.3, 0.4, 0.5]], axis=0
+        ).tolist()
         self.assertEqual(embedding, expected_embedding)
 
     @patch("src.database_manager.generate_embedding")
@@ -112,7 +114,7 @@ class TestDatabaseManager(unittest.TestCase):
         mock_collection.add.assert_called_once()
         args, kwargs = mock_collection.add.call_args
         embedding = kwargs["embeddings"][0]
-        self.assertEqual(len(embedding), DEFAULT_EMBEDDING_DIM)
+        self.assertEqual(len(embedding), database_manager.DEFAULT_EMBEDDING_DIM)
         self.assertTrue(all(x == 0.0 for x in embedding))
         self.assertTrue(len(set(embedding)) <= 1)  # all values are the same
         self.assertGreater(len(embedding), 0)  # embedding is not empty

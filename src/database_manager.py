@@ -18,6 +18,7 @@ with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 EMBEDDING_MODEL = config["models"]["embedding_model"]
+DEFAULT_EMBEDDING_DIM = 768
 
 
 def initialize_db(path: str):
@@ -53,7 +54,7 @@ def generate_embedding(text: str) -> list[float]:
 
     if not embeddings:
         logger.warning("No embeddings were generated for the text.")
-        return [0.0] * 768  # Fallback zero vector
+        return [0.0] * DEFAULT_EMBEDDING_DIM  # Fallback zero vector
 
     # Average the embeddings
     avg_embedding = np.mean(embeddings, axis=0).tolist()
@@ -87,7 +88,7 @@ def add_file_to_db(file_data: dict, collection) -> None:
         embedding = generate_embedding(consolidated_text)
     else:
         # Use a zero vector if there is no text to embed
-        embedding = [0.0] * 768
+        embedding = [0.0] * DEFAULT_EMBEDDING_DIM
 
     # Structured metadata for filtering
     metadata = {
