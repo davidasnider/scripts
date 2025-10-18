@@ -309,7 +309,7 @@ def render_access_database_analyzer() -> None:
         try:
             with st.spinner("Parsing and analyzing Access database..."):
                 result = analyze_access_database(
-                    uploaded_file, filename=getattr(uploaded_file, "name", None)
+                    uploaded_file, filename=uploaded_file.name
                 )
         except AccessAnalysisError as exc:
             st.error(f"Failed to analyze Access database: {exc}")

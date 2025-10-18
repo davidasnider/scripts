@@ -14,6 +14,10 @@ from typing import BinaryIO, Iterable
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
+# At least 50% of values must be parseable as dates for a column to be
+# considered a date series.
+DATE_DETECTION_THRESHOLD = 0.5
+
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - import validated via tests
@@ -338,7 +342,9 @@ def _find_date_series(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
             return column, series
         if series.dtype == "object":
             parsed = pd.to_datetime(series, errors="coerce")
-            if parsed.notna().sum() >= max(1, len(series) // 2):
+            if parsed.notna().sum() >= max(
+                1, int(len(series) * DATE_DETECTION_THRESHOLD)
+            ):
                 return column, parsed
     return None, None
 
