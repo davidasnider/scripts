@@ -523,7 +523,7 @@ def load_manifest_assets(manifest_path: str = "data/manifest.json") -> dict[str,
 def apply_manifest_filters(
     entries: list[dict[str, Any]], filter_state: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Apply Streamlit sidebar filters to manifest rows."""
+    """Apply filters from the inline panel to manifest rows."""
     filtered: list[dict[str, Any]] = []
     file_types = filter_state.get("file_type") or []
     hide_nsfw = filter_state.get("hide_nsfw", False)
@@ -930,7 +930,7 @@ def render_file_browser(filter_state: dict[str, Any]):
     filtered_entries = apply_manifest_filters(entries, filter_state)
 
     if not filtered_entries:
-        st.info("No files match the current filters. Adjust them in the sidebar.")
+        st.info("No files match the current filters. Adjust them in the filters panel.")
         return
 
     directory_index = compute_directory_index(filtered_entries)
@@ -996,11 +996,11 @@ def render_file_browser(filter_state: dict[str, Any]):
         render_file_detail(selected_entry, filtered_out=filtered_out)
 
 
-# Sidebar for search filters
-with st.sidebar:
-    st.header("Search Filters")
+# Inline filters panel at the top of the page
+with st.container():
+    st.subheader("Search Filters")
+    st.caption("Refine the catalog using the controls below.")
 
-    # File type filter
     st.session_state.filters["file_type"] = st.multiselect(
         "Filter by file type:",
         options=[
@@ -1015,16 +1015,17 @@ with st.sidebar:
         default=st.session_state.filters["file_type"],
     )
 
-    # Hide NSFW content checkbox
-    st.session_state.filters["hide_nsfw"] = st.checkbox(
-        "Hide NSFW content", value=st.session_state.filters["hide_nsfw"]
-    )
+    checkbox_col1, checkbox_col2 = st.columns(2)
+    with checkbox_col1:
+        st.session_state.filters["hide_nsfw"] = st.checkbox(
+            "Hide NSFW content", value=st.session_state.filters["hide_nsfw"]
+        )
 
-    # Show only files with financial red flags checkbox
-    st.session_state.filters["red_flags"] = st.checkbox(
-        "Show only files with financial red flags",
-        value=st.session_state.filters["red_flags"],
-    )
+    with checkbox_col2:
+        st.session_state.filters["red_flags"] = st.checkbox(
+            "Show only files with financial red flags",
+            value=st.session_state.filters["red_flags"],
+        )
 
 # Initialize ChromaDB client
 try:
