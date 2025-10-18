@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -66,6 +67,16 @@ if "filters" not in st.session_state:
         "analysis_tasks": [],
         "no_tasks_complete": False,
     }
+
+
+_WIDGET_KEY_SANITIZE_PATTERN = re.compile(r"[^0-9A-Za-z_]+")
+
+
+def _build_widget_key(prefix: str, identifier: str) -> str:
+    """Create a deterministic and Streamlit-friendly widget key."""
+
+    safe_identifier = _WIDGET_KEY_SANITIZE_PATTERN.sub("_", identifier)
+    return f"{prefix}_{safe_identifier}"
 
 
 def create_thumbnail(file_path: str, mime_type: str, max_size: tuple = (200, 200)):
@@ -152,7 +163,8 @@ def display_source_with_thumbnail(source: dict, index: int):
 
                     # Add button to view full size
                     if st.button(
-                        "View Full Size", key=f"fullsize_{index}_{hash(file_path)}"
+                        "View Full Size",
+                        key=_build_widget_key("fullsize", f"{index}_{str(file_path)}"),
                     ):
                         try:
                             full_image = Image.open(file_path)
@@ -189,7 +201,7 @@ def display_source_with_thumbnail(source: dict, index: int):
         if path_obj.exists():
             if st.button(
                 "Open file",
-                key=f"open_source_{index}_{hash(file_path_str)}",
+                key=_build_widget_key("open_source", f"{index}_{file_path_str}"),
             ):
                 if open_file_with_system(file_path_str):
                     st.success("Opening file with the default application.")
@@ -586,7 +598,7 @@ def _render_file_metadata(
     if file_exists:
         if st.button(
             "Open in default application",
-            key=f"open_detail_{hash(file_path_str)}",
+            key=_build_widget_key("open_detail", file_path_str),
         ):
             if open_file_with_system(file_path_str):
                 st.success("Opening file in the system viewer.")

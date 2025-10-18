@@ -1,4 +1,5 @@
-from src.text_utils import chunk_text, tokenizer
+import src.text_utils as text_utils
+from src.text_utils import chunk_text
 
 
 def test_chunk_text_splits_correctly():
@@ -9,7 +10,7 @@ def test_chunk_text_splits_correctly():
 
     # Verify that each chunk's token count is within the specified limit
     for chunk in chunks:
-        token_ids = tokenizer.encode(chunk, add_special_tokens=False)
+        token_ids = text_utils.tokenizer.encode(chunk, add_special_tokens=False)
         assert len(token_ids) <= max_tokens
 
     # Verify that the reconstructed text from chunks matches the original text,

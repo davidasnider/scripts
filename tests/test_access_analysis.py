@@ -154,7 +154,6 @@ def test_analyze_access_database_accepts_file_like(access_module, monkeypatch):
         )
     ]
 
-    original_unlink = module.os.unlink
     deleted_paths: list[Path] = []
 
     def fake_unlink(path):
@@ -172,6 +171,3 @@ def test_analyze_access_database_accepts_file_like(access_module, monkeypatch):
     assert result.table_text["Activity"]
     assert "Improved profit margins" in result.table_text["Activity"]
     assert "Improved profit margins" in result.combined_text
-
-    for path in deleted_paths:
-        original_unlink(path)

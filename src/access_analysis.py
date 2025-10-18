@@ -170,13 +170,19 @@ class AccessAnalysisResult:
     combined_text: str
 
 
-def _iter_table_rows(table: object) -> Iterable[dict]:
+def _iter_table_rows(table: object) -> list[dict]:
     """Best-effort extraction of row dictionaries from an access_parser table."""
 
     if hasattr(table, "to_dicts"):
-        return list(table.to_dicts())  # type: ignore[call-arg]
+        result = table.to_dicts()  # type: ignore[call-arg]
+        if isinstance(result, dict):
+            return [result]
+        return list(result)
     if hasattr(table, "to_dict"):
-        return list(table.to_dict())  # type: ignore[call-arg]
+        result = table.to_dict()  # type: ignore[call-arg]
+        if isinstance(result, dict):
+            return [result]
+        return list(result)
     if hasattr(table, "rows"):
         rows = getattr(table, "rows")
         if callable(rows):
@@ -226,7 +232,7 @@ def load_access_tables(file_path: str) -> dict[str, pd.DataFrame]:
             logger.debug("Skipping table without a name: %s", table)
             continue
 
-        rows = list(_iter_table_rows(table))
+        rows = _iter_table_rows(table)
         tables[table_name] = pd.DataFrame(rows)
         logger.debug(
             "Loaded table '%s' with %d rows and %d columns",
@@ -288,11 +294,7 @@ def load_access_tables(file_path: str) -> dict[str, pd.DataFrame]:
 
 
 def _flatten_text_columns(df: pd.DataFrame) -> str:
-    text_columns = [
-        col
-        for col in df.columns
-        if df[col].dtype == "object" or pd.api.types.is_string_dtype(df[col])
-    ]
+    text_columns = [col for col in df.columns if pd.api.types.is_string_dtype(df[col])]
     if not text_columns:
         return ""
 
@@ -529,11 +531,10 @@ def _ensure_path_from_upload(
     if not data:
         raise AccessAnalysisError("Uploaded file is empty.")
 
-    temp_file = tempfile.NamedTemporaryFile(mode="wb", suffix=suffix, delete=False)
-    temp_file.write(data)
-    temp_file.flush()
-    temp_file.close()
-    return Path(temp_file.name)
+    fd, temp_path = tempfile.mkstemp(suffix=suffix)
+    with os.fdopen(fd, "wb") as temp_file:
+        temp_file.write(data)
+    return Path(temp_path)
 
 
 def analyze_access_database(

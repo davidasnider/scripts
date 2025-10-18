@@ -552,10 +552,16 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                             result.combined_text
                                         )
                                 if result.text_analysis:
-                                    if not file_record.summary:
-                                        file_record.summary = result.text_analysis[
-                                            0
-                                        ].summary
+                                    first_text_analysis = next(
+                                        iter(result.text_analysis), None
+                                    )
+                                    if (
+                                        first_text_analysis is not None
+                                        and not file_record.summary
+                                    ):
+                                        file_record.summary = (
+                                            first_text_analysis.summary
+                                        )
                                 if result.financial_analysis:
                                     worker_logger.info(
                                         "Financial analysis for %s: %s",
