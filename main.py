@@ -376,7 +376,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                         file_record.summary = text_analysis_result.get(
                                             "summary"
                                         )
-                                    else:
+                                    elif task.name == AnalysisName.PEOPLE_ANALYSIS:
                                         file_record.mentioned_people = (
                                             text_analysis_result.get(
                                                 "mentioned_people", []
