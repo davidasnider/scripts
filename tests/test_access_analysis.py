@@ -12,6 +12,7 @@ import pytest
 
 @pytest.fixture
 def access_module(monkeypatch):
+    """Mock access_parser so access_analysis tests run without installing it."""
     tables: list[object] = []
 
     class FakeTable:
