@@ -81,6 +81,7 @@ TEXT_BASED_ANALYSES = {
     AnalysisName.TEXT_ANALYSIS,
     AnalysisName.PEOPLE_ANALYSIS,
 }
+TEXT_BASED_ANALYSIS_MODEL_VALUES = {analysis.value for analysis in TEXT_BASED_ANALYSES}
 
 
 # Threading configuration
@@ -910,10 +911,7 @@ def main(
             ) and not file_record.file_path.lower().endswith(".asx")
         elif model is AnalysisModel.IMAGE_DESCRIBER:
             should_process = file_record.mime_type.startswith("image/")
-        elif (
-            model is AnalysisModel.TEXT_ANALYZER
-            or model is AnalysisModel.PEOPLE_ANALYZER
-        ):
+        elif model.value in TEXT_BASED_ANALYSIS_MODEL_VALUES:
             should_process = (
                 file_record.mime_type.startswith("text/")
                 or file_record.mime_type == "application/pdf"
