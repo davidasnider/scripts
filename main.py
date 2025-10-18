@@ -26,6 +26,7 @@ import pandas as pd
 import typer
 from typing_extensions import Annotated
 
+from src.access_analysis import analyze_access_database
 from src.ai_analyzer import (
     analyze_financial_document,
     analyze_text_content,
@@ -50,6 +51,7 @@ from src.schema import (
     PENDING_EXTRACTION,
     AnalysisName,
     AnalysisStatus,
+    AnalysisTask,
     FileRecord,
 )
 
@@ -95,6 +97,7 @@ analysis_queue = queue.Queue()
 database_queue = queue.Queue()
 completed_files = set()
 failed_files = set()
+in_progress_files: dict[str, str] = {}
 lock = threading.Lock()
 
 # Global manifest for signal handlers
@@ -275,6 +278,11 @@ def extraction_worker(worker_id: int) -> None:
                     )
                     file_record.extracted_frames = extracted_frames
 
+                elif file_record.mime_type == "application/x-msaccess":
+                    file_record.analysis_tasks.append(
+                        AnalysisTask(name=AnalysisName.ACCESS_DB_ANALYSIS)
+                    )
+
                 extraction_duration = time.time() - stage_start
                 extracted_text_len = len(file_record.extracted_text or "")
                 extracted_frame_count = len(file_record.extracted_frames or [])
@@ -346,6 +354,11 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
             file_record = work_item.file_record
             correlation_id = work_item.correlation_id
 
+            with lock:
+                in_progress_files[correlation_id] = (
+                    file_record.file_name or Path(file_record.file_path).name
+                )
+
             worker_logger.debug(
                 "Worker %d analyzing content from %s [%s]",
                 worker_id,
@@ -370,8 +383,13 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             if task.name in TEXT_BASED_ANALYSES:
                                 if file_record.extracted_text:
                                     if text_analysis_result is None:
+                                        source_name = (
+                                            file_record.file_name
+                                            or Path(file_record.file_path).name
+                                        )
                                         text_analysis_result = analyze_text_content(
-                                            file_record.extracted_text
+                                            file_record.extracted_text,
+                                            source_name=source_name,
                                         )
                                     if task.name == AnalysisName.TEXT_ANALYSIS:
                                         file_record.summary = text_analysis_result.get(
@@ -480,8 +498,13 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     "financial" in file_record.extracted_text.lower()
                                     or "account" in file_record.extracted_text.lower()
                                 ):
+                                    source_name = (
+                                        file_record.file_name
+                                        or Path(file_record.file_path).name
+                                    )
                                     financial_analysis = analyze_financial_document(
-                                        file_record.extracted_text
+                                        file_record.extracted_text,
+                                        source_name=source_name,
                                     )
                                     file_record.summary = financial_analysis.get(
                                         "summary"
@@ -497,6 +520,19 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     )
                                     file_record.has_financial_red_flags = bool(
                                         financial_analysis.get("potential_red_flags")
+                                    )
+
+                            elif task.name == AnalysisName.ACCESS_DB_ANALYSIS:
+                                result = analyze_access_database(file_record.file_path)
+                                if result.text_analysis:
+                                    file_record.summary = result.text_analysis[
+                                        0
+                                    ].summary
+                                if result.financial_analysis:
+                                    worker_logger.info(
+                                        "Financial analysis for %s: %s",
+                                        file_record.file_path,
+                                        result.financial_analysis,
                                     )
 
                             task.status = AnalysisStatus.COMPLETE
@@ -547,7 +583,6 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                     file_record.file_path,
                     correlation_id,
                 )
-
             except Exception as e:
                 worker_logger.error(
                     "Worker %d failed to analyze content from %s [%s]: %s",
@@ -564,6 +599,9 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                 )
                 with lock:
                     failed_files.add(correlation_id)
+            finally:
+                with lock:
+                    in_progress_files.pop(correlation_id, None)
 
             analysis_queue.task_done()
 
@@ -972,6 +1010,7 @@ def main(
             with lock:
                 completed_count = len(completed_files)
                 failed_count = len(failed_files)
+                active_files = list(in_progress_files.values())
 
             processed_count = completed_count + failed_count
             remaining = pending_files - processed_count
@@ -982,24 +1021,50 @@ def main(
                 if processed_count > 0:
                     estimated_total = elapsed * pending_files / processed_count
                     estimated_remaining = estimated_total - elapsed
-                    run_logger.info(
-                        "Progress: %d/%d completed, %d failed, %d remaining "
-                        "(%.1f%% complete, ~%.1f minutes remaining)",
-                        completed_count,
-                        pending_files,
-                        failed_count,
-                        remaining,
-                        (processed_count / pending_files) * 100,
-                        estimated_remaining / 60,
-                    )
+                    if active_files:
+                        run_logger.info(
+                            "Progress: %d/%d completed, %d failed, %d remaining "
+                            "(%.1f%% complete, ~%.1f minutes remaining) | active: %s",
+                            completed_count,
+                            pending_files,
+                            failed_count,
+                            remaining,
+                            (processed_count / pending_files) * 100,
+                            estimated_remaining / 60,
+                            ", ".join(active_files[:3])
+                            + ("..." if len(active_files) > 3 else ""),
+                        )
+                    else:
+                        run_logger.info(
+                            "Progress: %d/%d completed, %d failed, %d remaining "
+                            "(%.1f%% complete, ~%.1f minutes remaining)",
+                            completed_count,
+                            pending_files,
+                            failed_count,
+                            remaining,
+                            (processed_count / pending_files) * 100,
+                            estimated_remaining / 60,
+                        )
                 else:
-                    run_logger.info(
-                        "Progress: %d/%d completed, %d failed, %d remaining",
-                        completed_count,
-                        pending_files,
-                        failed_count,
-                        remaining,
-                    )
+                    if active_files:
+                        run_logger.info(
+                            "Progress: %d/%d completed, %d failed, %d remaining | "
+                            "active: %s",
+                            completed_count,
+                            pending_files,
+                            failed_count,
+                            remaining,
+                            ", ".join(active_files[:3])
+                            + ("..." if len(active_files) > 3 else ""),
+                        )
+                    else:
+                        run_logger.info(
+                            "Progress: %d/%d completed, %d failed, %d remaining",
+                            completed_count,
+                            pending_files,
+                            failed_count,
+                            remaining,
+                        )
                 last_progress_time = current_time
 
             if remaining <= 0:

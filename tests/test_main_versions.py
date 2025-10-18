@@ -40,7 +40,9 @@ def _build_file_record(
 
 
 def test_reset_outdated_analysis_tasks_updates_text_analysis():
-    record = _build_file_record(task_version_delta=-1, task_name=AnalysisName.TEXT_ANALYSIS)
+    record = _build_file_record(
+        task_version_delta=-1, task_name=AnalysisName.TEXT_ANALYSIS
+    )
     manifest = [record]
 
     reset_count = reset_outdated_analysis_tasks(manifest)

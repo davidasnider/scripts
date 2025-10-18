@@ -22,6 +22,7 @@ from src.schema import AnalysisName
 
 # Truncation length for summary/description fields in tables
 SUMMARY_TRUNCATE_LENGTH = 120
+ACCESS_TABLE_PREVIEW_ROWS = 50
 
 configure_logging()
 logger = logging.getLogger("file_catalog.app")
@@ -32,6 +33,7 @@ st.set_page_config(page_title="Local AI Digital Archive", layout="wide")
 
 # Main title
 st.title("🔎 Local AI Digital Archive")
+
 
 # Load config
 with open("config.yaml", "r", encoding="utf-8") as f:

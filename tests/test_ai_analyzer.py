@@ -1,15 +1,14 @@
 import json
 from unittest.mock import patch
 
-import pytest
 from src.ai_analyzer import analyze_text_content
 
 
 @patch("src.ai_analyzer.ollama.chat")
 def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
-    """
-    Verify that the AI analyzer prompt correctly instructs the model to ignore usernames and only identify real names.
-    This test verifies the behavior through mocked responses rather than actual AI model behavior.
+    """Verify that the AI analyzer prompt correctly instructs the model to ignore
+    usernames and only identify real names. This test verifies the behavior through
+    mocked responses rather than actual AI model behavior.
     """
     # Mock the response from the Ollama chat model
     mock_response = {
@@ -25,7 +24,10 @@ def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
     mock_ollama_chat.return_value = mock_response
 
     # Sample text containing a mix of real names and usernames
-    text = "This document was written by David and reviewed by Brandy. User akanda also contributed."
+    text = (
+        "This document was written by David and reviewed by Brandy. "
+        "User akanda also contributed."
+    )
 
     # Call the function to be tested
     result = analyze_text_content(text)
