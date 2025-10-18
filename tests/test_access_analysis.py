@@ -12,7 +12,16 @@ import pytest
 
 @pytest.fixture
 def access_module(monkeypatch):
-    """Mock access_parser so access_analysis tests run without installing it."""
+    """
+    Mock access_parser so access_analysis tests run without installing it.
+
+    Returns:
+        tuple:
+            module (ModuleType): The imported and reloaded src.access_analysis module.
+            tables (list): List to which fake table objects can be appended.
+            FakeTable (type): The mock table class used for testing.
+            FakeParser (type): The mock parser class used for testing.
+    """
     tables: list[object] = []
 
     class FakeTable:
