@@ -540,6 +540,22 @@ def apply_manifest_filters(
     analysis_tasks_filter = filter_state.get("analysis_tasks", [])
     no_tasks_complete = filter_state.get("no_tasks_complete", False)
 
+    def _status_value(raw_status: Any) -> str:
+        if isinstance(raw_status, AnalysisStatus):
+            return raw_status.value
+        if raw_status is None:
+            return ""
+        return str(raw_status)
+
+    def _task_name_value(raw_name: Any) -> str:
+        if isinstance(raw_name, AnalysisName):
+            return raw_name.value
+        if raw_name is None:
+            return ""
+        return str(raw_name)
+
+    required_task_names = {str(name) for name in analysis_tasks_filter}
+
     for entry in entries:
         if hide_nsfw and entry.get("is_nsfw"):
             continue
@@ -551,17 +567,18 @@ def apply_manifest_filters(
         tasks = entry.get("analysis_tasks", [])
         if fully_analyzed:
             if not tasks or any(
-                task.get("status") != AnalysisStatus.COMPLETE for task in tasks
+                _status_value(task.get("status")) != AnalysisStatus.COMPLETE.value
+                for task in tasks
             ):
                 continue
 
-        if analysis_tasks_filter:
+        if required_task_names:
             completed_tasks = {
-                task["name"]
+                _task_name_value(task.get("name"))
                 for task in tasks
-                if task.get("status") == AnalysisStatus.COMPLETE
+                if _status_value(task.get("status")) == AnalysisStatus.COMPLETE.value
             }
-            if not set(analysis_tasks_filter).issubset(completed_tasks):
+            if not required_task_names.issubset(completed_tasks):
                 continue
 
         if no_tasks_complete:
