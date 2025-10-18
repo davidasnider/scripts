@@ -114,6 +114,15 @@ analysis_logger = logging.getLogger(f"{LOGGER_NAME}.analysis")
 database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
 
 
+def _format_active_files(active: list[str], limit: int = 3) -> str:
+    """Build a short preview of active files for logging."""
+
+    if not active:
+        return ""
+    preview = ", ".join(active[:limit])
+    return preview + ("..." if len(active) > limit else "")
+
+
 def signal_handler(signum, frame):
     """Handle SIGINT/SIGTERM by saving manifest before exit."""
     pipeline_logger.info("Received signal %d, saving manifest before exit...", signum)
@@ -542,15 +551,11 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             elif task.name == AnalysisName.ACCESS_DB_ANALYSIS:
                                 result = analyze_access_database(file_record.file_path)
                                 if result.combined_text:
-                                    if file_record.extracted_text:
-                                        file_record.extracted_text = (
-                                            f"{file_record.extracted_text}\n\n"
-                                            f"{result.combined_text}"
-                                        )
-                                    else:
-                                        file_record.extracted_text = (
-                                            result.combined_text
-                                        )
+                                    file_record.extracted_text = (
+                                        f"{file_record.extracted_text}\n\n{result.combined_text}"
+                                        if file_record.extracted_text
+                                        else result.combined_text
+                                    )
                                 if result.text_analysis:
                                     first_text_analysis = next(
                                         iter(result.text_analysis), None
@@ -866,9 +871,9 @@ def main(
     run_logger.debug("Signal handlers installed for safe manifest saving")
 
     if target_filename:
-        candidate_manifest = list(full_manifest)
+        candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
         run_logger.info(
-            "Targeted run enabled; evaluating %d file(s) for %r.",
+            "Targeted run enabled; evaluating %d incomplete file(s) for %r.",
             len(candidate_manifest),
             target_filename,
         )
@@ -891,11 +896,25 @@ def main(
         ]
 
         if not filtered_manifest:
-            run_logger.warning(
-                "No files matched the filter %r. Nothing to process.",
-                target_filename,
-            )
-            return 0
+            fallback_manifest = [
+                record
+                for record in full_manifest
+                if search_term in record.file_path.lower()
+                or Path(record.file_path).name.lower() == search_term
+            ]
+            if fallback_manifest:
+                run_logger.info(
+                    "Target %r already complete; reprocessing %d file(s).",
+                    target_filename,
+                    len(fallback_manifest),
+                )
+                filtered_manifest = fallback_manifest
+            else:
+                run_logger.warning(
+                    "No files matched the filter %r. Nothing to process.",
+                    target_filename,
+                )
+                return 0
 
         for record in filtered_manifest:
             reset_file_record_for_rescan(record)
@@ -1107,8 +1126,7 @@ def main(
                             remaining,
                             (processed_count / pending_files) * 100,
                             estimated_remaining / 60,
-                            ", ".join(active_files[:3])
-                            + ("..." if len(active_files) > 3 else ""),
+                            _format_active_files(active_files),
                         )
                     else:
                         run_logger.info(
@@ -1130,8 +1148,7 @@ def main(
                             pending_files,
                             failed_count,
                             remaining,
-                            ", ".join(active_files[:3])
-                            + ("..." if len(active_files) > 3 else ""),
+                            _format_active_files(active_files),
                         )
                     else:
                         run_logger.info(

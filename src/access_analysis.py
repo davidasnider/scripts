@@ -15,8 +15,18 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 # At least 50% of values must be parseable as dates for a column to be
-# considered a date series.
+# considered a date series. Only columns whose names hint at temporal data
+# are considered (to avoid repeatedly parsing arbitrary object columns).
 DATE_DETECTION_THRESHOLD = 0.5
+DATE_COLUMN_KEYWORDS = {
+    "date",
+    "datetime",
+    "time",
+    "timestamp",
+    "modified",
+    "created",
+    "updated",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -428,11 +438,13 @@ def _find_date_series(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
         if is_datetime64_any_dtype(series):
             return column, series
         if series.dtype == "object":
-            parsed = pd.to_datetime(series, errors="coerce")
-            if parsed.notna().sum() >= max(
-                1, int(len(series) * DATE_DETECTION_THRESHOLD)
-            ):
-                return column, parsed
+            column_lower = str(column).lower()
+            if any(keyword in column_lower for keyword in DATE_COLUMN_KEYWORDS):
+                parsed = pd.to_datetime(series, errors="coerce")
+                if parsed.notna().sum() >= max(
+                    1, int(len(series) * DATE_DETECTION_THRESHOLD)
+                ):
+                    return column, parsed
     return None, None
 
 
@@ -527,6 +539,11 @@ def _ensure_path_from_upload(
     if isinstance(file_reference, bytes):
         data = file_reference
     else:
+        if hasattr(file_reference, "seek"):
+            try:
+                file_reference.seek(0)
+            except (OSError, AttributeError):
+                pass
         data = file_reference.read()  # type: ignore[assignment]
     if not data:
         raise AccessAnalysisError("Uploaded file is empty.")
@@ -534,6 +551,11 @@ def _ensure_path_from_upload(
     fd, temp_path = tempfile.mkstemp(suffix=suffix)
     with os.fdopen(fd, "wb") as temp_file:
         temp_file.write(data)
+    if not isinstance(file_reference, bytes) and hasattr(file_reference, "seek"):
+        try:
+            file_reference.seek(0)
+        except (OSError, AttributeError):
+            pass
     return Path(temp_path)
 
 

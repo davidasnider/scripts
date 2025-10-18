@@ -45,8 +45,6 @@ def access_module(monkeypatch):
     fake_module.AccessParser = FakeParser
     monkeypatch.setitem(sys.modules, "access_parser", fake_module)
 
-    if "src.access_analysis" in sys.modules:
-        importlib.reload(sys.modules["src.access_analysis"])
     module = importlib.import_module("src.access_analysis")
     module = importlib.reload(module)
 
