@@ -171,6 +171,31 @@ def log_unprocessed_file(
             )
 
 
+def filter_records_by_search_term(
+    records: list[FileRecord], search_term: str
+) -> list[FileRecord]:
+    """Return manifest records whose path or basename matches the search term.
+
+    Performs case-insensitive substring matching on the full path and requires an
+    exact, case-insensitive match on the filename to align with the CLI help text.
+    """
+    normalized_term = search_term.strip().lower()
+    if not normalized_term:
+        return []
+
+    matches: list[FileRecord] = []
+    for record in records:
+        record_path_lower = record.file_path.lower()
+        if normalized_term in record_path_lower:
+            matches.append(record)
+            continue
+
+        if Path(record.file_path).name.lower() == normalized_term:
+            matches.append(record)
+
+    return matches
+
+
 def extract_text_from_svg(file_path: str) -> str:
     """Extract visible text from an SVG, fallback to raw XML if parsing fails."""
     try:
@@ -876,21 +901,14 @@ def main(
     processing_manifest = candidate_manifest
 
     if target_filename:
-        search_term = target_filename.lower()
-        filtered_manifest = [
-            record
-            for record in processing_manifest
-            if search_term in record.file_path.lower()
-            or Path(record.file_path).name.lower() == search_term
-        ]
+        filtered_manifest = filter_records_by_search_term(
+            processing_manifest, target_filename
+        )
 
         if not filtered_manifest:
-            fallback_manifest = [
-                record
-                for record in full_manifest
-                if search_term in record.file_path.lower()
-                or Path(record.file_path).name.lower() == search_term
-            ]
+            fallback_manifest = filter_records_by_search_term(
+                full_manifest, target_filename
+            )
             if fallback_manifest:
                 run_logger.info(
                     "Target %r already complete; reprocessing %d file(s).",
