@@ -34,3 +34,7 @@ repos:
         language: python
         types: [python]
         pass_filenames: false
+        args:
+          - --cov=src
+          - --cov-report=term-missing
+          - --cov-fail-under=60
