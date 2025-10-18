@@ -551,11 +551,16 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             elif task.name == AnalysisName.ACCESS_DB_ANALYSIS:
                                 result = analyze_access_database(file_record.file_path)
                                 if result.combined_text:
-                                    file_record.extracted_text = (
-                                        f"{file_record.extracted_text}\n\n{result.combined_text}"
-                                        if file_record.extracted_text
-                                        else result.combined_text
-                                    )
+                                    existing_text = file_record.extracted_text or ""
+                                    if existing_text:
+                                        if result.combined_text not in existing_text:
+                                            file_record.extracted_text = "\n\n".join(
+                                                [existing_text, result.combined_text]
+                                            )
+                                    else:
+                                        file_record.extracted_text = (
+                                            result.combined_text
+                                        )
                                 if result.text_analysis:
                                     first_text_analysis = next(
                                         iter(result.text_analysis), None
@@ -919,7 +924,8 @@ def main(
         for record in filtered_manifest:
             reset_file_record_for_rescan(record)
             try:
-                collection.delete(ids=[record.file_path])
+                with lock:
+                    collection.delete(ids=[record.file_path])
                 run_logger.debug(
                     "Cleared previous database entry for %s", record.file_path
                 )
