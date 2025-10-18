@@ -271,7 +271,11 @@ def load_access_tables(file_path: str) -> dict[str, pd.DataFrame]:
                     continue
                 try:
                     table_data = parse_table(table_name)
-                except Exception as exc:  # pragma: no cover - defensive logging
+                except (
+                    TypeError,
+                    ValueError,
+                    KeyError,
+                ) as exc:  # pragma: no cover - defensive logging
                     logger.debug(
                         "Failed to parse table '%s' via catalog fallback: %s",
                         table_name,
