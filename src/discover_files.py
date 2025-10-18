@@ -43,6 +43,9 @@ def _calculate_sha256(file_path: Path) -> str:
 
 def _create_task(name: AnalysisName) -> AnalysisTask:
     """Create an analysis task with the current version."""
+    if name not in ANALYSIS_TASK_VERSIONS:
+        logger.error("Unknown analysis task name: %s", name)
+        raise ValueError(f"Unknown analysis task name: {name}")
     return AnalysisTask(name=name, version=ANALYSIS_TASK_VERSIONS[name])
 
 
