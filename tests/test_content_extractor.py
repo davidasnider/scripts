@@ -108,7 +108,7 @@ class TestContentExtractor(unittest.TestCase):
         mock_docx_module = MagicMock()
         mock_docx_module.Document.return_value = mock_doc
 
-        with patch.dict(sys.modules, {'docx': mock_docx_module}):
+        with patch("src.content_extractor.Document", return_value=mock_doc):
             text = extract_content_from_docx("dummy.docx")
 
         self.assertEqual(text, "Hello\nWorld")
@@ -125,7 +125,8 @@ class TestContentExtractor(unittest.TestCase):
         mock_pd.ExcelFile.return_value = mock_excel_file
         mock_pd.read_excel.return_value = mock_df
 
-        with patch.dict(sys.modules, {'pandas': mock_pd}):
+        with patch("src.content_extractor.pd.ExcelFile", return_value=mock_excel_file), \
+             patch("src.content_extractor.pd.read_excel", return_value=mock_df):
             text = extract_content_from_xlsx("dummy.xlsx")
 
         self.assertIn("SHEET: Sheet1", text)
