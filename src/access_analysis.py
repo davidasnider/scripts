@@ -228,9 +228,7 @@ def load_access_tables(file_path: str) -> dict[str, pd.DataFrame]:
         )
 
     if not tables:
-        raise AccessAnalysisError(
-            "No tables were discovered in the Access database."
-        )
+        raise AccessAnalysisError("No tables were discovered in the Access database.")
 
     return tables
 
@@ -268,15 +266,9 @@ def _derive_summary(text: str, limit: int = 400) -> str:
 
 
 def _extract_key_themes(text: str, limit: int = 5) -> list[str]:
-    words = [
-        re.sub(r"[^a-zA-Z]", "", token.lower())
-        for token in text.split()
-        if token
-    ]
+    words = [re.sub(r"[^a-zA-Z]", "", token.lower()) for token in text.split() if token]
     filtered = [
-        word
-        for word in words
-        if word and word not in STOP_WORDS and len(word) > 3
+        word for word in words if word and word not in STOP_WORDS and len(word) > 3
     ]
     counts = Counter(filtered)
     return [word for word, _ in counts.most_common(limit)]
@@ -301,9 +293,7 @@ def _analyze_sentiment(text: str) -> SentimentResult:
         return SentimentResult(label="neutral", score=0.0)
 
     tokens = [
-        re.sub(r"[^a-zA-Z]", "", token.lower())
-        for token in text.split()
-        if token
+        re.sub(r"[^a-zA-Z]", "", token.lower()) for token in text.split() if token
     ]
     total = len(tokens) or 1
     score = 0
@@ -350,13 +340,15 @@ def _find_date_series(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
         if is_datetime64_any_dtype(series):
             return column, series
         if series.dtype == "object":
-            parsed = pd.to_datetime(series, errors="coerce", utc=False)
+            parsed = pd.to_datetime(series, errors="coerce")
             if parsed.notna().sum() >= max(1, len(series) // 2):
                 return column, parsed
     return None, None
 
 
-def analyze_financial_tables(tables: dict[str, pd.DataFrame]) -> list[FinancialAnalysisResult]:
+def analyze_financial_tables(
+    tables: dict[str, pd.DataFrame],
+) -> list[FinancialAnalysisResult]:
     """Inspect numeric columns for financial performance signals."""
 
     insights: list[FinancialAnalysisResult] = []

@@ -128,6 +128,7 @@ def test_analyze_access_database_accepts_file_like(access_module, monkeypatch):
         )
     ]
 
+    original_unlink = module.os.unlink
     deleted_paths: list[Path] = []
 
     def fake_unlink(path):
@@ -135,11 +136,13 @@ def test_analyze_access_database_accepts_file_like(access_module, monkeypatch):
 
     monkeypatch.setattr(module.os, "unlink", fake_unlink)
 
-    result = module.analyze_access_database(BytesIO(b"fake-bytes"), filename="legacy.mdb")
+    result = module.analyze_access_database(
+        BytesIO(b"fake-bytes"), filename="legacy.mdb"
+    )
 
     assert isinstance(result, module.AccessAnalysisResult)
     assert FakeParser.paths  # parser invoked with temporary file path
     assert deleted_paths  # temporary file cleaned up
 
     for path in deleted_paths:
-        path.unlink(missing_ok=True)
+        original_unlink(path)

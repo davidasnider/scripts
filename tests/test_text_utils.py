@@ -1,5 +1,5 @@
-import pytest
 from src.text_utils import chunk_text, tokenizer
+
 
 def test_chunk_text_splits_correctly():
     """Verify that text is split into correctly sized chunks."""

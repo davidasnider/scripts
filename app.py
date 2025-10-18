@@ -39,7 +39,6 @@ st.set_page_config(page_title="Local AI Digital Archive", layout="wide")
 # Main title
 st.title("🔎 Local AI Digital Archive")
 
-render_access_database_analyzer()
 
 # Load config
 with open("config.yaml", "r", encoding="utf-8") as f:
@@ -1425,6 +1424,8 @@ def generate_response(
         logger.exception("Failed to generate LLM response")
         return iter([])  # Return empty iterator
 
+
+render_access_database_analyzer()
 
 chat_tab, browser_tab = st.tabs(["Chat", "File Browser"])
 

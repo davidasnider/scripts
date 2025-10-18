@@ -1,8 +1,10 @@
-import pytest
-from src.schema import FileRecord, PENDING_EXTRACTION
+from src.schema import PENDING_EXTRACTION, FileRecord
+
 
 def test_file_record_defaults():
-    """Verify that a FileRecord can be created with minimal data and defaults are set."""
+    """
+    Verify that a FileRecord can be created with minimal data and defaults are set.
+    """
     record = FileRecord(
         file_path="/path/to/file.txt",
         file_name="file.txt",
