@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
 from src.database_manager import (
     add_file_to_db,
