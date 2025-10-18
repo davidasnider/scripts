@@ -41,6 +41,15 @@ def _calculate_sha256(file_path: Path) -> str:
     return sha256_hash.hexdigest()
 
 
+def _create_task(name: AnalysisName) -> AnalysisTask:
+    """Create an analysis task with the current version."""
+    return AnalysisTask(name=name, version=ANALYSIS_TASK_VERSIONS[name])
+
+
+def _create_tasks(*names: AnalysisName) -> list[AnalysisTask]:
+    return [_create_task(name) for name in names]
+
+
 def _get_analysis_tasks(mime_type: str, file_path: str = "") -> list[AnalysisTask]:
     tasks = []
     if (
@@ -50,53 +59,25 @@ def _get_analysis_tasks(mime_type: str, file_path: str = "") -> list[AnalysisTas
         or mime_type.endswith("sheet")
     ):
         tasks.extend(
-            (
-                AnalysisTask(
-                    name=AnalysisName.TEXT_ANALYSIS,
-                    version=ANALYSIS_TASK_VERSIONS[AnalysisName.TEXT_ANALYSIS],
-                ),
-                AnalysisTask(
-                    name=AnalysisName.PEOPLE_ANALYSIS,
-                    version=ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS],
-                ),
+            _create_tasks(
+                AnalysisName.TEXT_ANALYSIS,
+                AnalysisName.PEOPLE_ANALYSIS,
             )
         )
     if mime_type.startswith("image/"):
-        tasks.append(
-            AnalysisTask(
-                name=AnalysisName.IMAGE_DESCRIPTION,
-                version=ANALYSIS_TASK_VERSIONS[AnalysisName.IMAGE_DESCRIPTION],
-            )
-        )
-        tasks.append(
-            AnalysisTask(
-                name=AnalysisName.NSFW_CLASSIFICATION,
-                version=ANALYSIS_TASK_VERSIONS[AnalysisName.NSFW_CLASSIFICATION],
-            )
-        )
         tasks.extend(
-            (
-                AnalysisTask(
-                    name=AnalysisName.TEXT_ANALYSIS,
-                    version=ANALYSIS_TASK_VERSIONS[AnalysisName.TEXT_ANALYSIS],
-                ),
-                AnalysisTask(
-                    name=AnalysisName.PEOPLE_ANALYSIS,
-                    version=ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS],
-                ),
+            _create_tasks(
+                AnalysisName.IMAGE_DESCRIPTION,
+                AnalysisName.NSFW_CLASSIFICATION,
+                AnalysisName.TEXT_ANALYSIS,
+                AnalysisName.PEOPLE_ANALYSIS,
             )
         )
     if mime_type.startswith("video/") and not file_path.lower().endswith(".asx"):
-        tasks.append(
-            AnalysisTask(
-                name=AnalysisName.VIDEO_SUMMARY,
-                version=ANALYSIS_TASK_VERSIONS[AnalysisName.VIDEO_SUMMARY],
-            )
-        )
-        tasks.append(
-            AnalysisTask(
-                name=AnalysisName.NSFW_CLASSIFICATION,
-                version=ANALYSIS_TASK_VERSIONS[AnalysisName.NSFW_CLASSIFICATION],
+        tasks.extend(
+            _create_tasks(
+                AnalysisName.VIDEO_SUMMARY,
+                AnalysisName.NSFW_CLASSIFICATION,
             )
         )
 
