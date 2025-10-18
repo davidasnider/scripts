@@ -400,7 +400,7 @@ def _analyze_sentiment(text: str) -> SentimentResult:
     tokens = [
         re.sub(r"[^a-zA-Z]", "", token.lower()) for token in text.split() if token
     ]
-    total = len(tokens) or 1
+    total = len(tokens) if tokens else 1
     score = sum(SENTIMENT_SCORES.get(token, 0) for token in tokens)
     normalized = score / total
     if normalized > 0.05:
