@@ -1110,7 +1110,7 @@ with st.container():
         )
     with filter_col7:
         st.session_state.filters["analysis_tasks"] = st.multiselect(
-            "Has analysis:",
+            "Completed analyses:",
             options=[task.value for task in AnalysisName],
             default=st.session_state.filters["analysis_tasks"],
         )
