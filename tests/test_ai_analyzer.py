@@ -7,7 +7,10 @@ from src.ai_analyzer import analyze_text_content
 
 @patch("src.ai_analyzer.ollama.chat")
 def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
-    """Verify that the AI analyzer ignores usernames and only identifies real names."""
+    """
+    Verify that the AI analyzer prompt correctly instructs the model to ignore usernames and only identify real names.
+    This test verifies the behavior through mocked responses rather than actual AI model behavior.
+    """
     # Mock the response from the Ollama chat model
     mock_response = {
         "message": {
