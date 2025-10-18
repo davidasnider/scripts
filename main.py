@@ -26,6 +26,7 @@ import pandas as pd
 import typer
 from typing_extensions import Annotated
 
+from src.access_analysis import analyze_access_database
 from src.ai_analyzer import (
     analyze_financial_document,
     analyze_text_content,
@@ -50,6 +51,7 @@ from src.schema import (
     PENDING_EXTRACTION,
     AnalysisName,
     AnalysisStatus,
+    AnalysisTask,
     FileRecord,
 )
 
@@ -275,6 +277,11 @@ def extraction_worker(worker_id: int) -> None:
                     )
                     file_record.extracted_frames = extracted_frames
 
+                elif file_record.mime_type == "application/x-msaccess":
+                    file_record.analysis_tasks.append(
+                        AnalysisTask(name=AnalysisName.ACCESS_DB_ANALYSIS)
+                    )
+
                 extraction_duration = time.time() - stage_start
                 extracted_text_len = len(file_record.extracted_text or "")
                 extracted_frame_count = len(file_record.extracted_frames or [])
@@ -497,6 +504,19 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     )
                                     file_record.has_financial_red_flags = bool(
                                         financial_analysis.get("potential_red_flags")
+                                    )
+
+                            elif task.name == AnalysisName.ACCESS_DB_ANALYSIS:
+                                result = analyze_access_database(file_record.file_path)
+                                if result.text_analysis:
+                                    file_record.summary = result.text_analysis[
+                                        0
+                                    ].summary
+                                if result.financial_analysis:
+                                    worker_logger.info(
+                                        "Financial analysis for %s: %s",
+                                        file_record.file_path,
+                                        result.financial_analysis,
                                     )
 
                             task.status = AnalysisStatus.COMPLETE
