@@ -255,10 +255,7 @@ def _derive_summary(text: str, limit: int = 400) -> str:
         return "No textual content detected."
 
     sentences = re.split(r"(?<=[.!?])\s+", cleaned)
-    if sentences:
-        summary = " ".join(sentences[:2])
-    else:
-        summary = cleaned[:limit]
+    summary = " ".join(sentences[:2])
 
     if len(summary) > limit:
         summary = summary[: limit - 3].rstrip() + "..."
@@ -354,12 +351,13 @@ def analyze_financial_tables(
     insights: list[FinancialAnalysisResult] = []
 
     for name, df in tables.items():
-        numeric_cols = [
-            col
-            for col in df.columns
-            if is_numeric_dtype(df[col])
-            or any(keyword in str(col).lower() for keyword in FINANCIAL_KEYWORDS)
-        ]
+        numeric_cols = []
+        for col in df.columns:
+            col_lower = str(col).lower()
+            if is_numeric_dtype(df[col]) or any(
+                keyword in col_lower for keyword in FINANCIAL_KEYWORDS
+            ):
+                numeric_cols.append(col)
         metrics: list[FinancialMetric] = []
         trends: list[FinancialTrend] = []
 

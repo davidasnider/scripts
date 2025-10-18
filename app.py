@@ -282,7 +282,9 @@ def _render_access_financial_insights(result: AccessAnalysisResult) -> None:
             )
             if trend_df.empty:
                 continue
-            chart_key = f"trend_chart_{abs(hash((insight.table_name, trend.column)))}"
+            chart_key = f"trend_chart_{insight.table_name}_{trend.column}".replace(
+                " ", "_"
+            )
             st.line_chart(
                 trend_df.set_index("Period"),
                 height=240,
