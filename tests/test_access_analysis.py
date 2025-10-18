@@ -24,6 +24,8 @@ def access_module(monkeypatch):
 
     class FakeParser:
         paths: list[str] = []
+        catalog_map: dict[str, int] = {}
+        catalog_data: dict[str, dict[str, list[object]]] = {}
 
         def __init__(self, path: str):
             self.path = path
@@ -31,6 +33,13 @@ def access_module(monkeypatch):
 
         def tables(self):
             return list(tables)
+
+        @property
+        def catalog(self):
+            return self.__class__.catalog_map
+
+        def parse_table(self, table_name: str):
+            return self.__class__.catalog_data.get(table_name)
 
     fake_module = ModuleType("access_parser")
     fake_module.AccessParser = FakeParser
@@ -43,6 +52,8 @@ def access_module(monkeypatch):
 
     tables.clear()
     FakeParser.paths = []
+    FakeParser.catalog_map = {}
+    FakeParser.catalog_data = {}
 
     return module, tables, FakeTable, FakeParser
 
@@ -68,6 +79,21 @@ def test_load_access_tables_raises_when_empty(access_module):
 
     with pytest.raises(module.AccessAnalysisError):
         module.load_access_tables("empty.mdb")
+
+
+def test_load_access_tables_supports_catalog_fallback(access_module):
+    module, tables, _, FakeParser = access_module
+    tables[:] = []
+    FakeParser.catalog_map = {"Customers": 10, "MSysObjects": 1}
+    FakeParser.catalog_data = {
+        "Customers": {"name": ["Alice"], "city": ["Denver"]},
+        "MSysObjects": {"Name": ["System"]},
+    }
+
+    loaded = module.load_access_tables("catalog-only.mdb")
+
+    assert set(loaded.keys()) == {"Customers"}
+    assert loaded["Customers"].iloc[0]["city"] == "Denver"
 
 
 def test_analyze_text_tables_extracts_themes_and_entities(access_module):
@@ -143,6 +169,9 @@ def test_analyze_access_database_accepts_file_like(access_module, monkeypatch):
     assert isinstance(result, module.AccessAnalysisResult)
     assert FakeParser.paths  # parser invoked with temporary file path
     assert deleted_paths  # temporary file cleaned up
+    assert result.table_text["Activity"]
+    assert "Improved profit margins" in result.table_text["Activity"]
+    assert "Improved profit margins" in result.combined_text
 
     for path in deleted_paths:
         original_unlink(path)

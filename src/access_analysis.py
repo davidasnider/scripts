@@ -166,6 +166,8 @@ class AccessAnalysisResult:
     tables: dict[str, pd.DataFrame]
     text_analysis: list[TextAnalysisResult]
     financial_analysis: list[FinancialAnalysisResult]
+    table_text: dict[str, str]
+    combined_text: str
 
 
 def _iter_table_rows(table: object) -> Iterable[dict]:
@@ -210,8 +212,10 @@ def load_access_tables(file_path: str) -> dict[str, pd.DataFrame]:
 
     parser = AccessParser(file_path)
     tables: dict[str, pd.DataFrame] = {}
+    found_tables = False
 
     for table in _iter_tables(parser):
+        found_tables = True
         table_name = getattr(table, "name", None)
         if table_name is None and isinstance(table, (list, tuple)) and table:
             potential_name = table[0]
@@ -230,6 +234,52 @@ def load_access_tables(file_path: str) -> dict[str, pd.DataFrame]:
             len(rows),
             len(tables[table_name].columns),
         )
+    if not found_tables:
+        catalog = getattr(parser, "catalog", None)
+        parse_table = getattr(parser, "parse_table", None)
+        if catalog and callable(parse_table):
+            try:
+                raw_names = list(catalog.keys())  # type: ignore[attr-defined]
+            except AttributeError:
+                try:
+                    raw_names = list(catalog)
+                except TypeError:
+                    raw_names = []
+            for raw_name in raw_names:
+                table_name = str(raw_name)
+                if table_name.lower().startswith("msys"):
+                    logger.debug("Skipping Access system table '%s'", table_name)
+                    continue
+                try:
+                    table_data = parse_table(table_name)
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.debug(
+                        "Failed to parse table '%s' via catalog fallback: %s",
+                        table_name,
+                        exc,
+                    )
+                    continue
+                if not table_data:
+                    logger.debug(
+                        "Catalog fallback returned no data for table '%s'", table_name
+                    )
+                    continue
+                try:
+                    frame = pd.DataFrame(dict(table_data))
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.debug(
+                        "Could not convert table '%s' to DataFrame: %s",
+                        table_name,
+                        exc,
+                    )
+                    continue
+                tables[table_name] = frame
+                logger.debug(
+                    "Loaded table '%s' (%d rows, %d columns) via catalog fallback",
+                    table_name,
+                    len(frame),
+                    len(frame.columns),
+                )
 
     if not tables:
         raise AccessAnalysisError("No tables were discovered in the Access database.")
@@ -251,6 +301,41 @@ def _flatten_text_columns(df: pd.DataFrame) -> str:
         series = df[col].dropna().astype(str)
         parts.append(" ".join(series.tolist()))
     return " \n".join(parts)
+
+
+def _extract_table_text(df: pd.DataFrame) -> str:
+    """Flatten all column values into a single text block."""
+
+    if df.empty:
+        return ""
+
+    sections: list[str] = []
+    for column in df.columns:
+        series = df[column].dropna()
+        if series.empty:
+            continue
+        values = series.astype(str).tolist()
+        if not values:
+            continue
+        column_name = str(column)
+        sections.append(f"{column_name}: {' '.join(values)}")
+    return "\n".join(sections)
+
+
+def _gather_table_text(tables: dict[str, pd.DataFrame]) -> tuple[dict[str, str], str]:
+    """Build per-table and combined text representations."""
+
+    table_text: dict[str, str] = {}
+    combined_chunks: list[str] = []
+
+    for name, df in tables.items():
+        text = _extract_table_text(df)
+        table_text[name] = text
+        if text:
+            combined_chunks.append(f"Table {name}:\n{text}")
+
+    combined_text = "\n\n".join(combined_chunks)
+    return table_text, combined_text
 
 
 def _derive_summary(text: str, limit: int = 400) -> str:
@@ -463,12 +548,15 @@ def analyze_access_database(
 
     try:
         tables = load_access_tables(str(path))
+        table_text, combined_text = _gather_table_text(tables)
         text_analysis = analyze_text_tables(tables)
         financial_analysis = analyze_financial_tables(tables)
         return AccessAnalysisResult(
             tables=tables,
             text_analysis=text_analysis,
             financial_analysis=financial_analysis,
+            table_text=table_text,
+            combined_text=combined_text,
         )
     finally:
         if created_temp:

@@ -42,9 +42,13 @@ from src.content_extractor import (
 )
 from src.database_manager import add_file_to_db, initialize_db
 from src.logging_utils import configure_logging
-from src.manifest_utils import reset_outdated_analysis_tasks
+from src.manifest_utils import (
+    reset_file_record_for_rescan,
+    reset_outdated_analysis_tasks,
+)
 from src.nsfw_classifier import NSFWClassifier
 from src.schema import (
+    ANALYSIS_TASK_VERSIONS,
     COMPLETE,
     FAILED,
     PENDING_ANALYSIS,
@@ -279,9 +283,22 @@ def extraction_worker(worker_id: int) -> None:
                     file_record.extracted_frames = extracted_frames
 
                 elif file_record.mime_type == "application/x-msaccess":
-                    file_record.analysis_tasks.append(
-                        AnalysisTask(name=AnalysisName.ACCESS_DB_ANALYSIS)
-                    )
+                    required_tasks = [
+                        AnalysisName.ACCESS_DB_ANALYSIS,
+                        AnalysisName.TEXT_ANALYSIS,
+                        AnalysisName.PEOPLE_ANALYSIS,
+                    ]
+                    existing_task_names = {
+                        task.name for task in file_record.analysis_tasks
+                    }
+                    for task_name in required_tasks:
+                        if task_name not in existing_task_names:
+                            file_record.analysis_tasks.append(
+                                AnalysisTask(
+                                    name=task_name,
+                                    version=ANALYSIS_TASK_VERSIONS[task_name],
+                                )
+                            )
 
                 extraction_duration = time.time() - stage_start
                 extracted_text_len = len(file_record.extracted_text or "")
@@ -524,10 +541,21 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
 
                             elif task.name == AnalysisName.ACCESS_DB_ANALYSIS:
                                 result = analyze_access_database(file_record.file_path)
+                                if result.combined_text:
+                                    if file_record.extracted_text:
+                                        file_record.extracted_text = (
+                                            f"{file_record.extracted_text}\n\n"
+                                            f"{result.combined_text}"
+                                        )
+                                    else:
+                                        file_record.extracted_text = (
+                                            result.combined_text
+                                        )
                                 if result.text_analysis:
-                                    file_record.summary = result.text_analysis[
-                                        0
-                                    ].summary
+                                    if not file_record.summary:
+                                        file_record.summary = result.text_analysis[
+                                            0
+                                        ].summary
                                 if result.financial_analysis:
                                     worker_logger.info(
                                         "Financial analysis for %s: %s",
@@ -831,20 +859,21 @@ def main(
     signal.signal(signal.SIGTERM, signal_handler)
     run_logger.debug("Signal handlers installed for safe manifest saving")
 
-    if batch_size > 0:
-        unprocessed_files = [f for f in full_manifest if f.status != COMPLETE]
-        processing_manifest = unprocessed_files[:batch_size]
+    if target_filename:
+        candidate_manifest = list(full_manifest)
         run_logger.info(
-            "Found %d unprocessed files. Processing batch of %d files.",
-            len(unprocessed_files),
-            len(processing_manifest),
+            "Targeted run enabled; evaluating %d file(s) for %r.",
+            len(candidate_manifest),
+            target_filename,
         )
     else:
-        processing_manifest = [f for f in full_manifest if f.status != COMPLETE]
+        candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
         run_logger.info(
-            "Found %d unprocessed files. Processing all remaining files.",
-            len(processing_manifest),
+            "Found %d unprocessed files.",
+            len(candidate_manifest),
         )
+
+    processing_manifest = candidate_manifest
 
     if target_filename:
         search_term = target_filename.lower()
@@ -862,12 +891,53 @@ def main(
             )
             return 0
 
+        for record in filtered_manifest:
+            reset_file_record_for_rescan(record)
+            try:
+                collection.delete(ids=[record.file_path])
+                run_logger.debug(
+                    "Cleared previous database entry for %s", record.file_path
+                )
+            except Exception as exc:  # pragma: no cover - depends on chromadb impl
+                run_logger.debug(
+                    "No existing database entry to clear for %s: %s",
+                    record.file_path,
+                    exc,
+                )
+
         processing_manifest = filtered_manifest
         run_logger.info(
-            "Filtered manifest to %d file(s) matching %r.",
+            "Filtered manifest to %d file(s) matching %r and reset prior analysis.",
             len(processing_manifest),
             target_filename,
         )
+    elif batch_size > 0:
+        processing_manifest = candidate_manifest[:batch_size]
+        run_logger.info(
+            "Processing batch of %d file(s) from %d available.",
+            len(processing_manifest),
+            len(candidate_manifest),
+        )
+    else:
+        run_logger.info(
+            "Processing all remaining files (%d).", len(processing_manifest)
+        )
+
+    if batch_size > 0 and target_filename:
+        limited_manifest = processing_manifest[:batch_size]
+        if not limited_manifest:
+            run_logger.warning(
+                "Batch size %d left no files to process after filtering.",
+                batch_size,
+            )
+            return 0
+        if len(limited_manifest) < len(processing_manifest):
+            run_logger.info(
+                "Batch size limit reduced targeted set to %d file(s) (from %d).",
+                len(limited_manifest),
+                len(processing_manifest),
+            )
+        processing_manifest = limited_manifest
 
     if per_mime_limit > 0:
         mime_counts: dict[str, int] = {}

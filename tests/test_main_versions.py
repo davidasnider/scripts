@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from src.manifest_utils import reset_outdated_analysis_tasks
+from src.manifest_utils import (
+    reset_file_record_for_rescan,
+    reset_outdated_analysis_tasks,
+)
 from src.schema import (
     ANALYSIS_TASK_VERSIONS,
     COMPLETE,
     FAILED,
     PENDING_ANALYSIS,
+    PENDING_EXTRACTION,
     AnalysisName,
     AnalysisStatus,
     AnalysisTask,
@@ -113,3 +117,79 @@ def test_reset_outdated_analysis_tasks_updates_failed_records():
     assert task.status == AnalysisStatus.PENDING
     assert task.error_message is None
     assert record.status == PENDING_ANALYSIS
+
+
+def test_reset_file_record_for_rescan_clears_previous_analysis():
+    record = FileRecord(
+        file_path="/tmp/report.txt",
+        file_name="report.txt",
+        mime_type="text/plain",
+        file_size=10,
+        last_modified=0.0,
+        sha256="123",
+        status=COMPLETE,
+        extracted_text="old text",
+        summary="old summary",
+        description="old description",
+        mentioned_people=["Alice"],
+        is_nsfw=True,
+        has_financial_red_flags=True,
+        potential_red_flags=["flag"],
+        incriminating_items=["item"],
+        confidence_score=42,
+        analysis_tasks=[
+            AnalysisTask(
+                name=AnalysisName.TEXT_ANALYSIS,
+                status=AnalysisStatus.COMPLETE,
+                version=ANALYSIS_TASK_VERSIONS[AnalysisName.TEXT_ANALYSIS],
+            )
+        ],
+    )
+
+    reset_file_record_for_rescan(record)
+
+    assert record.status == PENDING_EXTRACTION
+    assert record.extracted_text is None
+    assert record.summary is None
+    assert record.description is None
+    assert record.mentioned_people == []
+    assert record.is_nsfw is None
+    assert record.has_financial_red_flags is None
+    assert record.potential_red_flags == []
+    assert record.incriminating_items == []
+    assert record.confidence_score is None
+    task_names = [task.name for task in record.analysis_tasks]
+    assert task_names == [
+        AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.PEOPLE_ANALYSIS,
+    ]
+    assert all(task.status == AnalysisStatus.PENDING for task in record.analysis_tasks)
+
+
+def test_reset_file_record_for_rescan_drops_access_analysis_tasks():
+    record = FileRecord(
+        file_path="/tmp/db.mdb",
+        file_name="db.mdb",
+        mime_type="application/x-msaccess",
+        file_size=10,
+        last_modified=0.0,
+        sha256="456",
+        status=COMPLETE,
+        analysis_tasks=[
+            AnalysisTask(
+                name=AnalysisName.ACCESS_DB_ANALYSIS,
+                status=AnalysisStatus.COMPLETE,
+            )
+        ],
+    )
+
+    reset_file_record_for_rescan(record)
+
+    assert record.status == PENDING_EXTRACTION
+    task_names = [task.name for task in record.analysis_tasks]
+    assert task_names == [
+        AnalysisName.ACCESS_DB_ANALYSIS,
+        AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.PEOPLE_ANALYSIS,
+    ]
+    assert all(task.status == AnalysisStatus.PENDING for task in record.analysis_tasks)

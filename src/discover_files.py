@@ -55,6 +55,18 @@ def _create_tasks(*names: AnalysisName) -> list[AnalysisTask]:
 
 def _get_analysis_tasks(mime_type: str, file_path: str = "") -> list[AnalysisTask]:
     tasks = []
+    normalized_mime = mime_type.lower()
+
+    if normalized_mime == "application/x-msaccess":
+        tasks.extend(
+            _create_tasks(
+                AnalysisName.ACCESS_DB_ANALYSIS,
+                AnalysisName.TEXT_ANALYSIS,
+                AnalysisName.PEOPLE_ANALYSIS,
+            )
+        )
+        return tasks
+
     if (
         mime_type.startswith("text/")
         or mime_type == "application/pdf"

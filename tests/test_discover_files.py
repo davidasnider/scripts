@@ -72,6 +72,19 @@ def test_get_analysis_tasks_for_pdf_file():
     assert {task.name for task in tasks} == expected
 
 
+def test_get_analysis_tasks_for_access_file():
+    """Verify Access databases receive Access plus text analyses."""
+    tasks = discover_files._get_analysis_tasks(
+        "application/x-msaccess", "inventory.mdb"
+    )
+    expected = {
+        AnalysisName.ACCESS_DB_ANALYSIS,
+        AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.PEOPLE_ANALYSIS,
+    }
+    assert {task.name for task in tasks} == expected
+
+
 def test_get_analysis_tasks_for_image_file():
     """Verify correct tasks are assigned for image MIME types."""
     tasks = discover_files._get_analysis_tasks("image/jpeg", "image.jpg")
