@@ -2,22 +2,24 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.content_extractor import (
-    extract_content_from_image,
-    extract_text_from_svg,
-    preprocess_for_ocr,
-    extract_content_from_docx,
-    extract_content_from_xlsx,
-    extract_frames_from_video,
-)
-from PIL import Image
 import numpy as np
 import pandas as pd
+from PIL import Image
+
+from src.content_extractor import (
+    extract_content_from_docx,
+    extract_content_from_image,
+    extract_content_from_xlsx,
+    extract_frames_from_video,
+    extract_text_from_svg,
+    preprocess_for_ocr,
+)
 
 # pytesseract is an optional dependency, so we handle the import error
 try:
     from pytesseract import TesseractNotFoundError
 except ImportError:
+
     class TesseractNotFoundError(Exception):
         pass
 
@@ -50,15 +52,16 @@ class TestContentExtractor(unittest.TestCase):
         """Test text extraction from a generic image."""
         # Configure the mock image to have the correct data type
         mock_image = MagicMock()
-        mock_image.mode = 'L'
+        mock_image.mode = "L"
         mock_image.convert.return_value = mock_image
+        mock_image_open.return_value = mock_image
 
         # Correct the dtype of the numpy array
         mock_array = np.zeros((10, 10), dtype=np.uint8)
         mock_image.load.return_value = mock_array
 
         # Mock np.array to return the correct array
-        with patch('src.content_extractor.np.array', return_value=mock_array):
+        with patch("src.content_extractor.np.array", return_value=mock_array):
             mock_pytesseract = MagicMock()
             mock_pytesseract.image_to_string.return_value = "some text"
 
@@ -72,15 +75,16 @@ class TestContentExtractor(unittest.TestCase):
         """Test TesseractNotFoundError handling."""
         # Configure the mock image to have the correct data type
         mock_image = MagicMock()
-        mock_image.mode = 'L'
+        mock_image.mode = "L"
         mock_image.convert.return_value = mock_image
+        mock_image_open.return_value = mock_image
 
         # Correct the dtype of the numpy array
         mock_array = np.zeros((10, 10), dtype=np.uint8)
         mock_image.load.return_value = mock_array
 
         # Mock np.array to return the correct array
-        with patch('src.content_extractor.np.array', return_value=mock_array):
+        with patch("src.content_extractor.np.array", return_value=mock_array):
             mock_pytesseract = MagicMock()
             mock_pytesseract.TesseractNotFoundError = TesseractNotFoundError
             mock_pytesseract.image_to_string.side_effect = TesseractNotFoundError
@@ -105,9 +109,6 @@ class TestContentExtractor(unittest.TestCase):
         mock_doc.paragraphs[0].text = "Hello"
         mock_doc.paragraphs[1].text = "World"
 
-        mock_docx_module = MagicMock()
-        mock_docx_module.Document.return_value = mock_doc
-
         with patch("src.content_extractor.Document", return_value=mock_doc):
             text = extract_content_from_docx("dummy.docx")
 
@@ -119,14 +120,22 @@ class TestContentExtractor(unittest.TestCase):
         mock_excel_file = MagicMock()
         mock_excel_file.sheet_names = ["Sheet1"]
 
-        mock_df = pd.DataFrame({'col1': [1, 2], 'col2': ['a', 'b']})
+        mock_df = pd.DataFrame({"col1": [1, 2], "col2": ["a", "b"]})
 
         mock_pd = MagicMock()
         mock_pd.ExcelFile.return_value = mock_excel_file
         mock_pd.read_excel.return_value = mock_df
 
-        with patch("src.content_extractor.pd.ExcelFile", return_value=mock_excel_file), \
-             patch("src.content_extractor.pd.read_excel", return_value=mock_df):
+        with (
+            patch(
+                "src.content_extractor.pd.ExcelFile",
+                return_value=mock_excel_file,
+            ),
+            patch(
+                "src.content_extractor.pd.read_excel",
+                return_value=mock_df,
+            ),
+        ):
             text = extract_content_from_xlsx("dummy.xlsx")
 
         self.assertIn("SHEET: Sheet1", text)
