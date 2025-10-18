@@ -55,7 +55,7 @@ class AnalysisTask(BaseModel):
     name: AnalysisName
     status: AnalysisStatus = AnalysisStatus.PENDING
     error_message: str | None = None
-    version: int = Field(default=0, ge=0)
+    version: int = Field(default=DEFAULT_ANALYSIS_TASK_VERSION, ge=0)
 
 
 class FileRecord(BaseModel):
