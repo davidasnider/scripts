@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import ollama
@@ -38,14 +39,29 @@ def _clean_json_response(response_text: str) -> str:
     return response_text.strip()
 
 
-def analyze_text_content(text: str) -> dict[str, Any]:
+def _resolve_source_name(source_name: str | None) -> str:
+    """Return a display-friendly source name for logging."""
+    if not source_name:
+        return "unknown-source"
+    try:
+        resolved = Path(source_name).name
+        return resolved or source_name
+    except (TypeError, ValueError):
+        return str(source_name)
+
+
+def analyze_text_content(
+    text: str, *, source_name: str | None = None
+) -> dict[str, Any]:
     """Analyze text content using an LLM to extract summary and mentioned people."""
     text_bytes = len(text.encode("utf-8"))
+    source_display_name = _resolve_source_name(source_name)
     logger.debug(
         "Starting text content analysis, text length: %d bytes",
         text_bytes,
     )
     if text_bytes <= 3000:
+        logger.info("Text analysis processing single chunk for %s", source_display_name)
         # Single chunk processing
         prompt = (
             "You are a document analyst. Analyze the following text and provide a "
@@ -82,10 +98,24 @@ def analyze_text_content(text: str) -> dict[str, Any]:
 
     # Multi-chunk processing
     chunks = chunk_text(text, max_tokens=2048)
+    total_chunks = len(chunks)
+    logger.info(
+        "Text analysis processing %d chunk(s) for %s",
+        total_chunks,
+        source_display_name,
+    )
     all_summaries = []
     all_people = set()
 
     for i, chunk in enumerate(chunks):
+        remaining_chunks = total_chunks - (i + 1)
+        logger.info(
+            "Text analysis chunk %d/%d for %s (%d remaining)",
+            i + 1,
+            total_chunks,
+            source_display_name,
+            remaining_chunks,
+        )
         prompt = (
             f"You are a document analyst. Analyze chunk {i+1} of {len(chunks)} of the "
             "following text and provide a JSON response with exactly two keys:\n\n"
@@ -101,9 +131,10 @@ def analyze_text_content(text: str) -> dict[str, Any]:
 
         try:
             logger.debug(
-                "Sending Ollama request for text chunk %d/%d, prompt length: %d",
+                "Sending Ollama request for text chunk %d/%d for %s, prompt length: %d",
                 i + 1,
                 len(chunks),
+                source_display_name,
                 len(prompt),
             )
             response = ollama.chat(
@@ -111,14 +142,22 @@ def analyze_text_content(text: str) -> dict[str, Any]:
                 messages=[{"role": "user", "content": prompt}],
             )
             logger.debug(
-                "Received Ollama response for text chunk %d/%d", i + 1, len(chunks)
+                "Received Ollama response for text chunk %d/%d for %s",
+                i + 1,
+                len(chunks),
+                source_display_name,
             )
             json_str = response["message"]["content"]
             chunk_result = json.loads(_clean_json_response(json_str))
             all_summaries.append(chunk_result.get("summary", ""))
             all_people.update(chunk_result.get("mentioned_people", []))
         except Exception as e:
-            logger.warning("Failed to analyze text chunk %d with Ollama: %s", i + 1, e)
+            logger.warning(
+                "Failed to analyze text chunk %d for %s with Ollama: %s",
+                i + 1,
+                source_display_name,
+                e,
+            )
             continue
 
     if all_summaries:
@@ -161,7 +200,9 @@ def analyze_text_content(text: str) -> dict[str, Any]:
     }
 
 
-def analyze_financial_document(text: str) -> dict[str, Any]:
+def analyze_financial_document(
+    text: str, *, source_name: str | None = None
+) -> dict[str, Any]:
     """Analyze financial document text using an LLM as a forensic accountant.
 
     Parameters
@@ -176,12 +217,16 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
         and 'confidence_score'.
     """
     text_bytes = len(text.encode("utf-8"))
+    source_display_name = _resolve_source_name(source_name)
     logger.debug(
         "Starting financial document analysis, text length: %d bytes",
         text_bytes,
     )
     # Check if text needs chunking (over 3000 bytes)
     if text_bytes <= 3000:
+        logger.info(
+            "Financial analysis processing single chunk for %s", source_display_name
+        )
         # Single chunk processing
         prompt = (
             "You are a meticulous forensic accountant. Analyze the following "
@@ -223,12 +268,26 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
 
     # Multi-chunk processing
     chunks = chunk_text(text, max_tokens=2048)
+    total_chunks = len(chunks)
+    logger.info(
+        "Financial analysis processing %d chunk(s) for %s",
+        total_chunks,
+        source_display_name,
+    )
     all_summaries = []
     all_red_flags = set()
     all_incriminating = set()
     confidence_scores = []
 
     for i, chunk in enumerate(chunks):
+        remaining_chunks = total_chunks - (i + 1)
+        logger.info(
+            "Financial analysis chunk %d/%d for %s (%d remaining)",
+            i + 1,
+            total_chunks,
+            source_display_name,
+            remaining_chunks,
+        )
         prompt = (
             f"You are a meticulous forensic accountant. Analyze chunk {i+1} of "
             f"{len(chunks)} of the following financial document text and provide a "
@@ -247,9 +306,11 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
 
         try:
             logger.debug(
-                "Sending Ollama request for financial chunk %d/%d, prompt length: %d",
+                "Sending Ollama request for financial chunk %d/%d for %s, "
+                "prompt length: %d",
                 i + 1,
                 len(chunks),
+                source_display_name,
                 len(prompt),
             )
             response = ollama.chat(
@@ -258,7 +319,10 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
                 options={"raw": True},
             )
             logger.debug(
-                "Received Ollama response for financial chunk %d/%d", i + 1, len(chunks)
+                "Received Ollama response for financial chunk %d/%d for %s",
+                i + 1,
+                len(chunks),
+                source_display_name,
             )
             json_str = response["message"]["content"]
             chunk_result = json.loads(_clean_json_response(json_str))
@@ -269,7 +333,10 @@ def analyze_financial_document(text: str) -> dict[str, Any]:
                 confidence_scores.append(chunk_result["confidence_score"])
         except Exception as e:
             logger.warning(
-                "Failed to analyze financial chunk %d with Ollama: %s", i + 1, e
+                "Failed to analyze financial chunk %d for %s with Ollama: %s",
+                i + 1,
+                source_display_name,
+                e,
             )
             continue
 
