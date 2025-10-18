@@ -14,20 +14,20 @@ class _DummyTokenizer:
         return " ".join(str(token) for token in tokens)
 
 
-_tokenizer_patcher = patch(
-    "transformers.AutoTokenizer.from_pretrained", return_value=_DummyTokenizer()
-)
-_tokenizer_patcher.start()
-try:
-    database_manager = importlib.import_module("src.database_manager")
-finally:
-    _tokenizer_patcher.stop()
+# Use a pytest fixture to patch the tokenizer and import database_manager
+import types
 
-add_file_to_db = database_manager.add_file_to_db
-generate_embedding = database_manager.generate_embedding
-initialize_db = database_manager.initialize_db
-
-
+@pytest.fixture(autouse=True, scope="module")
+def patch_tokenizer_and_import_db_manager():
+    with patch(
+        "transformers.AutoTokenizer.from_pretrained", return_value=_DummyTokenizer()
+    ):
+        global database_manager, add_file_to_db, generate_embedding, initialize_db
+        database_manager = importlib.import_module("src.database_manager")
+        add_file_to_db = database_manager.add_file_to_db
+        generate_embedding = database_manager.generate_embedding
+        initialize_db = database_manager.initialize_db
+        yield
 class TestDatabaseManager(unittest.TestCase):
     @patch("src.database_manager.chromadb.PersistentClient")
     def test_initialize_db(self, mock_persistent_client):
