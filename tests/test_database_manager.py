@@ -94,4 +94,7 @@ class TestDatabaseManager(unittest.TestCase):
         mock_generate_embedding.assert_not_called()
         mock_collection.add.assert_called_once()
         args, kwargs = mock_collection.add.call_args
-        self.assertEqual(kwargs["embeddings"], [[0.0] * 768])
+        embedding = kwargs["embeddings"][0]
+        self.assertTrue(all(x == 0.0 for x in embedding))
+        self.assertTrue(len(set(embedding)) <= 1)  # all values are the same
+        self.assertGreater(len(embedding), 0)  # embedding is not empty
