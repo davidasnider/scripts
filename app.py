@@ -871,13 +871,13 @@ def render_mime_browser(
     Render controls for browsing files by MIME type.
 
     Parameters:
-        mime_index: Mapping of MIME types to file metadata and counts.
-        all_files: List of filtered files used when "ALL" is selected.
+        mime_index (dict[str, dict[str, Any]]): Index mapping MIME types to file info.
+        all_files (list[dict[str, Any]]): List of all files after filtering.
 
     Notes:
-        Selecting "ALL" displays every filtered file regardless of MIME type.
+        Selecting "ALL" will show all filtered files regardless of MIME type.
     """
-    if not mime_index:
+    if not mime_index and not all_files:
         st.info("No MIME types found for the current filters.")
         return
 
@@ -903,7 +903,7 @@ def render_mime_browser(
         st.caption(f"{len(files)} total file(s).")
     else:
         mime_info = mime_index.get(selected_mime, {})
-        files = mime_info.get("files", [])
+        files = sorted(mime_info.get("files", []), key=get_entry_display_name)
         st.caption(f"{len(files)} file(s) with MIME type `{selected_mime}`.")
 
     table_rows = make_table_rows(files)
@@ -1071,13 +1071,10 @@ with st.container():
         filter_col4,
         filter_col5,
         filter_col6,
-        filter_col7,
-    ) = st.columns([0.5, 1.5, 0.5, 0.5, 0.5, 0.5, 1.5])
+    ) = st.columns([1.5, 0.5, 0.5, 0.5, 1, 1.5])
     with filter_col1:
-        st.write("File type:")
-    with filter_col2:
         st.session_state.filters["file_type"] = st.multiselect(
-            "Filter by file type:",
+            "File type:",
             options=[
                 "application/pdf",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1088,27 +1085,26 @@ with st.container():
                 "video/quicktime",
             ],
             default=st.session_state.filters["file_type"],
-            label_visibility="collapsed",
         )
-    with filter_col3:
+    with filter_col2:
         st.session_state.filters["hide_nsfw"] = st.checkbox(
             "Hide NSFW", value=st.session_state.filters["hide_nsfw"]
         )
-    with filter_col4:
+    with filter_col3:
         st.session_state.filters["red_flags"] = st.checkbox(
             "Red flags",
             value=st.session_state.filters["red_flags"],
         )
-    with filter_col5:
+    with filter_col4:
         st.session_state.filters["fully_analyzed"] = st.checkbox(
             "Fully analyzed", value=st.session_state.filters["fully_analyzed"]
         )
-    with filter_col6:
+    with filter_col5:
         st.session_state.filters["no_tasks_complete"] = st.checkbox(
-            "No Tasks (Complete)",
+            "No analysis tasks (file complete)",
             value=st.session_state.filters["no_tasks_complete"],
         )
-    with filter_col7:
+    with filter_col6:
         st.session_state.filters["analysis_tasks"] = st.multiselect(
             "Completed analyses:",
             options=[task.value for task in AnalysisName],
