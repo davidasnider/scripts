@@ -11,6 +11,16 @@ import cv2
 import numpy as np
 from PIL import Image
 
+try:
+    from docx import Document  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional dependency
+    Document = None  # type: ignore[assignment]
+
+try:
+    import pandas as pd  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - optional dependency
+    pd = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,7 +121,9 @@ def extract_content_from_docx(file_path: str) -> str:
     str
         The extracted text from the document.
     """
-    from docx import Document
+    if Document is None:
+        logger.error("python-docx library not available for DOCX extraction")
+        return "DOCX extraction unavailable - python-docx not installed"
 
     doc = Document(file_path)
     text_parts = [paragraph.text for paragraph in doc.paragraphs]
@@ -236,9 +248,11 @@ def extract_content_from_xlsx(file_path: str) -> str:
     """
     logger.debug("Extracting content from Excel file: %s", file_path)
 
-    try:
-        import pandas as pd
+    if pd is None:
+        logger.error("pandas library not available for Excel extraction")
+        return "Excel extraction unavailable - pandas not installed"
 
+    try:
         # Read all sheets from the Excel file
         excel_file = pd.ExcelFile(file_path)
         all_text = []
@@ -282,9 +296,6 @@ def extract_content_from_xlsx(file_path: str) -> str:
         )
         return result
 
-    except ImportError:
-        logger.error("pandas library not available for Excel extraction")
-        return "Excel extraction unavailable - pandas not installed"
     except Exception as e:
         logger.error("Error processing Excel file %s: %s", file_path, e)
         return f"Excel extraction failed: {e}"
