@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - import validated via tests
     from access_parser import AccessParser
-except Exception as exc:  # pragma: no cover - handled in runtime environments
+except ImportError as exc:  # pragma: no cover - handled in runtime environments
     AccessParser = None  # type: ignore[assignment]
     logger.debug("access_parser import failed: %s", exc)
 
