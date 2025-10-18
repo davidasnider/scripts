@@ -1,14 +1,31 @@
+import importlib
 import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-from src.database_manager import (
-    add_file_to_db,
-    generate_embedding,
-    initialize_db,
+
+class _DummyTokenizer:
+    def encode(self, text, add_special_tokens=False):
+        return list(range(len(text)))
+
+    def decode(self, tokens):
+        return " ".join(str(token) for token in tokens)
+
+
+_tokenizer_patcher = patch(
+    "transformers.AutoTokenizer.from_pretrained", return_value=_DummyTokenizer()
 )
+_tokenizer_patcher.start()
+try:
+    database_manager = importlib.import_module("src.database_manager")
+finally:
+    _tokenizer_patcher.stop()
+
+add_file_to_db = database_manager.add_file_to_db
+generate_embedding = database_manager.generate_embedding
+initialize_db = database_manager.initialize_db
 
 
 class TestDatabaseManager(unittest.TestCase):
