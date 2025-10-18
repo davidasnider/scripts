@@ -41,6 +41,7 @@ from src.content_extractor import (
 )
 from src.database_manager import add_file_to_db, initialize_db
 from src.logging_utils import configure_logging
+from src.manifest_utils import reset_outdated_analysis_tasks
 from src.nsfw_classifier import NSFWClassifier
 from src.schema import (
     COMPLETE,
@@ -57,6 +58,7 @@ class AnalysisModel(str, Enum):
     """Enum for the analysis models."""
 
     TEXT_ANALYZER = "text_analysis"
+    PEOPLE_ANALYZER = "people_analysis"
     CODE_ANALYZER = "code_analysis"
     IMAGE_DESCRIBER = "image_description"
     VIDEO_ANALYZER = "video_summary"
@@ -74,6 +76,12 @@ class WorkItem:
 # Constants
 MANIFEST_PATH = Path("data/manifest.json")
 DB_PATH = Path("data/chromadb")
+
+TEXT_BASED_ANALYSES = {
+    AnalysisName.TEXT_ANALYSIS,
+    AnalysisName.PEOPLE_ANALYSIS,
+}
+TEXT_BASED_ANALYSIS_MODEL_VALUES = {analysis.value for analysis in TEXT_BASED_ANALYSES}
 
 
 # Threading configuration
@@ -348,6 +356,8 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
             try:
                 stage_start = time.time()
 
+                text_analysis_result: dict[str, Any] | None = None
+
                 for task in file_record.analysis_tasks:
                     if task.status == AnalysisStatus.PENDING:
                         if (
@@ -357,15 +367,22 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             continue
 
                         try:
-                            if task.name == AnalysisName.TEXT_ANALYSIS:
+                            if task.name in TEXT_BASED_ANALYSES:
                                 if file_record.extracted_text:
-                                    analysis = analyze_text_content(
-                                        file_record.extracted_text
-                                    )
-                                    file_record.summary = analysis.get("summary")
-                                    file_record.mentioned_people = analysis.get(
-                                        "mentioned_people"
-                                    )
+                                    if text_analysis_result is None:
+                                        text_analysis_result = analyze_text_content(
+                                            file_record.extracted_text
+                                        )
+                                    if task.name == AnalysisName.TEXT_ANALYSIS:
+                                        file_record.summary = text_analysis_result.get(
+                                            "summary"
+                                        )
+                                    elif task.name == AnalysisName.PEOPLE_ANALYSIS:
+                                        file_record.mentioned_people = (
+                                            text_analysis_result.get(
+                                                "mentioned_people", []
+                                            )
+                                        )
 
                             elif task.name == AnalysisName.IMAGE_DESCRIPTION:
                                 if file_record.mime_type.startswith("image/"):
@@ -765,6 +782,10 @@ def main(
     full_manifest = load_manifest()
     run_logger.info("Loaded %d files from manifest", len(full_manifest))
 
+    reset_count = reset_outdated_analysis_tasks(full_manifest)
+    if reset_count:
+        run_logger.info("Reset %d analysis tasks due to version changes", reset_count)
+
     # Set up signal handlers for safe shutdown
     global current_manifest
     current_manifest = full_manifest
@@ -884,13 +905,13 @@ def main(
 
         # Filter files based on model type before queuing
         should_process = True
-        if model.value == "video_summary":
+        if model is AnalysisModel.VIDEO_ANALYZER:
             should_process = file_record.mime_type.startswith(
                 "video/"
             ) and not file_record.file_path.lower().endswith(".asx")
-        elif model.value == "image_description":
+        elif model is AnalysisModel.IMAGE_DESCRIBER:
             should_process = file_record.mime_type.startswith("image/")
-        elif model.value == "text_analysis":
+        elif model.value in TEXT_BASED_ANALYSIS_MODEL_VALUES:
             should_process = (
                 file_record.mime_type.startswith("text/")
                 or file_record.mime_type == "application/pdf"
@@ -898,7 +919,6 @@ def main(
                 or file_record.mime_type.endswith("document")
                 or file_record.mime_type.endswith("sheet")
             )
-        # For model.ALL or other models, process all files
 
         if not should_process:
             run_logger.debug(

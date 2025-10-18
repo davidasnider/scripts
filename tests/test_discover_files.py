@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from src import discover_files
-from src.schema import AnalysisName
+from src.schema import ANALYSIS_TASK_VERSIONS, AnalysisName
 
 
 @pytest.fixture
@@ -47,13 +47,30 @@ def test_calculate_sha256(temp_directory_with_files):
 def test_get_analysis_tasks_for_text_file():
     """Verify text analysis task is assigned for text MIME types."""
     tasks = discover_files._get_analysis_tasks("text/plain", "file.txt")
-    assert [task.name for task in tasks] == [AnalysisName.TEXT_ANALYSIS]
+    expected = {AnalysisName.TEXT_ANALYSIS, AnalysisName.PEOPLE_ANALYSIS}
+    assert {task.name for task in tasks} == expected
+
+
+def test_get_analysis_tasks_include_versions():
+    """Verify that generated tasks include the configured version."""
+
+    tasks = discover_files._get_analysis_tasks("text/plain", "file.txt")
+    versions = {task.name: task.version for task in tasks}
+    assert (
+        versions[AnalysisName.TEXT_ANALYSIS]
+        == ANALYSIS_TASK_VERSIONS[AnalysisName.TEXT_ANALYSIS]
+    )
+    assert (
+        versions[AnalysisName.PEOPLE_ANALYSIS]
+        == ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS]
+    )
 
 
 def test_get_analysis_tasks_for_pdf_file():
     """Verify text analysis task is assigned for PDF MIME types."""
     tasks = discover_files._get_analysis_tasks("application/pdf", "file.pdf")
-    assert [task.name for task in tasks] == [AnalysisName.TEXT_ANALYSIS]
+    expected = {AnalysisName.TEXT_ANALYSIS, AnalysisName.PEOPLE_ANALYSIS}
+    assert {task.name for task in tasks} == expected
 
 
 def test_get_analysis_tasks_for_image_file():
@@ -63,6 +80,7 @@ def test_get_analysis_tasks_for_image_file():
         AnalysisName.IMAGE_DESCRIPTION,
         AnalysisName.NSFW_CLASSIFICATION,
         AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.PEOPLE_ANALYSIS,
     }
     assert {task.name for task in tasks} == expected
 
