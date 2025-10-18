@@ -1,15 +1,32 @@
+import importlib
 import unittest
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from src.database_manager import (
-    add_file_to_db,
-    generate_embedding,
-    initialize_db,
-)
+
+class _DummyTokenizer:
+    def encode(self, text, add_special_tokens=False):
+        return list(range(len(text)))
+
+    def decode(self, tokens):
+        return " ".join(str(token) for token in tokens)
 
 
+# Use a pytest fixture to patch the tokenizer and import database_manager
+import types
+
+@pytest.fixture(autouse=True, scope="module")
+def patch_tokenizer_and_import_db_manager():
+    with patch(
+        "transformers.AutoTokenizer.from_pretrained", return_value=_DummyTokenizer()
+    ):
+        global database_manager, add_file_to_db, generate_embedding, initialize_db
+        database_manager = importlib.import_module("src.database_manager")
+        add_file_to_db = database_manager.add_file_to_db
+        generate_embedding = database_manager.generate_embedding
+        initialize_db = database_manager.initialize_db
+        yield
 class TestDatabaseManager(unittest.TestCase):
     @patch("src.database_manager.chromadb.PersistentClient")
     def test_initialize_db(self, mock_persistent_client):
@@ -95,6 +112,7 @@ class TestDatabaseManager(unittest.TestCase):
         mock_collection.add.assert_called_once()
         args, kwargs = mock_collection.add.call_args
         embedding = kwargs["embeddings"][0]
+        self.assertEqual(len(embedding), DEFAULT_EMBEDDING_DIM)
         self.assertTrue(all(x == 0.0 for x in embedding))
         self.assertTrue(len(set(embedding)) <= 1)  # all values are the same
         self.assertGreater(len(embedding), 0)  # embedding is not empty
