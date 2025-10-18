@@ -22,7 +22,8 @@ class AnalysisStatus(str, Enum):
 class AnalysisName(str, Enum):
     """Enum for analysis task names."""
 
-    TEXT_ANALYSIS = "text_analysis"
+    TEXT_SUMMARY_ANALYSIS = "text_summary_analysis"
+    PEOPLE_DETECTION_ANALYSIS = "people_detection_analysis"
     IMAGE_DESCRIPTION = "image_description"
     VIDEO_SUMMARY = "video_summary"
     FINANCIAL_ANALYSIS = "financial_analysis"
@@ -33,6 +34,7 @@ class AnalysisTask(BaseModel):
     """A single analysis task for a file."""
 
     name: AnalysisName
+    version: int = 1
     status: AnalysisStatus = AnalysisStatus.PENDING
     error_message: str | None = None
 

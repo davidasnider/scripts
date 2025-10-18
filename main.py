@@ -28,8 +28,9 @@ from typing_extensions import Annotated
 
 from src.ai_analyzer import (
     analyze_financial_document,
-    analyze_text_content,
     describe_image,
+    detect_people_in_text,
+    summarize_text_content,
     summarize_video_frames,
 )
 from src.content_extractor import (
@@ -51,6 +52,7 @@ from src.schema import (
     AnalysisStatus,
     FileRecord,
 )
+from src.task_versions import TASK_VERSIONS
 
 
 class AnalysisModel(str, Enum):
@@ -357,16 +359,18 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                             continue
 
                         try:
-                            if task.name == AnalysisName.TEXT_ANALYSIS:
+                            if task.name == AnalysisName.TEXT_SUMMARY_ANALYSIS:
                                 if file_record.extracted_text:
-                                    analysis = analyze_text_content(
+                                    summary = summarize_text_content(
                                         file_record.extracted_text
                                     )
-                                    file_record.summary = analysis.get("summary")
-                                    file_record.mentioned_people = analysis.get(
-                                        "mentioned_people"
+                                    file_record.summary = summary
+                            elif task.name == AnalysisName.PEOPLE_DETECTION_ANALYSIS:
+                                if file_record.extracted_text:
+                                    people = detect_people_in_text(
+                                        file_record.extracted_text
                                     )
-
+                                    file_record.mentioned_people = people
                             elif task.name == AnalysisName.IMAGE_DESCRIPTION:
                                 if file_record.mime_type.startswith("image/"):
                                     description = describe_image(file_record.file_path)
@@ -771,6 +775,33 @@ def main(
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     run_logger.debug("Signal handlers installed for safe manifest saving")
+
+    # Version checking and re-analysis logic
+    rerun_count = 0
+    for record in full_manifest:
+        for task in record.analysis_tasks:
+            if task.status == AnalysisStatus.COMPLETE:
+                current_version = TASK_VERSIONS.get(task.name)
+                if current_version is not None and task.version < current_version:
+                    run_logger.info(
+                        "Re-running analysis for %s due to version mismatch for task %s "
+                        "(%d < %d)",
+                        record.file_path,
+                        task.name,
+                        task.version,
+                        current_version,
+                    )
+                    record.status = PENDING_ANALYSIS
+                    task.status = AnalysisStatus.PENDING
+                    task.version = current_version
+                    rerun_count += 1
+                    break  # Move to the next record once one task is outdated
+
+    if rerun_count > 0:
+        run_logger.info(
+            "Re-queued %d files for analysis due to updated task versions.",
+            rerun_count,
+        )
 
     if batch_size > 0:
         unprocessed_files = [f for f in full_manifest if f.status != COMPLETE]

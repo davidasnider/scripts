@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 from src.logging_utils import configure_logging
 from src.schema import AnalysisName, AnalysisTask, FileRecord
+from src.task_versions import TASK_VERSIONS
 
 try:
     import magic  # type: ignore[import-not-found]
@@ -44,14 +45,50 @@ def _get_analysis_tasks(mime_type: str, file_path: str = "") -> list[AnalysisTas
         or mime_type.endswith("document")
         or mime_type.endswith("sheet")
     ):
-        tasks.append(AnalysisTask(name=AnalysisName.TEXT_ANALYSIS))
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.TEXT_SUMMARY_ANALYSIS,
+                version=TASK_VERSIONS[AnalysisName.TEXT_SUMMARY_ANALYSIS],
+            )
+        )
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.PEOPLE_DETECTION_ANALYSIS,
+                version=TASK_VERSIONS[AnalysisName.PEOPLE_DETECTION_ANALYSIS],
+            )
+        )
     if mime_type.startswith("image/"):
-        tasks.append(AnalysisTask(name=AnalysisName.IMAGE_DESCRIPTION))
-        tasks.append(AnalysisTask(name=AnalysisName.NSFW_CLASSIFICATION))
-        tasks.append(AnalysisTask(name=AnalysisName.TEXT_ANALYSIS))
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.IMAGE_DESCRIPTION,
+                version=TASK_VERSIONS[AnalysisName.IMAGE_DESCRIPTION],
+            )
+        )
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.NSFW_CLASSIFICATION,
+                version=TASK_VERSIONS[AnalysisName.NSFW_CLASSIFICATION],
+            )
+        )
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.TEXT_SUMMARY_ANALYSIS,
+                version=TASK_VERSIONS[AnalysisName.TEXT_SUMMARY_ANALYSIS],
+            )
+        )
     if mime_type.startswith("video/") and not file_path.lower().endswith(".asx"):
-        tasks.append(AnalysisTask(name=AnalysisName.VIDEO_SUMMARY))
-        tasks.append(AnalysisTask(name=AnalysisName.NSFW_CLASSIFICATION))
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.VIDEO_SUMMARY,
+                version=TASK_VERSIONS[AnalysisName.VIDEO_SUMMARY],
+            )
+        )
+        tasks.append(
+            AnalysisTask(
+                name=AnalysisName.NSFW_CLASSIFICATION,
+                version=TASK_VERSIONS[AnalysisName.NSFW_CLASSIFICATION],
+            )
+        )
 
     return tasks
 

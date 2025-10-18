@@ -38,124 +38,124 @@ def _clean_json_response(response_text: str) -> str:
     return response_text.strip()
 
 
-def analyze_text_content(text: str) -> dict[str, Any]:
-    """Analyze text content using an LLM to extract summary and mentioned people."""
+def summarize_text_content(text: str) -> str:
+    """Analyze text content using an LLM to extract a summary."""
     text_bytes = len(text.encode("utf-8"))
     logger.debug(
-        "Starting text content analysis, text length: %d bytes",
+        "Starting text summary analysis, text length: %d bytes",
         text_bytes,
     )
-    if text_bytes <= 3000:
-        # Single chunk processing
-        prompt = (
-            "You are a document analyst. Analyze the following text and provide a "
-            "JSON response with exactly two keys:\n\n"
-            '- "summary": a concise paragraph summarizing the main points of the '
-            "text.\n"
-            '- "mentioned_people": a list of names of people mentioned in the text.\n\n'
-            f"Text: {text}\n\n"
-            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-            "backticks. Return only the raw JSON object."
-        )
 
+    # Simplified logic for single-chunk summarization
+    if text_bytes <= 3000:
+        prompt = (
+            "You are a document analyst. Provide a concise paragraph summarizing the "
+            f"main points of the following text:\n\n{text}\n\n"
+            "Your response should contain only the summary, with no introductory "
+            "phrases like 'Here is a summary:'."
+        )
         try:
-            logger.debug(
-                "Sending Ollama text analysis request (single chunk), "
-                "prompt length: %d",
-                len(prompt),
-            )
             response = ollama.chat(
                 model=TEXT_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
             )
-            logger.debug("Received Ollama response for text analysis")
-            json_str = response["message"]["content"]
-            return json.loads(_clean_json_response(json_str))
+            return response["message"]["content"]
         except Exception as e:
-            logger.warning("Failed to analyze text content with Ollama: %s", e)
-            return {
-                "summary": "Analysis unavailable - Ollama not accessible",
-                "mentioned_people": [],
-            }
+            logger.warning("Failed to summarize text with Ollama: %s", e)
+            return "Summary unavailable - Ollama not accessible"
 
-    # Multi-chunk processing
+    # Multi-chunk processing for summarization
     chunks = chunk_text(text, max_tokens=2048)
     all_summaries = []
-    all_people = set()
-
     for i, chunk in enumerate(chunks):
         prompt = (
-            f"You are a document analyst. Analyze chunk {i+1} of {len(chunks)} of the "
-            "following text and provide a JSON response with exactly two keys:\n\n"
-            '- "summary": a concise paragraph summarizing the main points of this '
-            "chunk.\n"
-            '- "mentioned_people": a list of names of people mentioned in this '
-            "chunk.\n\n"
-            f"Text chunk: {chunk}\n\n"
-            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-            "backticks. Return only the raw JSON object."
+            "You are a document analyst. Provide a concise paragraph summarizing this "
+            f"text chunk:\n\n{chunk}\n\nYour response should contain only the summary."
         )
-
         try:
-            logger.debug(
-                "Sending Ollama request for text chunk %d/%d, prompt length: %d",
-                i + 1,
-                len(chunks),
-                len(prompt),
-            )
             response = ollama.chat(
                 model=TEXT_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
             )
-            logger.debug(
-                "Received Ollama response for text chunk %d/%d", i + 1, len(chunks)
-            )
-            json_str = response["message"]["content"]
-            chunk_result = json.loads(_clean_json_response(json_str))
-            all_summaries.append(chunk_result.get("summary", ""))
-            all_people.update(chunk_result.get("mentioned_people", []))
+            all_summaries.append(response["message"]["content"])
         except Exception as e:
-            logger.warning("Failed to analyze text chunk %d with Ollama: %s", i + 1, e)
+            logger.warning("Failed to summarize text chunk %d: %s", i + 1, e)
             continue
 
-    if all_summaries:
-        combined_summary_prompt = (
-            "You are a document analyst. Combine the following chunk summaries into a "
-            "single cohesive summary of the entire document:\n\n"
-            "Chunk summaries:\n"
-            + "\n\n".join(
-                f"Chunk {i+1}: {summary}" for i, summary in enumerate(all_summaries)
-            )
-            + "\n\n"
-            "Provide a concise paragraph summarizing the main points of the entire "
-            "document. Your response should contain only the summary, with no "
-            "introductory phrases like 'Here is a summary:'."
-        )
+    if not all_summaries:
+        return "Summary unavailable - Ollama not accessible"
 
+    # Combine summaries
+    combined_summary_prompt = (
+        "You are a document analyst. Combine the following chunk summaries into a "
+        "single cohesive summary of the entire document:\n\n"
+        + "\n\n".join(all_summaries)
+        + "\n\nProvide a concise paragraph summarizing the main points. Your "
+        "response should contain only the summary."
+    )
+    try:
+        response = ollama.chat(
+            model=TEXT_ANALYZER_MODEL,
+            messages=[{"role": "user", "content": combined_summary_prompt}],
+        )
+        return response["message"]["content"]
+    except Exception as e:
+        logger.warning("Failed to combine summaries: %s", e)
+        return " ".join(all_summaries)
+
+
+def detect_people_in_text(text: str) -> list[str]:
+    """Detect names of people mentioned in the text using an LLM."""
+    text_bytes = len(text.encode("utf-8"))
+    logger.debug(
+        "Starting people detection analysis, text length: %d bytes",
+        text_bytes,
+    )
+
+    # Simplified logic for single-chunk people detection
+    if text_bytes <= 3000:
+        prompt = (
+            "You are a data extractor. Analyze the following text and provide a JSON "
+            'response with a single key, "mentioned_people", which is a list of '
+            "names of people mentioned. Distinguish between real names and "
+            "usernames.\n\n"
+            f"Text: {text}\n\n"
+            "Respond only with valid JSON."
+        )
         try:
-            logger.debug(
-                "Sending Ollama combine request for %d text summaries, "
-                "prompt length: %d",
-                len(all_summaries),
-                len(combined_summary_prompt),
-            )
             response = ollama.chat(
                 model=TEXT_ANALYZER_MODEL,
-                messages=[{"role": "user", "content": combined_summary_prompt}],
+                messages=[{"role": "user", "content": prompt}],
             )
-            logger.debug("Received Ollama response for summary combination")
-            final_summary = response["message"]["content"]
+            json_str = _clean_json_response(response["message"]["content"])
+            result = json.loads(json_str)
+            return result.get("mentioned_people", [])
         except Exception as e:
-            logger.warning("Failed to combine summaries with Ollama: %s", e)
-            final_summary = " ".join(all_summaries)
-    else:
-        final_summary = "Analysis unavailable - Ollama not accessible"
+            logger.warning("Failed to detect people with Ollama: %s", e)
+            return []
 
-    logger.debug("Completed text content analysis")
-    return {
-        "summary": final_summary,
-        "mentioned_people": list(all_people),
-    }
+    # Multi-chunk processing for people detection
+    chunks = chunk_text(text, max_tokens=2048)
+    all_people = set()
+    for i, chunk in enumerate(chunks):
+        prompt = (
+            "You are a data extractor. Analyze this text chunk and provide a JSON "
+            'response with a single key, "mentioned_people", a list of names of '
+            f"people mentioned.\n\nText chunk: {chunk}\n\nRespond only with valid JSON."
+        )
+        try:
+            response = ollama.chat(
+                model=TEXT_ANALYZER_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            json_str = _clean_json_response(response["message"]["content"])
+            chunk_result = json.loads(json_str)
+            all_people.update(chunk_result.get("mentioned_people", []))
+        except Exception as e:
+            logger.warning("Failed to detect people in chunk %d: %s", i + 1, e)
+            continue
+
+    return list(all_people)
 
 
 def analyze_financial_document(text: str) -> dict[str, Any]:

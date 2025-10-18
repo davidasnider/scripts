@@ -47,13 +47,21 @@ def test_calculate_sha256(temp_directory_with_files):
 def test_get_analysis_tasks_for_text_file():
     """Verify text analysis task is assigned for text MIME types."""
     tasks = discover_files._get_analysis_tasks("text/plain", "file.txt")
-    assert [task.name for task in tasks] == [AnalysisName.TEXT_ANALYSIS]
+    expected = {
+        AnalysisName.TEXT_SUMMARY_ANALYSIS,
+        AnalysisName.PEOPLE_DETECTION_ANALYSIS,
+    }
+    assert {task.name for task in tasks} == expected
 
 
 def test_get_analysis_tasks_for_pdf_file():
     """Verify text analysis task is assigned for PDF MIME types."""
     tasks = discover_files._get_analysis_tasks("application/pdf", "file.pdf")
-    assert [task.name for task in tasks] == [AnalysisName.TEXT_ANALYSIS]
+    expected = {
+        AnalysisName.TEXT_SUMMARY_ANALYSIS,
+        AnalysisName.PEOPLE_DETECTION_ANALYSIS,
+    }
+    assert {task.name for task in tasks} == expected
 
 
 def test_get_analysis_tasks_for_image_file():
@@ -62,7 +70,7 @@ def test_get_analysis_tasks_for_image_file():
     expected = {
         AnalysisName.IMAGE_DESCRIPTION,
         AnalysisName.NSFW_CLASSIFICATION,
-        AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.TEXT_SUMMARY_ANALYSIS,
     }
     assert {task.name for task in tasks} == expected
 
