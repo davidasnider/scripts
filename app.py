@@ -582,7 +582,10 @@ def apply_manifest_filters(
                 continue
 
         if no_tasks_complete:
-            if not (entry.get("status") == "complete" and not tasks):
+            if not (
+                _status_value(entry.get("status")) == AnalysisStatus.COMPLETE.value
+                and not tasks
+            ):
                 continue
 
         filtered.append(entry)
