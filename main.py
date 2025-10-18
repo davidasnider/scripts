@@ -48,16 +48,15 @@ from src.manifest_utils import (
 )
 from src.nsfw_classifier import NSFWClassifier
 from src.schema import (
-    ANALYSIS_TASK_VERSIONS,
     COMPLETE,
     FAILED,
     PENDING_ANALYSIS,
     PENDING_EXTRACTION,
     AnalysisName,
     AnalysisStatus,
-    AnalysisTask,
     FileRecord,
 )
+from src.task_utils import determine_analysis_tasks
 
 
 class AnalysisModel(str, Enum):
@@ -292,22 +291,16 @@ def extraction_worker(worker_id: int) -> None:
                     file_record.extracted_frames = extracted_frames
 
                 elif file_record.mime_type == "application/x-msaccess":
-                    required_tasks = [
-                        AnalysisName.ACCESS_DB_ANALYSIS,
-                        AnalysisName.TEXT_ANALYSIS,
-                        AnalysisName.PEOPLE_ANALYSIS,
-                    ]
                     existing_task_names = {
                         task.name for task in file_record.analysis_tasks
                     }
-                    for task_name in required_tasks:
-                        if task_name not in existing_task_names:
-                            file_record.analysis_tasks.append(
-                                AnalysisTask(
-                                    name=task_name,
-                                    version=ANALYSIS_TASK_VERSIONS[task_name],
-                                )
-                            )
+                    required_tasks = determine_analysis_tasks(
+                        file_record.mime_type, file_record.file_path
+                    )
+                    for task in required_tasks:
+                        if task.name not in existing_task_names:
+                            task.status = AnalysisStatus.PENDING
+                            file_record.analysis_tasks.append(task)
 
                 extraction_duration = time.time() - stage_start
                 extracted_text_len = len(file_record.extracted_text or "")
