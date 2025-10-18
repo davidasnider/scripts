@@ -554,7 +554,7 @@ def apply_manifest_filters(
             return ""
         return str(raw_name)
 
-    required_task_names = {str(name) for name in analysis_tasks_filter}
+    required_task_names = {_task_name_value(name) for name in analysis_tasks_filter}
 
     for entry in entries:
         if hide_nsfw and entry.get("is_nsfw"):
