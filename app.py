@@ -864,7 +864,16 @@ def render_directory_browser(directory_index: dict[str, dict[str, Any]]):
 def render_mime_browser(
     mime_index: dict[str, dict[str, Any]], all_files: list[dict[str, Any]]
 ):
-    """Render controls for browsing by MIME type."""
+    """
+    Render controls for browsing files by MIME type.
+
+    Parameters:
+        mime_index: Mapping of MIME types to file metadata and counts.
+        all_files: List of filtered files used when "ALL" is selected.
+
+    Notes:
+        Selecting "ALL" displays every filtered file regardless of MIME type.
+    """
     if not mime_index:
         st.info("No MIME types found for the current filters.")
         return
