@@ -578,6 +578,7 @@ def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = F
 
     _render_file_metadata(file_entry, file_path_str, file_name, mime_type)
     _render_file_summary_description(file_entry)
+    _render_password_details(file_entry)
     preview_rendered = _render_file_previews(
         file_entry, file_path_str, file_name, mime_type
     )
@@ -642,6 +643,23 @@ def _render_file_summary_description(file_entry: dict[str, Any]):
 
     st.markdown("**Description**")
     st.write(description if description else "_No description available._")
+
+
+def _render_password_details(file_entry: dict[str, Any]) -> None:
+    """Display detected passwords when viewing the password tab."""
+    if st.session_state.get("file_browser_view_mode") != "Passwords":
+        return
+
+    contains_password = file_entry.get("contains_password")
+    passwords = file_entry.get("passwords") or {}
+
+    st.markdown("**Password Detection**")
+    if contains_password:
+        st.success("Passwords were detected in this file.")
+        for label, value in passwords.items():
+            st.code(f"{label}: {value}")
+    else:
+        st.info("No passwords detected in this file.")
 
 
 def _render_file_previews(

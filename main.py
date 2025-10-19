@@ -132,7 +132,17 @@ def _calculate_log_panel_display_limit(
     *,
     ratio: float = LOG_PANEL_RATIO,
 ) -> int:
-    """Return log panel line budget based on the current terminal height."""
+    """
+    Return log panel line budget based on the current terminal height.
+
+    Args:
+        console (Console): The Rich Console instance to query for terminal size.
+        ratio (float, optional): Fraction of terminal height for log panel.
+            Should be between 0.0 and 1.0. Defaults to LOG_PANEL_RATIO.
+
+    Returns:
+        int: Number of lines to display in the log panel.
+    """
 
     terminal_height = max(console.size.height, 1)
     return max(int(terminal_height * ratio) - 1, 1)
@@ -395,6 +405,11 @@ def filter_records_by_search_term(
     return matches
 
 
+def has_text_content(file_record: FileRecord) -> bool:
+    """Return True if file_record has non-empty extracted_text."""
+    return bool((file_record.extracted_text or "").strip())
+
+
 def extract_text_from_svg(file_path: str) -> str:
     """Extract visible text from an SVG, fallback to raw XML if parsing fails."""
     try:
@@ -644,7 +659,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
 
                     try:
                         if task.name in TEXT_BASED_ANALYSES:
-                            if not (file_record.extracted_text or "").strip():
+                            if not has_text_content(file_record):
                                 if task.name == AnalysisName.PASSWORD_DETECTION:
                                     file_record.contains_password = False
                                     file_record.passwords = {}
@@ -1623,24 +1638,29 @@ def main(
                     log_unprocessed_file(
                         record.file_path,
                         record.mime_type,
-                        f"incomplete_{task.name.value}",
-                        f"Task failed or skipped: "
-                        f"{task.error_message or 'Unknown reason'}",
+                        "incomplete analysis",
+                        f"tasks: {', '.join(t.name for t in incomplete_tasks)}",
                     )
-
-    if incomplete_files:
-        run_logger.info(
-            "Found %d files with incomplete analysis tasks. "
-            "Check data/unprocessed_files.csv for details.",
-            len(incomplete_files),
-        )
-
-    if csv_output and not shutdown_event.is_set():
-        processed_files_data = [
-            record.model_dump()
-            for record in processing_manifest
-            if f"file-{hash(record.file_path) % 100000:05d}" in completed_files
-        ]
+    if csv_output:
+        if shutdown_event.is_set():
+            run_logger.info(
+                "Skipping CSV export because the run was interrupted before completion."
+            )
+        else:
+            processed_files_data = [
+                record.model_dump()
+                for record in processing_manifest
+                if f"file-{hash(record.file_path) % 100000:05d}" in completed_files
+            ]
+            if processed_files_data:
+                run_logger.info(
+                    "Writing %d processed files to %s",
+                    len(processed_files_data),
+                    csv_output,
+                )
+                write_processed_files_to_csv(processed_files_data, csv_output)
+            else:
+                run_logger.info("No files to write to CSV.")
         if processed_files_data:
             run_logger.info(
                 "Writing %d processed files to %s",

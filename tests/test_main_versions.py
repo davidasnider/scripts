@@ -122,38 +122,79 @@ def test_reset_outdated_analysis_tasks_updates_people_analysis():
     assert record.status == PENDING_ANALYSIS
 
 
-def test_reset_outdated_analysis_tasks_skips_current_versions():
-    manifest = []
-    scenarios = [
-        ("/tmp/text.txt", "text/plain"),
-        ("/tmp/image.jpg", "image/jpeg"),
-        ("/tmp/password.txt", "text/plain"),
-    ]
-
-    for path, mime_type in scenarios:
-        tasks = determine_analysis_tasks(mime_type, path)
-        for task in tasks:
-            task.status = AnalysisStatus.COMPLETE
-        record = FileRecord(
-            file_path=path,
-            file_name=path.split("/")[-1],
-            mime_type=mime_type,
-            file_size=1,
-            last_modified=0.0,
-            sha256="hash",
-            status=COMPLETE,
-            analysis_tasks=tasks,
-        )
-        manifest.append(record)
+def test_reset_outdated_analysis_tasks_skips_text_analysis_current_version():
+    path = "/tmp/text.txt"
+    mime_type = "text/plain"
+    tasks = determine_analysis_tasks(mime_type, path)
+    for task in tasks:
+        task.status = AnalysisStatus.COMPLETE
+    record = FileRecord(
+        file_path=path,
+        file_name=path.split("/")[-1],
+        mime_type=mime_type,
+        file_size=1,
+        last_modified=0.0,
+        sha256="hash",
+        status=COMPLETE,
+        analysis_tasks=tasks,
+    )
+    manifest = [record]
 
     reset_count = reset_outdated_analysis_tasks(manifest)
 
     assert reset_count == 0
-    for record in manifest:
-        assert all(
-            task.status == AnalysisStatus.COMPLETE for task in record.analysis_tasks
-        )
-        assert record.status == COMPLETE
+    assert all(task.status == AnalysisStatus.COMPLETE for task in record.analysis_tasks)
+    assert record.status == COMPLETE
+
+
+def test_reset_outdated_analysis_tasks_skips_image_description_current_version():
+    path = "/tmp/image.jpg"
+    mime_type = "image/jpeg"
+    tasks = determine_analysis_tasks(mime_type, path)
+    for task in tasks:
+        task.status = AnalysisStatus.COMPLETE
+    record = FileRecord(
+        file_path=path,
+        file_name=path.split("/")[-1],
+        mime_type=mime_type,
+        file_size=1,
+        last_modified=0.0,
+        sha256="hash",
+        status=COMPLETE,
+        analysis_tasks=tasks,
+    )
+    manifest = [record]
+
+    reset_count = reset_outdated_analysis_tasks(manifest)
+
+    assert reset_count == 0
+    assert all(task.status == AnalysisStatus.COMPLETE for task in record.analysis_tasks)
+    assert record.status == COMPLETE
+
+
+def test_reset_outdated_analysis_tasks_skips_password_detection_current_version():
+    path = "/tmp/password.txt"
+    mime_type = "text/plain"
+    tasks = determine_analysis_tasks(mime_type, path)
+    for task in tasks:
+        task.status = AnalysisStatus.COMPLETE
+    record = FileRecord(
+        file_path=path,
+        file_name=path.split("/")[-1],
+        mime_type=mime_type,
+        file_size=1,
+        last_modified=0.0,
+        sha256="hash",
+        status=COMPLETE,
+        analysis_tasks=tasks,
+    )
+    manifest = [record]
+
+    reset_count = reset_outdated_analysis_tasks(manifest)
+
+    assert reset_count == 0
+    assert all(task.status == AnalysisStatus.COMPLETE for task in record.analysis_tasks)
+    assert record.status == COMPLETE
 
 
 def test_reset_outdated_analysis_tasks_updates_failed_records():

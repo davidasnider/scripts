@@ -23,7 +23,10 @@ with open("config.yaml", "r") as f:
 TEXT_ANALYZER_MODEL = config["models"]["text_analyzer"]
 CODE_ANALYZER_MODEL = config["models"]["code_analyzer"]
 IMAGE_DESCRIBER_MODEL = config["models"]["image_describer"]
+# Use TEXT_ANALYZER_MODEL as default if no password detector model in config.
 PASSWORD_DETECTOR_MODEL = config["models"].get("password_detector", TEXT_ANALYZER_MODEL)
+
+DEFAULT_PASSWORD_RESULT = {"contains_password": False, "passwords": {}}
 
 
 def _clean_json_response(response_text: str) -> str:
@@ -226,9 +229,8 @@ def detect_passwords(
 ) -> dict[str, Any]:
     """Detect potential passwords within text using an LLM."""
 
-    default_result: dict[str, Any] = {"contains_password": False, "passwords": {}}
     if not text.strip():
-        return default_result
+        return DEFAULT_PASSWORD_RESULT
 
     text_bytes = len(text.encode("utf-8"))
     source_display_name = _resolve_source_name(source_name)
@@ -292,12 +294,21 @@ def detect_passwords(
                 source_display_name,
                 e,
             )
-            return default_result
+            return DEFAULT_PASSWORD_RESULT
 
     chunks = chunk_text(text, max_tokens=2048)
     total_chunks = len(chunks)
     detected_passwords: dict[str, str] = {}
     any_passwords = False
+
+    def _deduplicate_key(key: str, value: str, existing: dict[str, str]) -> str:
+        """Generate unique key for password to avoid collisions."""
+        unique_key = key
+        suffix = 1
+        while unique_key in existing and existing[unique_key] != value:
+            suffix += 1
+            unique_key = f"{key}_{suffix}"
+        return unique_key
 
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
@@ -322,14 +333,7 @@ def detect_passwords(
             if chunk_result["contains_password"]:
                 any_passwords = True
                 for key, value in chunk_result["passwords"].items():
-                    unique_key = key
-                    suffix = 1
-                    while (
-                        unique_key in detected_passwords
-                        and detected_passwords[unique_key] != value
-                    ):
-                        suffix += 1
-                        unique_key = f"{key}_{suffix}"
+                    unique_key = _deduplicate_key(key, value, detected_passwords)
                     detected_passwords[unique_key] = value
         except Exception as e:
             logger.warning(
@@ -339,6 +343,7 @@ def detect_passwords(
                 source_display_name,
                 e,
             )
+            continue
             continue
 
     return {
