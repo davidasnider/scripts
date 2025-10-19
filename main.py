@@ -35,6 +35,7 @@ from typing_extensions import Annotated
 
 from src.access_analysis import analyze_access_database
 from src.ai_analyzer import (
+    analyze_estate_relevant_information,
     analyze_financial_document,
     analyze_text_content,
     describe_image,
@@ -93,6 +94,7 @@ DB_PATH = Path("data/chromadb")
 TEXT_BASED_ANALYSES = {
     AnalysisName.TEXT_ANALYSIS,
     AnalysisName.PEOPLE_ANALYSIS,
+    AnalysisName.ESTATE_ANALYSIS,
     AnalysisName.PASSWORD_DETECTION,
 }
 TEXT_BASED_ANALYSIS_MODEL_VALUES = {analysis.value for analysis in TEXT_BASED_ANALYSES}
@@ -648,6 +650,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                 stage_start = time.time()
 
                 text_analysis_result: dict[str, Any] | None = None
+                estate_analysis_result: dict[str, Any] | None = None
                 source_name = file_record.file_name or Path(file_record.file_path).name
 
                 for task in file_record.analysis_tasks:
@@ -663,6 +666,9 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                 if task.name == AnalysisName.PASSWORD_DETECTION:
                                     file_record.contains_password = False
                                     file_record.passwords = {}
+                                elif task.name == AnalysisName.ESTATE_ANALYSIS:
+                                    file_record.has_estate_relevant_info = False
+                                    file_record.estate_information = {}
                                 worker_logger.debug(
                                     "Skipping %s for %s due to missing text",
                                     task.name.value,
@@ -695,6 +701,27 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                         "Password detector found no passwords for %s",
                                         file_record.file_path,
                                     )
+                                task.status = AnalysisStatus.COMPLETE
+                                continue
+                            if task.name == AnalysisName.ESTATE_ANALYSIS:
+                                if estate_analysis_result is None:
+                                    _check_for_shutdown()
+                                    estate_analysis_result = (
+                                        analyze_estate_relevant_information(
+                                            file_record.extracted_text,
+                                            source_name=source_name,
+                                            should_abort=_check_for_shutdown,
+                                        )
+                                    )
+                                file_record.estate_information = (
+                                    estate_analysis_result.get("estate_information", {})
+                                )
+                                has_flag = estate_analysis_result.get(
+                                    "has_estate_relevant_info"
+                                )
+                                if has_flag is None:
+                                    has_flag = bool(file_record.estate_information)
+                                file_record.has_estate_relevant_info = bool(has_flag)
                                 task.status = AnalysisStatus.COMPLETE
                                 continue
 

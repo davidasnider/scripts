@@ -38,6 +38,7 @@ def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[Analys
                 AnalysisName.ACCESS_DB_ANALYSIS,
                 AnalysisName.TEXT_ANALYSIS,
                 AnalysisName.PEOPLE_ANALYSIS,
+                AnalysisName.ESTATE_ANALYSIS,
                 AnalysisName.PASSWORD_DETECTION,
             )
         )
@@ -53,6 +54,7 @@ def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[Analys
             _create_tasks(
                 AnalysisName.TEXT_ANALYSIS,
                 AnalysisName.PEOPLE_ANALYSIS,
+                AnalysisName.ESTATE_ANALYSIS,
                 AnalysisName.PASSWORD_DETECTION,
             )
         )
@@ -63,6 +65,7 @@ def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[Analys
                 AnalysisName.NSFW_CLASSIFICATION,
                 AnalysisName.TEXT_ANALYSIS,
                 AnalysisName.PEOPLE_ANALYSIS,
+                AnalysisName.ESTATE_ANALYSIS,
                 AnalysisName.PASSWORD_DETECTION,
             )
         )
