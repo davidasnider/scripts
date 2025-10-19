@@ -286,11 +286,11 @@ def delete_duplicate_files(
                         entry_index, f"SHA {sha} directory duplicate {file_path}"
                     )
                     continue
-                path.unlink()
+                path.unlink(missing_ok=True)
                 removed_file_count += 1
                 logger.info("Removed duplicate file %s (SHA %s)", file_path, sha)
             elif is_broken_symlink:
-                path.unlink()
+                path.unlink(missing_ok=True)
                 removed_file_count += 1
                 logger.info("Removed broken symlink %s (SHA %s)", file_path, sha)
             else:
@@ -324,10 +324,19 @@ def delete_duplicate_files(
             shutil.copy2(manifest_path, backup_path)
             logger.info("Wrote manifest backup to %s", backup_path)
         temp_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
-        with temp_path.open("w", encoding="utf-8") as tmp_manifest:
-            json.dump(new_entries, tmp_manifest, indent=2)
-            tmp_manifest.write("\n")
-        temp_path.replace(manifest_path)
+        try:
+            with temp_path.open("w", encoding="utf-8") as tmp_manifest:
+                json.dump(new_entries, tmp_manifest, indent=2)
+                tmp_manifest.write("\n")
+            temp_path.replace(manifest_path)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    logger.warning(
+                        "Failed to clean up temporary manifest file %s", temp_path
+                    )
         removed_count = len(manifest_entries) - len(new_entries)
         logger.info(
             "Updated manifest: removed %d duplicate entr%s.",
