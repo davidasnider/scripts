@@ -6,7 +6,7 @@ import base64
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import ollama
 import yaml
@@ -23,6 +23,10 @@ with open("config.yaml", "r") as f:
 TEXT_ANALYZER_MODEL = config["models"]["text_analyzer"]
 CODE_ANALYZER_MODEL = config["models"]["code_analyzer"]
 IMAGE_DESCRIBER_MODEL = config["models"]["image_describer"]
+# Use TEXT_ANALYZER_MODEL as default if no password detector model in config.
+PASSWORD_DETECTOR_MODEL = config["models"].get("password_detector", TEXT_ANALYZER_MODEL)
+
+DEFAULT_PASSWORD_RESULT = {"contains_password": False, "passwords": {}}
 
 
 def _clean_json_response(response_text: str) -> str:
@@ -50,8 +54,19 @@ def _resolve_source_name(source_name: str | None) -> str:
         return str(source_name)
 
 
+AbortCallback = Callable[[], None]
+
+
+def _maybe_abort(callback: AbortCallback | None) -> None:
+    if callback is not None:
+        callback()
+
+
 def analyze_text_content(
-    text: str, *, source_name: str | None = None
+    text: str,
+    *,
+    source_name: str | None = None,
+    should_abort: AbortCallback | None = None,
 ) -> dict[str, Any]:
     """Analyze text content using an LLM to extract summary and mentioned people."""
     text_bytes = len(text.encode("utf-8"))
@@ -61,6 +76,7 @@ def analyze_text_content(
         text_bytes,
     )
     if text_bytes <= 3000:
+        _maybe_abort(should_abort)
         logger.info("Text analysis processing single chunk for %s", source_display_name)
         # Single chunk processing
         prompt = (
@@ -82,6 +98,7 @@ def analyze_text_content(
                 "prompt length: %d",
                 len(prompt),
             )
+            _maybe_abort(should_abort)
             response = ollama.chat(
                 model=TEXT_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -108,6 +125,7 @@ def analyze_text_content(
     all_people = set()
 
     for i, chunk in enumerate(chunks):
+        _maybe_abort(should_abort)
         remaining_chunks = total_chunks - (i + 1)
         logger.info(
             "Text analysis chunk %d/%d for %s (%d remaining)",
@@ -137,6 +155,7 @@ def analyze_text_content(
                 source_display_name,
                 len(prompt),
             )
+            _maybe_abort(should_abort)
             response = ollama.chat(
                 model=TEXT_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -161,6 +180,7 @@ def analyze_text_content(
             continue
 
     if all_summaries:
+        _maybe_abort(should_abort)
         combined_summary_prompt = (
             "You are a document analyst. Combine the following chunk summaries into a "
             "single cohesive summary of the entire document:\n\n"
@@ -181,6 +201,7 @@ def analyze_text_content(
                 len(all_summaries),
                 len(combined_summary_prompt),
             )
+            _maybe_abort(should_abort)
             response = ollama.chat(
                 model=TEXT_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": combined_summary_prompt}],
@@ -200,8 +221,141 @@ def analyze_text_content(
     }
 
 
+def detect_passwords(
+    text: str,
+    *,
+    source_name: str | None = None,
+    should_abort: AbortCallback | None = None,
+) -> dict[str, Any]:
+    """Detect potential passwords within text using an LLM."""
+
+    if not text.strip():
+        return DEFAULT_PASSWORD_RESULT
+
+    text_bytes = len(text.encode("utf-8"))
+    source_display_name = _resolve_source_name(source_name)
+    logger.debug(
+        "Starting password detection, text length: %d bytes",
+        text_bytes,
+    )
+
+    def _normalize_result(raw_result: dict[str, Any]) -> dict[str, Any]:
+        contains_password = bool(raw_result.get("contains_password"))
+        passwords_raw = raw_result.get("passwords") or {}
+        if not isinstance(passwords_raw, dict):
+            passwords: dict[str, str] = {}
+        else:
+            passwords = {
+                str(key): str(value)
+                for key, value in passwords_raw.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+        if contains_password and not passwords:
+            contains_password = False
+        return {
+            "contains_password": contains_password,
+            "passwords": passwords,
+        }
+
+    prompt_template = (
+        "You are a security auditor. Review the following text and determine "
+        "whether it contains any strings that appear to be passwords, API keys, "
+        "or other secret credentials.\n\n"
+        "Respond with a JSON object using these keys:\n"
+        '  - "contains_password": true if you see at least one likely password, '
+        "otherwise false.\n"
+        '  - "passwords": an object where each key is a short identifier '
+        '(for example, the field label or "password_1") and each value is the '
+        "exact password string taken from the text. Use an empty object when no "
+        "passwords are detected.\n\n"
+        "Only consider information present in the text. Do not invent entries. "
+        "Respond with raw JSON only."
+    )
+
+    if text_bytes <= 3000:
+        prompt = f"{prompt_template}\n\nText:\n{text}"
+        try:
+            _maybe_abort(should_abort)
+            logger.debug(
+                "Sending Ollama password detection request (single chunk) for %s",
+                source_display_name,
+            )
+            response = ollama.chat(
+                model=PASSWORD_DETECTOR_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            logger.debug("Received Ollama response for password detection")
+            json_str = response["message"]["content"]
+            raw_result = json.loads(_clean_json_response(json_str))
+            return _normalize_result(raw_result)
+        except Exception as e:
+            logger.warning(
+                "Failed to detect passwords in %s with Ollama: %s",
+                source_display_name,
+                e,
+            )
+            return DEFAULT_PASSWORD_RESULT
+
+    chunks = chunk_text(text, max_tokens=2048)
+    total_chunks = len(chunks)
+    detected_passwords: dict[str, str] = {}
+    any_passwords = False
+
+    def _deduplicate_key(key: str, value: str, existing: dict[str, str]) -> str:
+        """Generate unique key for password to avoid collisions."""
+        unique_key = key
+        suffix = 1
+        while unique_key in existing and existing[unique_key] != value:
+            suffix += 1
+            unique_key = f"{key}_{suffix}"
+        return unique_key
+
+    for i, chunk in enumerate(chunks):
+        _maybe_abort(should_abort)
+        remaining_chunks = total_chunks - (i + 1)
+        logger.info(
+            "Password detection chunk %d/%d for %s (%d remaining)",
+            i + 1,
+            total_chunks,
+            source_display_name,
+            remaining_chunks,
+        )
+        prompt = (
+            f"{prompt_template}\n\n" f"This is chunk {i+1} of {total_chunks}:\n{chunk}"
+        )
+        try:
+            response = ollama.chat(
+                model=PASSWORD_DETECTOR_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            json_str = response["message"]["content"]
+            chunk_result = _normalize_result(json.loads(_clean_json_response(json_str)))
+            if chunk_result["contains_password"]:
+                any_passwords = True
+                for key, value in chunk_result["passwords"].items():
+                    unique_key = _deduplicate_key(key, value, detected_passwords)
+                    detected_passwords[unique_key] = value
+        except Exception as e:
+            logger.warning(
+                "Failed to detect passwords for chunk %d/%d of %s: %s",
+                i + 1,
+                total_chunks,
+                source_display_name,
+                e,
+            )
+            continue
+
+    return {
+        "contains_password": any_passwords,
+        "passwords": detected_passwords,
+    }
+
+
 def analyze_financial_document(
-    text: str, *, source_name: str | None = None
+    text: str,
+    *,
+    source_name: str | None = None,
+    should_abort: AbortCallback | None = None,
 ) -> dict[str, Any]:
     """Analyze financial document text using an LLM as a forensic accountant.
 
@@ -224,6 +378,7 @@ def analyze_financial_document(
     )
     # Check if text needs chunking (over 3000 bytes)
     if text_bytes <= 3000:
+        _maybe_abort(should_abort)
         logger.info(
             "Financial analysis processing single chunk for %s", source_display_name
         )
@@ -249,6 +404,7 @@ def analyze_financial_document(
                 "prompt length: %d",
                 len(prompt),
             )
+            _maybe_abort(should_abort)
             response = ollama.chat(
                 model=CODE_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -280,6 +436,7 @@ def analyze_financial_document(
     confidence_scores = []
 
     for i, chunk in enumerate(chunks):
+        _maybe_abort(should_abort)
         remaining_chunks = total_chunks - (i + 1)
         logger.info(
             "Financial analysis chunk %d/%d for %s (%d remaining)",
@@ -313,6 +470,7 @@ def analyze_financial_document(
                 source_display_name,
                 len(prompt),
             )
+            _maybe_abort(should_abort)
             response = ollama.chat(
                 model=CODE_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -342,6 +500,7 @@ def analyze_financial_document(
 
     # Combine results
     if all_summaries:
+        _maybe_abort(should_abort)
         combined_summary_prompt = (
             "You are a forensic accountant. Combine the following chunk summaries "
             "into a single cohesive summary of the entire financial document:\n\n"
@@ -362,6 +521,7 @@ def analyze_financial_document(
                 len(all_summaries),
                 len(combined_summary_prompt),
             )
+            _maybe_abort(should_abort)
             response = ollama.chat(
                 model=CODE_ANALYZER_MODEL,
                 messages=[{"role": "user", "content": combined_summary_prompt}],
@@ -389,7 +549,9 @@ def analyze_financial_document(
     }
 
 
-def describe_image(image_path: str) -> str:
+def describe_image(
+    image_path: str, *, should_abort: AbortCallback | None = None
+) -> str:
     """Generate a detailed description of an image using a vision-capable LLM.
 
     Parameters
@@ -406,6 +568,7 @@ def describe_image(image_path: str) -> str:
 
     try:
         with Image.open(image_path) as handle:
+            _maybe_abort(should_abort)
             handle.verify()
     except UnidentifiedImageError as exc:
         logger.info(
@@ -423,6 +586,7 @@ def describe_image(image_path: str) -> str:
         return "Image description unavailable - unreadable image"
 
     with open(image_path, "rb") as f:
+        _maybe_abort(should_abort)
         image_data = f.read()
     image_b64 = base64.b64encode(image_data).decode("utf-8")
 
@@ -431,6 +595,7 @@ def describe_image(image_path: str) -> str:
             "Sending Ollama request for image description, image size: %d bytes",
             len(image_b64),
         )
+        _maybe_abort(should_abort)
         response = ollama.chat(
             model=IMAGE_DESCRIBER_MODEL,
             messages=[
@@ -449,7 +614,9 @@ def describe_image(image_path: str) -> str:
         return "Image description unavailable - Ollama not accessible"
 
 
-def summarize_video_frames(frame_descriptions: list[str]) -> str:
+def summarize_video_frames(
+    frame_descriptions: list[str], *, should_abort: AbortCallback | None = None
+) -> str:
     """Summarize multiple frame descriptions into a cohesive video summary.
 
     Parameters
@@ -465,6 +632,8 @@ def summarize_video_frames(frame_descriptions: list[str]) -> str:
     logger.debug(
         "Starting video frame summarization for %d frames", len(frame_descriptions)
     )
+
+    _maybe_abort(should_abort)
 
     if not frame_descriptions:
         return "No frame descriptions available"
@@ -492,6 +661,7 @@ def summarize_video_frames(frame_descriptions: list[str]) -> str:
             "Sending Ollama request for video summarization, prompt length: %d",
             len(prompt),
         )
+        _maybe_abort(should_abort)
         response = ollama.chat(
             model=TEXT_ANALYZER_MODEL,
             messages=[{"role": "user", "content": prompt}],

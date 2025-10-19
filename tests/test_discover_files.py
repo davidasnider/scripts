@@ -46,7 +46,11 @@ def test_calculate_sha256(temp_directory_with_files):
 def test_get_analysis_tasks_for_text_file():
     """Verify text analysis task is assigned for text MIME types."""
     tasks = discover_files._get_analysis_tasks("text/plain", "file.txt")
-    expected = {AnalysisName.TEXT_ANALYSIS, AnalysisName.PEOPLE_ANALYSIS}
+    expected = {
+        AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.PASSWORD_DETECTION,
+    }
     assert {task.name for task in tasks} == expected
 
 
@@ -63,12 +67,20 @@ def test_get_analysis_tasks_include_versions():
         versions[AnalysisName.PEOPLE_ANALYSIS]
         == ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS]
     )
+    assert (
+        versions[AnalysisName.PASSWORD_DETECTION]
+        == ANALYSIS_TASK_VERSIONS[AnalysisName.PASSWORD_DETECTION]
+    )
 
 
 def test_get_analysis_tasks_for_pdf_file():
     """Verify text analysis task is assigned for PDF MIME types."""
     tasks = discover_files._get_analysis_tasks("application/pdf", "file.pdf")
-    expected = {AnalysisName.TEXT_ANALYSIS, AnalysisName.PEOPLE_ANALYSIS}
+    expected = {
+        AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.PASSWORD_DETECTION,
+    }
     assert {task.name for task in tasks} == expected
 
 
@@ -81,6 +93,7 @@ def test_get_analysis_tasks_for_access_file():
         AnalysisName.ACCESS_DB_ANALYSIS,
         AnalysisName.TEXT_ANALYSIS,
         AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.PASSWORD_DETECTION,
     }
     assert {task.name for task in tasks} == expected
 
@@ -93,6 +106,7 @@ def test_get_analysis_tasks_for_image_file():
         AnalysisName.NSFW_CLASSIFICATION,
         AnalysisName.TEXT_ANALYSIS,
         AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.PASSWORD_DETECTION,
     }
     assert {task.name for task in tasks} == expected
 
