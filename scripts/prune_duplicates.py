@@ -7,12 +7,21 @@ import argparse
 import json
 import logging
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from logging_utils import configure_logging
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
 
-logger = logging.getLogger(__name__)
+for candidate in (PROJECT_ROOT, SRC_ROOT):
+    candidate_str = str(candidate)
+    if candidate_str not in sys.path:
+        sys.path.append(candidate_str)
+
+from src.logging_utils import configure_logging  # noqa: E402
+
+logger = logging.getLogger("file_catalog.prune_duplicates")
 
 
 @dataclass(slots=True)
@@ -92,8 +101,23 @@ def select_removals(duplicate_groups: dict[str, list[dict]]) -> list[DuplicateEn
                 sha,
             )
             continue
-        candidates.sort(key=lambda item: (len(item["file_path"]), item["file_path"]))
-        keep_entry = candidates[0]
+        existing_candidates = [
+            entry for entry in candidates if Path(entry["file_path"]).exists()
+        ]
+
+        def sort_key(item: dict) -> tuple[int, str]:
+            return (len(item["file_path"]), item["file_path"])
+
+        preferred_pool = existing_candidates or candidates
+        if existing_candidates and len(existing_candidates) != len(candidates):
+            logger.info(
+                "SHA %s: preferring among %d existing path(s) out of %d candidates.",
+                sha,
+                len(existing_candidates),
+                len(candidates),
+            )
+
+        keep_entry = min(preferred_pool, key=sort_key)
         keep_path = keep_entry.get("file_path", "<unknown>")
         logger.info("Keeping %s for SHA %s", keep_path, sha)
         for entry in items:
@@ -213,7 +237,6 @@ def delete_duplicate_files(
 def main() -> int:
     args = parse_args()
     configure_logging(level=args.log_level, force=True)
-    logger = logging.getLogger("file_catalog.prune_duplicates")
     logger.info("Starting duplicate pruning script")
 
     try:
