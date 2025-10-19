@@ -155,10 +155,10 @@ def analyze_text_content(
         analysis_name="text analysis",
         source_name=source_display_name,
     )
-    total_chunks = len(chunks)
+    chunk_count = len(chunks)
     logger.info(
         "Text analysis processing %d chunk(s) for %s",
-        total_chunks,
+        chunk_count,
         source_display_name,
     )
     all_summaries = []
@@ -166,16 +166,16 @@ def analyze_text_content(
 
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
-        remaining_chunks = total_chunks - (i + 1)
+        remaining_chunks = chunk_count - (i + 1)
         logger.info(
             "Text analysis chunk %d/%d for %s (%d remaining)",
             i + 1,
-            total_chunks,
+            chunk_count,
             source_display_name,
             remaining_chunks,
         )
         prompt = (
-            f"You are a document analyst. Analyze chunk {i+1} of {total_chunks} of the "
+            f"You are a document analyst. Analyze chunk {i+1}/{chunk_count} of the "
             "following text and provide a JSON response with exactly two keys:\n\n"
             '- "summary": a concise paragraph summarizing the main points of this '
             "chunk.\n"
@@ -191,7 +191,7 @@ def analyze_text_content(
             logger.debug(
                 "Sending Ollama request for text chunk %d/%d for %s, prompt length: %d",
                 i + 1,
-                total_chunks,
+                chunk_count,
                 source_display_name,
                 len(prompt),
             )
@@ -203,7 +203,7 @@ def analyze_text_content(
             logger.debug(
                 "Received Ollama response for text chunk %d/%d for %s",
                 i + 1,
-                total_chunks,
+                chunk_count,
                 source_display_name,
             )
             json_str = response["message"]["content"]
@@ -344,7 +344,7 @@ def detect_passwords(
         analysis_name="password detection",
         source_name=source_display_name,
     )
-    total_chunks = len(chunks)
+    chunk_count = len(chunks)
     detected_passwords: dict[str, str] = {}
     any_passwords = False
 
@@ -359,16 +359,16 @@ def detect_passwords(
 
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
-        remaining_chunks = total_chunks - (i + 1)
+        remaining_chunks = chunk_count - (i + 1)
         logger.info(
             "Password detection chunk %d/%d for %s (%d remaining)",
             i + 1,
-            total_chunks,
+            chunk_count,
             source_display_name,
             remaining_chunks,
         )
         prompt = (
-            f"{prompt_template}\n\n" f"This is chunk {i+1} of {total_chunks}:\n{chunk}"
+            f"{prompt_template}\n\n" f"This is chunk {i+1} of {chunk_count}:\n{chunk}"
         )
         try:
             response = ollama.chat(
@@ -386,7 +386,7 @@ def detect_passwords(
             logger.warning(
                 "Failed to detect passwords for chunk %d/%d of %s: %s",
                 i + 1,
-                total_chunks,
+                chunk_count,
                 source_display_name,
                 e,
             )
@@ -530,21 +530,21 @@ def analyze_estate_relevant_information(
         analysis_name="estate analysis",
         source_name=source_display_name,
     )
-    total_chunks = len(chunks)
+    chunk_count = len(chunks)
     chunk_results: list[dict[str, list[dict[str, Any]]]] = []
 
     for index, chunk in enumerate(chunks, start=1):
         _maybe_abort(should_abort)
         prompt = (
             f"{instructions}\n\n"
-            f"This is chunk {index} of {total_chunks} from "
+            f"This is chunk {index} of {chunk_count} from "
             f"{source_display_name}:\n{chunk}"
         )
         try:
             logger.debug(
                 "Sending estate analysis request for chunk %d/%d of %s",
                 index,
-                total_chunks,
+                chunk_count,
                 source_display_name,
             )
             normalized = _call_model(prompt)
@@ -554,7 +554,7 @@ def analyze_estate_relevant_information(
             logger.warning(
                 "Estate analysis failed for chunk %d/%d of %s: %s",
                 index,
-                total_chunks,
+                chunk_count,
                 source_display_name,
                 e,
             )
@@ -653,10 +653,10 @@ def analyze_financial_document(
         analysis_name="financial analysis",
         source_name=source_display_name,
     )
-    total_chunks = len(chunks)
+    chunk_count = len(chunks)
     logger.info(
         "Financial analysis processing %d chunk(s) for %s",
-        total_chunks,
+        chunk_count,
         source_display_name,
     )
     all_summaries = []
@@ -666,18 +666,19 @@ def analyze_financial_document(
 
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
-        remaining_chunks = total_chunks - (i + 1)
+        remaining_chunks = chunk_count - (i + 1)
         logger.info(
             "Financial analysis chunk %d/%d for %s (%d remaining)",
             i + 1,
-            total_chunks,
+            chunk_count,
             source_display_name,
             remaining_chunks,
         )
         prompt = (
-            f"You are a meticulous forensic accountant. Analyze chunk {i+1} of "
-            f"{total_chunks} of the following financial document text and provide a "
-            "JSON response with exactly four keys:\n\n"
+            "You are a meticulous forensic accountant. "
+            f"Analyze chunk {i+1}/{chunk_count} of the following financial document "
+            "text and provide a JSON response "
+            "with exactly four keys:\n\n"
             '- "summary": a concise paragraph summarizing this chunk.\n'
             '- "potential_red_flags": a list of potential red flags or irregularities '
             "in this chunk.\n"
@@ -695,7 +696,7 @@ def analyze_financial_document(
                 "Sending Ollama request for financial chunk %d/%d for %s, "
                 "prompt length: %d",
                 i + 1,
-                total_chunks,
+                chunk_count,
                 source_display_name,
                 len(prompt),
             )
@@ -708,7 +709,7 @@ def analyze_financial_document(
             logger.debug(
                 "Received Ollama response for financial chunk %d/%d for %s",
                 i + 1,
-                total_chunks,
+                chunk_count,
                 source_display_name,
             )
             json_str = response["message"]["content"]
