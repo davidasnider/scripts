@@ -272,10 +272,11 @@ def delete_duplicate_files(
             json.dump(new_entries, tmp_manifest, indent=2)
             tmp_manifest.write("\n")
         temp_path.replace(manifest_path)
+        removed_count = len(manifest_entries) - len(new_entries)
         logger.info(
             "Updated manifest: removed %d duplicate entr%s.",
-            len(manifest_entries) - len(new_entries),
-            "y" if len(manifest_entries) - len(new_entries) == 1 else "ies",
+            removed_count,
+            "y" if removed_count == 1 else "ies",
         )
 
     if removed_file_count or missing_file_count:
