@@ -195,7 +195,7 @@ class ChunkMetrics:
         default_factory=lambda: deque(maxlen=20)
     )
     recent_file_chunk_counts: deque[int] = field(
-        default_factory=lambda: deque(maxlen=10)
+        default_factory=lambda: deque(maxlen=20)
     )
     last_file_average: float | None = None
     last_file_chunks: int = 0
@@ -1079,8 +1079,14 @@ def _backup_manifest() -> None:
         backup_logger.warning("Unable to create manifest backup directory: %s", exc)
         return
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_path = MANIFEST_BACKUP_DIR / f"manifest-{timestamp}.json.bak"
+    suffix = 1
+    while backup_path.exists():
+        backup_path = (
+            MANIFEST_BACKUP_DIR / f"manifest-{timestamp}-{suffix:02d}.json.bak"
+        )
+        suffix += 1
     try:
         copy2(MANIFEST_PATH, backup_path)
         backup_logger.debug("Created manifest backup at %s", backup_path)
@@ -1093,7 +1099,7 @@ def _backup_manifest() -> None:
         for candidate in MANIFEST_BACKUP_DIR.glob("manifest-*.json.bak"):
             try:
                 mtime = candidate.stat().st_mtime
-            except OSError as exc:  # pragma: no cover - unlikely edge case
+            except OSError as exc:  # pragma: no cover  # unlikely edge case
                 backup_logger.debug("Unable to stat backup %s: %s", candidate, exc)
                 continue
             backup_entries.append((mtime, candidate))
@@ -1369,7 +1375,7 @@ def analysis_worker(
             _update_active_status(current_task="Preparing tasks")
             _refresh_task_progress()
 
-            handed_to_database = False
+            handed_to_database = False  # database worker owns cleanup after enqueue
 
             try:
                 _check_for_shutdown()
@@ -1760,6 +1766,9 @@ def analysis_worker(
                 if file_chunk_count > 0 and file_chunk_duration > 0:
                     _record_file_chunk_metrics(file_chunk_duration, file_chunk_count)
                 if correlation_id is not None and not handed_to_database:
+                    # For items that never made it to the database queue, ensure
+                    # we release the active-file entry here; otherwise the
+                    # database worker removes it after indexing.
                     with lock:
                         in_progress_files.pop(correlation_id, None)
 
@@ -2500,8 +2509,16 @@ def main(
         run_logger.info(
             "Shutdown requested before completion; skipping remaining queue drains."
         )
+        lingering_threads: list[str] = []
         for thread in threads:
             thread.join(timeout=2)
+            if thread.is_alive():
+                lingering_threads.append(thread.name or repr(thread))
+        if lingering_threads:
+            run_logger.warning(
+                "Shutdown timeout reached; threads still running: %s",
+                ", ".join(lingering_threads),
+            )
         save_manifest(full_manifest)
     else:
         run_logger.info("Waiting for all work to complete...")
@@ -2513,8 +2530,16 @@ def main(
         dispatch_shutdown_to_workers()
 
         run_logger.debug("Waiting for worker threads to stop...")
+        lingering_threads: list[str] = []
         for thread in threads:
             thread.join(timeout=5)
+            if thread.is_alive():
+                lingering_threads.append(thread.name or repr(thread))
+        if lingering_threads:
+            run_logger.warning(
+                "Threads still running after shutdown: %s",
+                ", ".join(lingering_threads),
+            )
 
         save_manifest(full_manifest)
 
