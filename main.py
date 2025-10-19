@@ -386,7 +386,7 @@ def _record_file_chunk_metrics(duration: float, chunk_count: int) -> None:
     if chunk_count <= 0 or duration <= 0:
         return
 
-    per_chunk = duration / chunk_count if chunk_count > 0 else None
+    per_chunk = duration / chunk_count
     timestamp = time.time()
 
     with lock:
@@ -810,9 +810,10 @@ def _update_progress_panel(layout: Layout, snapshot: ProgressSnapshot) -> None:
 
 
 def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Group:
-    visible = lines if lines else []
     if display_limit <= 0:
-        visible = []
+        visible: list[str] = []
+    else:
+        visible = lines if lines else []
     display_count = len(visible)
     if total > display_count and display_count > 0:
         header_text = f"Logs (showing last {display_count} of {total})"
@@ -1089,16 +1090,21 @@ def _backup_manifest() -> None:
         return
 
     try:
-        backups = sorted(
-            MANIFEST_BACKUP_DIR.glob("manifest-*.json.bak"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
+        backup_entries: list[tuple[float, Path]] = []
+        for candidate in MANIFEST_BACKUP_DIR.glob("manifest-*.json.bak"):
+            try:
+                mtime = candidate.stat().st_mtime
+            except OSError as exc:  # pragma: no cover - unlikely edge case
+                backup_logger.debug("Unable to stat backup %s: %s", candidate, exc)
+                continue
+            backup_entries.append((mtime, candidate))
     except Exception as exc:
         backup_logger.warning("Unable to enumerate manifest backups: %s", exc)
         return
 
-    for stale in backups[MANIFEST_BACKUP_LIMIT:]:
+    backup_entries.sort(key=lambda item: item[0], reverse=True)
+
+    for _, stale in backup_entries[MANIFEST_BACKUP_LIMIT:]:
         try:
             stale.unlink()
             backup_logger.debug("Removed old manifest backup %s", stale)
@@ -1283,7 +1289,6 @@ def analysis_worker(
         correlation_id: str | None = None
         file_chunk_count = 0
         file_chunk_duration = 0.0
-        handed_to_database = False
 
         def _update_active_status(**kwargs: Any) -> None:
             if correlation_id is None:
@@ -1689,7 +1694,6 @@ def analysis_worker(
                 _check_for_shutdown()
                 database_item = WorkItem(file_record, correlation_id)
                 database_queue.put(database_item)
-                handed_to_database = True
                 _update_active_status(stage="Database", current_task="Writing results")
 
                 completed_tasks = sum(
@@ -1765,8 +1769,9 @@ def analysis_worker(
                             file_chunk_duration, file_chunk_count
                         )
                     if correlation_id is not None:
-                        if not handed_to_database:
-                            with lock:
+                        with lock:
+                            status = in_progress_files.get(correlation_id)
+                            if status is None or status.stage != "Database":
                                 in_progress_files.pop(correlation_id, None)
 
             analysis_queue.task_done()
@@ -2506,7 +2511,6 @@ def main(
         run_logger.info(
             "Shutdown requested before completion; skipping remaining queue drains."
         )
-        dispatch_shutdown_to_workers()
         for thread in threads:
             thread.join(timeout=2)
         save_manifest(full_manifest)
