@@ -10,6 +10,7 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, TypeAlias
 
 try:
     from src.logging_utils import configure_logging  # type: ignore[attr-defined]
@@ -24,18 +25,20 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for direct script run
 
 logger = logging.getLogger("file_catalog.prune_duplicates")
 
+ManifestEntry: TypeAlias = dict[str, Any]
+
 
 @dataclass(slots=True)
 class DuplicateEntry:
     """Represents a manifest entry to delete and the canonical copy to retain."""
 
     entry_index: int
-    entry: dict
+    entry: ManifestEntry
     keep_index: int
-    keep_entry: dict
+    keep_entry: ManifestEntry
 
 
-def sort_key_for_entry(entry: dict, *, sha: str) -> tuple[int, str]:
+def sort_key_for_entry(entry: ManifestEntry, *, sha: str) -> tuple[int, str]:
     """Generate a stable sort key for duplicate selection."""
     path_str = entry.get("file_path")
     if not isinstance(path_str, str):
@@ -86,7 +89,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_manifest(path: Path) -> list[dict]:
+def load_manifest(path: Path) -> list[ManifestEntry]:
     if not path.exists():
         raise FileNotFoundError(f"Manifest not found at {path}")
     with path.open("r", encoding="utf-8") as manifest_file:
@@ -96,13 +99,15 @@ def load_manifest(path: Path) -> list[dict]:
     return data
 
 
-def group_duplicates(entries: list[dict]) -> dict[str, list[tuple[int, dict]]]:
+def group_duplicates(
+    entries: list[ManifestEntry],
+) -> dict[str, list[tuple[int, ManifestEntry]]]:
     """Return SHA buckets of manifest entries, with each value keeping its index.
 
     Non-string or missing `sha256` values are ignored. Only groups containing more
     than one entry are returned so callers can focus on duplicate candidates.
     """
-    groups: dict[str, list[tuple[int, dict]]] = {}
+    groups: dict[str, list[tuple[int, ManifestEntry]]] = {}
     for idx, entry in enumerate(entries):
         sha = entry.get("sha256")
         if not isinstance(sha, str) or not sha:
@@ -113,7 +118,7 @@ def group_duplicates(entries: list[dict]) -> dict[str, list[tuple[int, dict]]]:
 
 
 def select_removals(
-    duplicate_groups: dict[str, list[tuple[int, dict]]],
+    duplicate_groups: dict[str, list[tuple[int, ManifestEntry]]],
 ) -> list[DuplicateEntry]:
     """Pick manifest entries to remove for each duplicate SHA group.
 
@@ -184,7 +189,7 @@ def delete_duplicate_files(
     dry_run: bool,
     manifest_path: Path,
     create_backup: bool,
-    manifest_entries: list[dict],
+    manifest_entries: list[ManifestEntry],
 ) -> int:
     """Remove duplicate files and rewrite the manifest with surviving entries.
 
