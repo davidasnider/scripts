@@ -236,9 +236,20 @@ def _extract_all_archives(root_directory: Path) -> None:
             try:
                 extractor = ARCHIVE_EXTRACTORS[archive_type]
                 extractor(archive_path)
-            except Exception as exc:  # pragma: no cover - depends on filesystem layout
+            except (
+                zipfile.BadZipFile,
+                tarfile.TarError,
+                gzip.BadGzipFile,
+                ValueError,
+                OSError,
+            ) as exc:  # pragma: no cover - depends on filesystem layout
                 logger.error("Failed to extract archive %s: %s", archive_path, exc)
                 failed_archives.add(archive_path)
+            except Exception:  # pragma: no cover - unexpected failure
+                logger.exception(
+                    "Unexpected error while extracting archive %s", archive_path
+                )
+                raise
 
 
 def create_file_manifest(
