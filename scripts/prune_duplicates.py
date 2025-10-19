@@ -26,6 +26,8 @@ logger = logging.getLogger("file_catalog.prune_duplicates")
 
 @dataclass(slots=True)
 class DuplicateEntry:
+    """Represents a manifest entry to delete and the canonical copy to retain."""
+
     entry_index: int
     entry: dict
     keep_index: int
@@ -94,6 +96,11 @@ def load_manifest(path: Path) -> list[dict]:
 
 
 def group_duplicates(entries: list[dict]) -> dict[str, list[tuple[int, dict]]]:
+    """Return SHA buckets of manifest entries, with each value keeping its index.
+
+    Non-string or missing `sha256` values are ignored. Only groups containing more
+    than one entry are returned so callers can focus on duplicate candidates.
+    """
     groups: dict[str, list[tuple[int, dict]]] = {}
     for idx, entry in enumerate(entries):
         sha = entry.get("sha256")
@@ -107,6 +114,15 @@ def group_duplicates(entries: list[dict]) -> dict[str, list[tuple[int, dict]]]:
 def select_removals(
     duplicate_groups: dict[str, list[tuple[int, dict]]],
 ) -> list[DuplicateEntry]:
+    """Pick manifest entries to remove for each duplicate SHA group.
+
+    Preference order:
+    1. Entries whose `file_path` exists on disk.
+    2. Within that subset (or all candidates if none exist), the shortest path length
+       followed by lexicographic order to keep the most canonical-looking location.
+    Each removal entry records both the duplicate manifest index and the retained
+    entry so downstream logic can update the manifest and optionally delete files.
+    """
     removals: list[DuplicateEntry] = []
     for sha, items in duplicate_groups.items():
         candidates = [
@@ -169,6 +185,28 @@ def delete_duplicate_files(
     create_backup: bool,
     manifest_entries: list[dict],
 ) -> int:
+    """Remove duplicate files and rewrite the manifest with surviving entries.
+
+    Parameters
+    ----------
+    removals:
+        List of duplicate manifest entries paired with the canonical copy to keep.
+    dry_run:
+        If true, only logs planned actions without deleting files or updating the
+        manifest.
+    manifest_path:
+        Location of the manifest JSON file that will be rewritten.
+    create_backup:
+        Whether to emit a `.bak` copy of the manifest before writing changes.
+    manifest_entries:
+        Snapshot of the manifest contents used to compute rewrite output.
+
+    Returns
+    -------
+    int
+        Count of files physically deleted from disk (missing files are counted
+        separately via logs).
+    """
     manifest_remove_indexes: set[int] = set()
     manifest_size = len(manifest_entries)
 
