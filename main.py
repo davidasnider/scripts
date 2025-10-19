@@ -393,8 +393,7 @@ def _record_file_chunk_metrics(duration: float, chunk_count: int) -> None:
         chunk_metrics.total_chunks += chunk_count
         chunk_metrics.total_duration += duration
         chunk_metrics.file_samples += 1
-        if per_chunk is not None:
-            chunk_metrics.recent_file_chunk_averages.append(per_chunk)
+        chunk_metrics.recent_file_chunk_averages.append(per_chunk)
         chunk_metrics.recent_file_chunk_counts.append(chunk_count)
         chunk_metrics.last_file_average = per_chunk
         chunk_metrics.last_file_chunks = chunk_count
@@ -1335,12 +1334,9 @@ def analysis_worker(
                         status = in_progress_files.get(correlation_id)
                         if status:
                             status.chunks_processed = file_chunk_count
-                            if status.chunks_total is None:
-                                status.chunks_total = file_chunk_count
-                            else:
-                                status.chunks_total = max(
-                                    status.chunks_total, file_chunk_count
-                                )
+                            status.chunks_total = max(
+                                status.chunks_total or 0, file_chunk_count
+                            )
 
         try:
             work_item = analysis_queue.get(timeout=1.0)
@@ -1771,7 +1767,7 @@ def analysis_worker(
                     if correlation_id is not None:
                         with lock:
                             status = in_progress_files.get(correlation_id)
-                            if status is None or status.stage != "Database":
+                            if status and status.stage != "Database":
                                 in_progress_files.pop(correlation_id, None)
 
             analysis_queue.task_done()
