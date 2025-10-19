@@ -106,7 +106,15 @@ def select_removals(duplicate_groups: dict[str, list[dict]]) -> list[DuplicateEn
         ]
 
         def sort_key(item: dict) -> tuple[int, str]:
-            return (len(item["file_path"]), item["file_path"])
+            path_str = item.get("file_path")
+            if not isinstance(path_str, str):
+                logger.warning(
+                    "SHA %s: skipping duplicate entry lacking string file_path: %s",
+                    sha,
+                    item,
+                )
+                return (sys.maxsize, "")
+            return (len(path_str), path_str)
 
         preferred_pool = existing_candidates or candidates
         if existing_candidates and len(existing_candidates) != len(candidates):
@@ -118,7 +126,13 @@ def select_removals(duplicate_groups: dict[str, list[dict]]) -> list[DuplicateEn
             )
 
         keep_entry = min(preferred_pool, key=sort_key)
-        keep_path = keep_entry.get("file_path", "<unknown>")
+        keep_path = keep_entry.get("file_path")
+        if not isinstance(keep_path, str):
+            logger.warning(
+                "SHA %s: could not identify a valid file_path to retain; skipping.",
+                sha,
+            )
+            continue
         logger.info("Keeping %s for SHA %s", keep_path, sha)
         for entry in items:
             if entry is keep_entry:
@@ -135,7 +149,22 @@ def delete_duplicate_files(
     create_backup: bool,
     manifest_entries: list[dict],
 ) -> int:
-    manifest_remove_ids: set[int] = set()
+    manifest_remove_indexes: set[int] = set()
+    index_by_id = {id(entry): idx for idx, entry in enumerate(manifest_entries)}
+    manifest_size = len(manifest_entries)
+
+    def mark_for_removal(entry: dict, context: str) -> None:
+        entry_idx = index_by_id.get(id(entry))
+        if entry_idx is None:
+            logger.warning(
+                "Skipping manifest removal for %s; entry missing from snapshot "
+                "(%d items).",
+                context,
+                manifest_size,
+            )
+            return
+        manifest_remove_indexes.add(entry_idx)
+
     removed_file_count = 0
     missing_file_count = 0
 
@@ -163,7 +192,7 @@ def delete_duplicate_files(
                 "Entry for SHA %s lacks file_path. Removing manifest entry only.",
                 sha,
             )
-            manifest_remove_ids.add(id(entry))
+            mark_for_removal(entry, f"SHA {sha} missing file_path")
             continue
 
         if file_path == keep_path:
@@ -172,7 +201,7 @@ def delete_duplicate_files(
                 file_path,
                 sha,
             )
-            manifest_remove_ids.add(id(entry))
+            mark_for_removal(entry, f"SHA {sha} duplicate manifest entry {file_path}")
             continue
 
         path = Path(file_path)
@@ -184,7 +213,9 @@ def delete_duplicate_files(
                         sha,
                         file_path,
                     )
-                    manifest_remove_ids.add(id(entry))
+                    mark_for_removal(
+                        entry, f"SHA {sha} directory duplicate {file_path}"
+                    )
                     continue
                 path.unlink()
                 removed_file_count += 1
@@ -196,7 +227,7 @@ def delete_duplicate_files(
                     file_path,
                     sha,
                 )
-            manifest_remove_ids.add(id(entry))
+            mark_for_removal(entry, f"SHA {sha} duplicate file {file_path}")
         except OSError:
             logger.exception(
                 "Failed to remove duplicate file %s (SHA %s)", file_path, sha
@@ -205,9 +236,11 @@ def delete_duplicate_files(
     if dry_run:
         return 0
 
-    if manifest_remove_ids:
+    if manifest_remove_indexes:
         new_entries = [
-            entry for entry in manifest_entries if id(entry) not in manifest_remove_ids
+            entry
+            for idx, entry in enumerate(manifest_entries)
+            if idx not in manifest_remove_indexes
         ]
         if create_backup:
             backup_path = manifest_path.with_suffix(manifest_path.suffix + ".bak")
