@@ -11,15 +11,16 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = PROJECT_ROOT / "src"
-
-for candidate in (PROJECT_ROOT, SRC_ROOT):
-    candidate_str = str(candidate)
-    if candidate_str not in sys.path:
-        sys.path.append(candidate_str)
-
-from src.logging_utils import configure_logging  # noqa: E402
+try:
+    from src.logging_utils import configure_logging  # type: ignore[attr-defined]
+except ModuleNotFoundError:  # pragma: no cover - fallback for direct script runs
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
+    SRC_ROOT = PROJECT_ROOT / "src"
+    for candidate in (PROJECT_ROOT, SRC_ROOT):
+        candidate_str = str(candidate)
+        if candidate_str not in sys.path:
+            sys.path.append(candidate_str)
+    from src.logging_utils import configure_logging  # noqa: E402
 
 logger = logging.getLogger("file_catalog.prune_duplicates")
 
@@ -252,7 +253,7 @@ def delete_duplicate_files(
             mark_for_removal(entry_index, f"SHA {sha} missing file_path")
             continue
 
-        if file_path == keep_path and entry is not keep_entry:
+        if file_path == keep_path:
             logger.info(
                 "Removing duplicate manifest entry for %s (SHA %s); file retained.",
                 file_path,
@@ -265,8 +266,12 @@ def delete_duplicate_files(
 
         path = Path(file_path)
         try:
-            if path.exists() or path.is_symlink():
-                if path.is_dir():
+            path_exists = path.exists()
+            is_symlink = path.is_symlink()
+            is_broken_symlink = is_symlink and not path_exists
+
+            if path_exists or is_broken_symlink:
+                if path_exists and path.is_dir():
                     logger.warning(
                         "Skipping removal for SHA %s because %s is a directory.",
                         sha,
