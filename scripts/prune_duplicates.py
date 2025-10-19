@@ -26,8 +26,23 @@ logger = logging.getLogger("file_catalog.prune_duplicates")
 
 @dataclass(slots=True)
 class DuplicateEntry:
+    entry_index: int
     entry: dict
+    keep_index: int
     keep_entry: dict
+
+
+def sort_key_for_entry(entry: dict, *, sha: str) -> tuple[int, str]:
+    """Generate a stable sort key for duplicate selection."""
+    path_str = entry.get("file_path")
+    if not isinstance(path_str, str):
+        logger.warning(
+            "SHA %s: skipping duplicate entry lacking string file_path: %s",
+            sha,
+            entry,
+        )
+        return (sys.maxsize, "")
+    return (len(path_str), path_str)
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,22 +93,26 @@ def load_manifest(path: Path) -> list[dict]:
     return data
 
 
-def group_duplicates(entries: list[dict]) -> dict[str, list[dict]]:
-    groups: dict[str, list[dict]] = {}
-    for entry in entries:
+def group_duplicates(entries: list[dict]) -> dict[str, list[tuple[int, dict]]]:
+    groups: dict[str, list[tuple[int, dict]]] = {}
+    for idx, entry in enumerate(entries):
         sha = entry.get("sha256")
         if not isinstance(sha, str) or not sha:
             logger.debug("Skipping entry without sha256: %s", entry)
             continue
-        groups.setdefault(sha, []).append(entry)
+        groups.setdefault(sha, []).append((idx, entry))
     return {sha: items for sha, items in groups.items() if len(items) > 1}
 
 
-def select_removals(duplicate_groups: dict[str, list[dict]]) -> list[DuplicateEntry]:
+def select_removals(
+    duplicate_groups: dict[str, list[tuple[int, dict]]],
+) -> list[DuplicateEntry]:
     removals: list[DuplicateEntry] = []
     for sha, items in duplicate_groups.items():
         candidates = [
-            entry for entry in items if isinstance(entry.get("file_path"), str)
+            (idx, entry)
+            for idx, entry in items
+            if isinstance(entry.get("file_path"), str)
         ]
         if not candidates:
             logger.warning(
@@ -102,19 +121,10 @@ def select_removals(duplicate_groups: dict[str, list[dict]]) -> list[DuplicateEn
             )
             continue
         existing_candidates = [
-            entry for entry in candidates if Path(entry["file_path"]).exists()
+            (idx, entry)
+            for idx, entry in candidates
+            if Path(entry["file_path"]).exists()
         ]
-
-        def sort_key(item: dict) -> tuple[int, str]:
-            path_str = item.get("file_path")
-            if not isinstance(path_str, str):
-                logger.warning(
-                    "SHA %s: skipping duplicate entry lacking string file_path: %s",
-                    sha,
-                    item,
-                )
-                return (sys.maxsize, "")
-            return (len(path_str), path_str)
 
         preferred_pool = existing_candidates or candidates
         if existing_candidates and len(existing_candidates) != len(candidates):
@@ -125,8 +135,11 @@ def select_removals(duplicate_groups: dict[str, list[dict]]) -> list[DuplicateEn
                 len(candidates),
             )
 
-        keep_entry = min(preferred_pool, key=sort_key)
-        keep_path = keep_entry.get("file_path")
+        keep_index, keep_entry_dict = min(
+            preferred_pool,
+            key=lambda pair: sort_key_for_entry(pair[1], sha=sha),
+        )
+        keep_path = keep_entry_dict.get("file_path")
         if not isinstance(keep_path, str):
             logger.warning(
                 "SHA %s: could not identify a valid file_path to retain; skipping.",
@@ -134,10 +147,17 @@ def select_removals(duplicate_groups: dict[str, list[dict]]) -> list[DuplicateEn
             )
             continue
         logger.info("Keeping %s for SHA %s", keep_path, sha)
-        for entry in items:
-            if entry is keep_entry:
+        for entry_index, entry in items:
+            if entry_index == keep_index:
                 continue
-            removals.append(DuplicateEntry(entry=entry, keep_entry=keep_entry))
+            removals.append(
+                DuplicateEntry(
+                    entry_index=entry_index,
+                    entry=entry,
+                    keep_index=keep_index,
+                    keep_entry=keep_entry_dict,
+                )
+            )
     return removals
 
 
@@ -150,20 +170,18 @@ def delete_duplicate_files(
     manifest_entries: list[dict],
 ) -> int:
     manifest_remove_indexes: set[int] = set()
-    index_by_id = {id(entry): idx for idx, entry in enumerate(manifest_entries)}
     manifest_size = len(manifest_entries)
 
-    def mark_for_removal(entry: dict, context: str) -> None:
-        entry_idx = index_by_id.get(id(entry))
-        if entry_idx is None:
+    def mark_for_removal(entry_index: int, context: str) -> None:
+        if 0 <= entry_index < manifest_size:
+            manifest_remove_indexes.add(entry_index)
+        else:
             logger.warning(
-                "Skipping manifest removal for %s; entry missing from snapshot "
-                "(%d items).",
+                "Skip manifest removal for %s; index %d exceeds snapshot size %d.",
                 context,
+                entry_index,
                 manifest_size,
             )
-            return
-        manifest_remove_indexes.add(entry_idx)
 
     removed_file_count = 0
     missing_file_count = 0
@@ -174,6 +192,7 @@ def delete_duplicate_files(
     for duplicate in removals:
         entry = duplicate.entry
         keep_entry = duplicate.keep_entry
+        entry_index = duplicate.entry_index
         sha = entry.get("sha256", "<unknown>")
         file_path = entry.get("file_path")
         keep_path = keep_entry.get("file_path", "<unknown>")
@@ -192,16 +211,18 @@ def delete_duplicate_files(
                 "Entry for SHA %s lacks file_path. Removing manifest entry only.",
                 sha,
             )
-            mark_for_removal(entry, f"SHA {sha} missing file_path")
+            mark_for_removal(entry_index, f"SHA {sha} missing file_path")
             continue
 
-        if file_path == keep_path:
+        if file_path == keep_path and entry is not keep_entry:
             logger.info(
                 "Removing duplicate manifest entry for %s (SHA %s); file retained.",
                 file_path,
                 sha,
             )
-            mark_for_removal(entry, f"SHA {sha} duplicate manifest entry {file_path}")
+            mark_for_removal(
+                entry_index, f"SHA {sha} duplicate manifest entry {file_path}"
+            )
             continue
 
         path = Path(file_path)
@@ -214,7 +235,7 @@ def delete_duplicate_files(
                         file_path,
                     )
                     mark_for_removal(
-                        entry, f"SHA {sha} directory duplicate {file_path}"
+                        entry_index, f"SHA {sha} directory duplicate {file_path}"
                     )
                     continue
                 path.unlink()
@@ -227,7 +248,7 @@ def delete_duplicate_files(
                     file_path,
                     sha,
                 )
-            mark_for_removal(entry, f"SHA {sha} duplicate file {file_path}")
+            mark_for_removal(entry_index, f"SHA {sha} duplicate file {file_path}")
         except OSError:
             logger.exception(
                 "Failed to remove duplicate file %s (SHA %s)", file_path, sha
