@@ -27,6 +27,18 @@ IMAGE_DESCRIBER_MODEL = config["models"]["image_describer"]
 PASSWORD_DETECTOR_MODEL = config["models"].get("password_detector", TEXT_ANALYZER_MODEL)
 
 DEFAULT_PASSWORD_RESULT = {"contains_password": False, "passwords": {}}
+DEFAULT_ESTATE_RESULT = {
+    "has_estate_relevant_info": False,
+    "estate_information": {},
+}
+ESTATE_CATEGORY_KEYS = [
+    "Legal",
+    "Financial",
+    "Insurance",
+    "Digital",
+    "Medical",
+    "Personal",
+]
 
 
 def _clean_json_response(response_text: str) -> str:
@@ -348,6 +360,174 @@ def detect_passwords(
     return {
         "contains_password": any_passwords,
         "passwords": detected_passwords,
+    }
+
+
+def _normalize_estate_response(
+    raw_result: Any,
+) -> dict[str, list[dict[str, Any]]]:
+    """Sanitize model output for estate analysis."""
+
+    if not isinstance(raw_result, dict):
+        return {}
+
+    normalized: dict[str, list[dict[str, Any]]] = {}
+
+    for key, value in raw_result.items():
+        if not isinstance(key, str):
+            continue
+        if not isinstance(value, list):
+            continue
+        cleaned_entries: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, dict):
+                cleaned_entries.append(
+                    {
+                        str(entry_key): entry_value
+                        for entry_key, entry_value in item.items()
+                        if isinstance(entry_key, str)
+                    }
+                )
+            elif isinstance(item, str):
+                cleaned_entries.append({"details": item})
+        if cleaned_entries:
+            normalized[key] = cleaned_entries
+
+    return normalized
+
+
+def _merge_estate_results(
+    chunked_results: list[dict[str, list[dict[str, Any]]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Combine estate analysis results across chunks."""
+
+    merged: dict[str, list[dict[str, Any]]] = {}
+
+    for result in chunked_results:
+        for category, entries in result.items():
+            if not isinstance(category, str) or not isinstance(entries, list):
+                continue
+            bucket = merged.setdefault(category, [])
+            for entry in entries:
+                if isinstance(entry, dict) and entry not in bucket:
+                    bucket.append(entry)
+
+    return merged
+
+
+def analyze_estate_relevant_information(
+    text: str,
+    *,
+    source_name: str | None = None,
+    should_abort: AbortCallback | None = None,
+) -> dict[str, Any]:
+    """Identify estate management details within text."""
+
+    if not text.strip():
+        return DEFAULT_ESTATE_RESULT
+
+    text_bytes = len(text.encode("utf-8"))
+    source_display_name = _resolve_source_name(source_name)
+    logger.debug(
+        "Starting estate analysis, text length: %d bytes for %s",
+        text_bytes,
+        source_display_name,
+    )
+
+    instructions = (
+        "You are an assistant helping loved ones settle a deceased person's affairs. "
+        "Review the supplied text and capture only information that would help an "
+        "executor or family member locate important assets, instructions, or "
+        "accounts.\n\n"
+        "Return a JSON object. Use only these top-level keys when relevant: "
+        f"{', '.join(ESTATE_CATEGORY_KEYS)}.\n"
+        "Each present key must map to an array of objects. For each item include:\n"
+        '  - "item": a concise label for the information (e.g., "Living Will", '
+        '"Chase savings account").\n'
+        '  - "why_it_matters": a short phrase on why the detail helps wrap up '
+        "affairs.\n"
+        '  - "details": the critical facts pulled from the text such as account '
+        "numbers, "
+        "custodian names, login hints, storage locations, or instructions.\n"
+        'Add optional keys like "location", "contact", or "reference" when the '
+        "text supplies them. Do not fabricate information and omit categories "
+        "that have "
+        "no findings. If nothing is relevant return an empty JSON object {}.\n"
+        "Respond only with raw JSON (no code fences)."
+    )
+
+    def _call_model(payload: str) -> dict[str, list[dict[str, Any]]]:
+        _maybe_abort(should_abort)
+        response = ollama.chat(
+            model=TEXT_ANALYZER_MODEL,
+            messages=[{"role": "user", "content": payload}],
+        )
+        json_str = response["message"]["content"]
+        parsed = json.loads(_clean_json_response(json_str))
+        return _normalize_estate_response(parsed)
+
+    if text_bytes <= 3000:
+        prompt = f"{instructions}\n\nText:\n{text}"
+        try:
+            logger.debug(
+                "Sending estate analysis request (single chunk) for %s",
+                source_display_name,
+            )
+            normalized = _call_model(prompt)
+            has_info = bool(normalized)
+            return {
+                "has_estate_relevant_info": has_info,
+                "estate_information": normalized,
+            }
+        except Exception as e:
+            logger.warning(
+                "Estate analysis failed for %s with Ollama: %s",
+                source_display_name,
+                e,
+            )
+            return DEFAULT_ESTATE_RESULT
+
+    chunks = chunk_text(text, max_tokens=2048)
+    total_chunks = len(chunks)
+    chunk_results: list[dict[str, list[dict[str, Any]]]] = []
+
+    for index, chunk in enumerate(chunks, start=1):
+        _maybe_abort(should_abort)
+        prompt = (
+            f"{instructions}\n\n"
+            f"This is chunk {index} of {total_chunks} from "
+            f"{source_display_name}:\n{chunk}"
+        )
+        try:
+            logger.debug(
+                "Sending estate analysis request for chunk %d/%d of %s",
+                index,
+                total_chunks,
+                source_display_name,
+            )
+            normalized = _call_model(prompt)
+            if normalized:
+                chunk_results.append(normalized)
+        except Exception as e:
+            logger.warning(
+                "Estate analysis failed for chunk %d/%d of %s: %s",
+                index,
+                total_chunks,
+                source_display_name,
+                e,
+            )
+            continue
+
+    merged = _merge_estate_results(chunk_results)
+    has_info = bool(merged)
+    logger.debug(
+        "Completed estate analysis for %s with %d chunk result(s)",
+        source_display_name,
+        len(chunk_results),
+    )
+    return {
+        "has_estate_relevant_info": has_info,
+        "estate_information": merged,
     }
 
 

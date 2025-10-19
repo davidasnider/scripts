@@ -377,6 +377,52 @@ def make_table_rows(files: list[dict[str, Any]]) -> list[dict[str, str]]:
     ]
 
 
+def _summarize_estate_highlights(entry: dict[str, Any]) -> str:
+    """Build a short preview string of estate information for list views."""
+    estate_info = entry.get("estate_information") or {}
+    highlights: list[str] = []
+
+    for category, items in estate_info.items():
+        if len(highlights) >= 3:
+            break
+        if not isinstance(items, list) or not items:
+            continue
+        first_item = next(
+            (item for item in items if isinstance(item, dict) and any(item.values())),
+            None,
+        )
+        if isinstance(first_item, dict):
+            label = (
+                first_item.get("item")
+                or first_item.get("details")
+                or first_item.get("why_it_matters")
+            )
+            if label:
+                highlights.append(f"{category}: {label}")
+        elif items and isinstance(items[0], str):
+            highlights.append(f"{category}: {items[0]}")
+
+    return "; ".join(highlights)
+
+
+def make_estate_table_rows(files: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Create table rows summarizing estate insights for each file."""
+    rows: list[dict[str, str]] = []
+    for entry in files:
+        file_name = entry.get("file_name") or Path(entry.get("file_path", "")).name
+        directory = str(Path(entry.get("file_path", "")).parent)
+        highlights = _summarize_estate_highlights(entry)
+        rows.append(
+            {
+                "File": file_name,
+                "Directory": directory,
+                "Estate Highlights": highlights
+                or "Review details for captured insights",
+            }
+        )
+    return rows
+
+
 def get_entry_display_name(item: dict[str, Any]) -> str:
     """Get the display name for a file entry, used for sorting."""
     return (item.get("file_name") or Path(item.get("file_path", "")).name or "").lower()
@@ -514,6 +560,41 @@ def compute_password_index(entries: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def compute_estate_index(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create an index of files containing estate-relevant information."""
+    estate_files: list[dict[str, Any]] = []
+    category_counts: defaultdict[str, int] = defaultdict(int)
+
+    for entry in entries:
+        estate_info = entry.get("estate_information") or {}
+        if not estate_info:
+            continue
+        estate_files.append(entry)
+        for category, items in estate_info.items():
+            if not isinstance(items, list):
+                continue
+            valid_items: list[Any] = []
+            for item in items:
+                if isinstance(item, dict):
+                    if any(value for value in item.values()):
+                        valid_items.append(item)
+                elif isinstance(item, str) and item.strip():
+                    valid_items.append(item)
+            if not valid_items:
+                continue
+            category_counts[category] += len(valid_items)
+
+    estate_files.sort(key=get_entry_display_name)
+
+    return {
+        "count": len(estate_files),
+        "files": estate_files,
+        "categories": dict(
+            sorted(category_counts.items(), key=lambda item: item[0].lower())
+        ),
+    }
+
+
 @st.cache_data(show_spinner=False)
 def load_manifest_assets(manifest_path: str = "data/manifest.json") -> dict[str, Any]:
     """Load manifest entries and build reusable indexes."""
@@ -579,6 +660,7 @@ def render_file_detail(file_entry: dict[str, Any] | None, filtered_out: bool = F
     _render_file_metadata(file_entry, file_path_str, file_name, mime_type)
     _render_file_summary_description(file_entry)
     _render_password_details(file_entry)
+    _render_estate_details(file_entry)
     preview_rendered = _render_file_previews(
         file_entry, file_path_str, file_name, mime_type
     )
@@ -632,6 +714,8 @@ def _render_file_metadata(
         timestamp = datetime.fromtimestamp(last_modified)
         meta_line += f" · **Modified:** {timestamp:%Y-%m-%d %H:%M:%S}"
     st.markdown(meta_line)
+    if file_entry.get("has_estate_relevant_info"):
+        st.caption("Estate insights available; see the section below for details.")
 
 
 def _render_file_summary_description(file_entry: dict[str, Any]):
@@ -660,6 +744,61 @@ def _render_password_details(file_entry: dict[str, Any]) -> None:
             st.code(f"{label}: {value}")
     else:
         st.info("No passwords detected in this file.")
+
+
+def _render_estate_details(file_entry: dict[str, Any]) -> None:
+    """Display estate-relevant information in a readable format."""
+    estate_info = file_entry.get("estate_information") or {}
+    view_mode = st.session_state.get("file_browser_view_mode")
+
+    if not estate_info:
+        if view_mode == "Estate":
+            st.info("No estate-relevant details were captured for this file.")
+        return
+
+    st.markdown("**Estate-Relevant Information**")
+    for category in sorted(estate_info.keys(), key=lambda key: key.lower()):
+        entries = estate_info.get(category) or []
+        if not entries:
+            continue
+        valid_entries: list[Any] = [
+            item for item in entries if isinstance(item, (dict, str)) and item
+        ]
+        if not valid_entries:
+            continue
+        with st.expander(
+            f"{category} ({len(valid_entries)})",
+            expanded=view_mode == "Estate",
+        ):
+            for idx, raw_entry in enumerate(valid_entries, start=1):
+                if isinstance(raw_entry, dict):
+                    item_title = (
+                        raw_entry.get("item")
+                        or raw_entry.get("details")
+                        or raw_entry.get("reference")
+                        or f"Entry {idx}"
+                    )
+                    st.markdown(f"- **{item_title}**")
+
+                    detail_pairs: list[tuple[str, str]] = []
+                    if raw_entry.get("details"):
+                        detail_pairs.append(("Details", str(raw_entry["details"])))
+                    for key, label in [
+                        ("location", "Location"),
+                        ("contact", "Contact"),
+                        ("reference", "Reference"),
+                    ]:
+                        value = raw_entry.get(key)
+                        if value:
+                            detail_pairs.append((label, str(value)))
+                    why = raw_entry.get("why_it_matters")
+                    if why:
+                        detail_pairs.append(("Why it matters", str(why)))
+
+                    for label, value in detail_pairs:
+                        st.markdown(f"    - {label}: {value}")
+                else:
+                    st.markdown(f"- {raw_entry}")
 
 
 def _render_file_previews(
@@ -986,6 +1125,34 @@ def render_password_browser(password_index: dict[str, Any]):
     )
 
 
+def render_estate_browser(estate_index: dict[str, Any]):
+    """Render controls for browsing estate-relevant files."""
+    if not estate_index or not estate_index.get("files"):
+        st.info("No estate-relevant details found for the current filters.")
+        return
+
+    files = estate_index.get("files", [])
+    st.caption(f"{len(files)} file(s) include estate-relevant information.")
+
+    category_counts = estate_index.get("categories") or {}
+    if category_counts:
+        categories_summary = ", ".join(
+            f"{category} ({count})" for category, count in category_counts.items()
+        )
+        st.caption(f"Categories represented: {categories_summary}")
+
+    table_rows = make_estate_table_rows(files)
+
+    render_related_file_table(
+        table_rows,
+        files,
+        select_state_key="estate_file_select",
+        table_state_key="estate_file_table",
+        last_selection_state_key="estate_file_table_last_selection",
+        log_label="Estate view",
+    )
+
+
 def render_file_browser(filter_state: dict[str, Any]):
     """Top-level renderer for the file browser tab."""
     manifest_assets = load_manifest_assets()
@@ -1009,6 +1176,7 @@ def render_file_browser(filter_state: dict[str, Any]):
     people_index = compute_people_index(filtered_entries)
     nsfw_index = compute_nsfw_index(filtered_entries)
     password_index = compute_password_index(filtered_entries)
+    estate_index = compute_estate_index(filtered_entries)
     filtered_lookup = {
         entry["file_path"]: entry
         for entry in filtered_entries
@@ -1022,21 +1190,21 @@ def render_file_browser(filter_state: dict[str, Any]):
     total_people = len(people_index)
     total_nsfw = nsfw_index.get("count", 0)
     total_passwords = password_index.get("count", 0)
+    total_estate = estate_index.get("count", 0)
 
-    (
-        met_col1,
-        met_col2,
-        met_col3,
-        met_col4,
-        met_col5,
-        met_col6,
-    ) = st.columns(6)
-    met_col1.metric("Files", f"{total_files:,}")
-    met_col2.metric("Directories", f"{total_directories:,}")
-    met_col3.metric("MIME types", f"{total_mime_types:,}")
-    met_col4.metric("People", f"{total_people:,}")
-    met_col5.metric("NSFW", f"{total_nsfw:,}")
-    met_col6.metric("Passwords", f"{total_passwords:,}")
+    summary_metrics = [
+        ("Files", total_files),
+        ("Directories", total_directories),
+        ("MIME types", total_mime_types),
+        ("People", total_people),
+        ("NSFW", total_nsfw),
+        ("Passwords", total_passwords),
+        ("Estate info", total_estate),
+    ]
+    for column, (label, value) in zip(
+        st.columns(len(summary_metrics)), summary_metrics
+    ):
+        column.metric(label, f"{value:,}")
 
     if "file_browser_view_mode" not in st.session_state:
         st.session_state.file_browser_view_mode = "Directory"
@@ -1046,12 +1214,13 @@ def render_file_browser(filter_state: dict[str, Any]):
         "People",
         "Passwords",
         "NSFW",
+        "Estate",
     }:
         st.session_state.file_browser_view_mode = "Directory"
 
     view_mode = st.radio(
         "Browse files by",
-        ["Directory", "MIME type", "People", "Passwords", "NSFW"],
+        ["Directory", "MIME type", "People", "Passwords", "NSFW", "Estate"],
         horizontal=True,
         key="file_browser_view_mode",
     )
@@ -1068,6 +1237,8 @@ def render_file_browser(filter_state: dict[str, Any]):
             render_password_browser(password_index)
         elif view_mode == "NSFW":
             render_nsfw_browser(nsfw_index)
+        elif view_mode == "Estate":
+            render_estate_browser(estate_index)
 
     selected_path = st.session_state.get("file_browser_selected_file")
     selected_entry = filtered_lookup.get(selected_path)

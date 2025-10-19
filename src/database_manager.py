@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import chromadb
@@ -80,6 +81,11 @@ def add_file_to_db(file_data: dict, collection) -> None:
         file_data.get("description", ""),
         file_data.get("extracted_text", ""),
         ", ".join(file_data.get("mentioned_people", [])),
+        (
+            json.dumps(file_data.get("estate_information", {}), sort_keys=True)
+            if file_data.get("estate_information")
+            else ""
+        ),
     ]
     consolidated_text = " ".join(part for part in text_parts if part).strip()
 
@@ -98,6 +104,7 @@ def add_file_to_db(file_data: dict, collection) -> None:
         "file_type": (file_data.get("mime_type") or "").split("/")[0],
         "is_nsfw": file_data.get("is_nsfw") or False,
         "has_financial_red_flags": file_data.get("has_financial_red_flags") or False,
+        "has_estate_relevant_info": file_data.get("has_estate_relevant_info") or False,
     }
 
     # Add to collection

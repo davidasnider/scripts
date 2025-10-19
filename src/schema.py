@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +31,7 @@ class AnalysisName(str, Enum):
     NSFW_CLASSIFICATION = "nsfw_classification"
     ACCESS_DB_ANALYSIS = "access_db_analysis"
     PASSWORD_DETECTION = "password_detection"
+    ESTATE_ANALYSIS = "estate_analysis"
 
 
 DEFAULT_ANALYSIS_TASK_VERSION = 1
@@ -42,6 +44,7 @@ FINANCIAL_ANALYSIS_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 NSFW_CLASSIFICATION_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 ACCESS_DB_ANALYSIS_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 PASSWORD_DETECTION_VERSION = 3
+ESTATE_ANALYSIS_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 
 ANALYSIS_TASK_VERSIONS: dict[AnalysisName, int] = {
     AnalysisName.TEXT_ANALYSIS: TEXT_ANALYSIS_VERSION,
@@ -52,6 +55,7 @@ ANALYSIS_TASK_VERSIONS: dict[AnalysisName, int] = {
     AnalysisName.NSFW_CLASSIFICATION: NSFW_CLASSIFICATION_VERSION,
     AnalysisName.ACCESS_DB_ANALYSIS: ACCESS_DB_ANALYSIS_VERSION,
     AnalysisName.PASSWORD_DETECTION: PASSWORD_DETECTION_VERSION,
+    AnalysisName.ESTATE_ANALYSIS: ESTATE_ANALYSIS_VERSION,
 }
 
 
@@ -87,3 +91,5 @@ class FileRecord(BaseModel):
     confidence_score: int | None = None
     contains_password: bool | None = None
     passwords: dict[str, str] = Field(default_factory=dict)
+    has_estate_relevant_info: bool | None = None
+    estate_information: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)

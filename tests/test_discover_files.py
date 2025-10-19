@@ -49,6 +49,7 @@ def test_get_analysis_tasks_for_text_file():
     expected = {
         AnalysisName.TEXT_ANALYSIS,
         AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.ESTATE_ANALYSIS,
         AnalysisName.PASSWORD_DETECTION,
     }
     assert {task.name for task in tasks} == expected
@@ -68,6 +69,10 @@ def test_get_analysis_tasks_include_versions():
         == ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS]
     )
     assert (
+        versions[AnalysisName.ESTATE_ANALYSIS]
+        == ANALYSIS_TASK_VERSIONS[AnalysisName.ESTATE_ANALYSIS]
+    )
+    assert (
         versions[AnalysisName.PASSWORD_DETECTION]
         == ANALYSIS_TASK_VERSIONS[AnalysisName.PASSWORD_DETECTION]
     )
@@ -79,6 +84,7 @@ def test_get_analysis_tasks_for_pdf_file():
     expected = {
         AnalysisName.TEXT_ANALYSIS,
         AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.ESTATE_ANALYSIS,
         AnalysisName.PASSWORD_DETECTION,
     }
     assert {task.name for task in tasks} == expected
@@ -93,6 +99,7 @@ def test_get_analysis_tasks_for_access_file():
         AnalysisName.ACCESS_DB_ANALYSIS,
         AnalysisName.TEXT_ANALYSIS,
         AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.ESTATE_ANALYSIS,
         AnalysisName.PASSWORD_DETECTION,
     }
     assert {task.name for task in tasks} == expected
@@ -106,6 +113,7 @@ def test_get_analysis_tasks_for_image_file():
         AnalysisName.NSFW_CLASSIFICATION,
         AnalysisName.TEXT_ANALYSIS,
         AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.ESTATE_ANALYSIS,
         AnalysisName.PASSWORD_DETECTION,
     }
     assert {task.name for task in tasks} == expected
