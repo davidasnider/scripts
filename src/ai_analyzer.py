@@ -344,7 +344,6 @@ def detect_passwords(
                 e,
             )
             continue
-            continue
 
     return {
         "contains_password": any_passwords,

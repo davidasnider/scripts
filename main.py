@@ -1661,20 +1661,6 @@ def main(
                 write_processed_files_to_csv(processed_files_data, csv_output)
             else:
                 run_logger.info("No files to write to CSV.")
-        if processed_files_data:
-            run_logger.info(
-                "Writing %d processed files to %s",
-                len(processed_files_data),
-                csv_output,
-            )
-            write_processed_files_to_csv(processed_files_data, csv_output)
-        else:
-            run_logger.info("No files to write to CSV.")
-
-    elif csv_output and shutdown_event.is_set():
-        run_logger.info(
-            "Skipping CSV export because the run was interrupted before completion."
-        )
 
     if shutdown_event.is_set():
         run_logger.warning("Shutdown request interrupted processing before completion.")
