@@ -23,7 +23,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from shutil import copy2
-from typing import Any
+from typing import Any, Iterable
 from xml.etree import ElementTree as ET
 
 import pandas as pd
@@ -71,7 +71,7 @@ from src.schema import (
     FileRecord,
 )
 from src.task_utils import ensure_required_tasks
-from src.text_utils import chunk_text
+from src.text_utils import count_tokens
 
 
 class AnalysisModel(str, Enum):
@@ -182,6 +182,19 @@ def _calculate_log_panel_display_limit(
 
     terminal_height = max(console.size.height, 1)
     return max(int(terminal_height * ratio) - 1, 1)
+
+
+def _join_threads_with_timeout(
+    threads: Iterable[threading.Thread], timeout: float
+) -> list[str]:
+    """Join threads for up to timeout seconds, returning names still alive."""
+
+    lingering: list[str] = []
+    for thread in threads:
+        thread.join(timeout)
+        if thread.is_alive():
+            lingering.append(thread.name or repr(thread))
+    return lingering
 
 
 @dataclass
@@ -374,10 +387,14 @@ def _estimate_chunk_count(text: str | None, *, max_chunks: int | None) -> int:
     if text_bytes <= 3000:
         return 1
 
-    chunks = chunk_text(text, max_tokens=2048)
+    token_count = count_tokens(text)
+    if token_count <= 0:
+        return 1
+
+    chunks_estimate = max((token_count + 2047) // 2048, 1)
     if max_chunks and max_chunks > 0:
-        chunks = chunks[:max_chunks]
-    return max(len(chunks), 1)
+        chunks_estimate = min(chunks_estimate, max_chunks)
+    return chunks_estimate
 
 
 def _record_file_chunk_metrics(duration: float, chunk_count: int) -> None:
@@ -810,7 +827,7 @@ def _update_progress_panel(layout: Layout, snapshot: ProgressSnapshot) -> None:
 
 def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Group:
     if display_limit <= 0:
-        visible: list[str] = []
+        visible = []
     else:
         visible = lines[-display_limit:] if lines else []
     display_count = len(visible)
@@ -2509,11 +2526,7 @@ def main(
         run_logger.info(
             "Shutdown requested before completion; skipping remaining queue drains."
         )
-        lingering_threads: list[str] = []
-        for thread in threads:
-            thread.join(timeout=2)
-            if thread.is_alive():
-                lingering_threads.append(thread.name or repr(thread))
+        lingering_threads = _join_threads_with_timeout(threads, timeout=2)
         if lingering_threads:
             run_logger.warning(
                 "Shutdown timeout reached; threads still running: %s",
@@ -2530,11 +2543,7 @@ def main(
         dispatch_shutdown_to_workers()
 
         run_logger.debug("Waiting for worker threads to stop...")
-        lingering_threads: list[str] = []
-        for thread in threads:
-            thread.join(timeout=5)
-            if thread.is_alive():
-                lingering_threads.append(thread.name or repr(thread))
+        lingering_threads = _join_threads_with_timeout(threads, timeout=5)
         if lingering_threads:
             run_logger.warning(
                 "Threads still running after shutdown: %s",
