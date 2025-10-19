@@ -11,6 +11,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import csv
 import json
 import logging
+import math
 import queue
 import re
 import signal
@@ -18,11 +19,17 @@ import sys
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
+
+try:
+    import ollama
+except Exception:  # pragma: no cover - optional dependency
+    ollama = None
 
 import pandas as pd
 import typer
@@ -31,6 +38,7 @@ from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 from typing_extensions import Annotated
 
@@ -67,6 +75,282 @@ from src.schema import (
     FileRecord,
 )
 from src.task_utils import ensure_required_tasks
+
+
+@dataclass(frozen=True)
+class LLMCallContext:
+    """Context captured around an LLM invocation for metrics."""
+
+    correlation_id: str
+    file_label: str
+    task_label: str
+
+
+@dataclass(frozen=True)
+class LLMChunkRecord:
+    """Immutable record describing a single LLM chunk execution."""
+
+    timestamp: float
+    duration: float
+    chunk_index: int
+    chunk_total: int
+    model: str | None
+    context: LLMCallContext
+
+
+@dataclass(frozen=True)
+class LLMProgressSnapshot:
+    """Snapshot of aggregated LLM chunk progress metrics."""
+
+    total_chunks: int
+    total_duration: float
+    files_touched: int
+    average_chunk_duration: float | None
+    chunk_rate_per_minute: float | None
+    last_chunk: LLMChunkRecord | None
+    recent_chunks: list[LLMChunkRecord]
+
+
+class LLMProgressTracker:
+    """Thread-safe aggregator for LLM chunk metrics."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._total_chunks = 0
+        self._total_duration = 0.0
+        self._files_with_llm: set[str] = set()
+        self._recent_chunks: deque[LLMChunkRecord] = deque(maxlen=5)
+        self._last_chunk: LLMChunkRecord | None = None
+
+    def record(
+        self,
+        *,
+        duration: float,
+        chunk_index: int,
+        chunk_total: int,
+        model: str | None,
+        context: LLMCallContext,
+    ) -> None:
+        """Record a completed chunk execution."""
+
+        record = LLMChunkRecord(
+            timestamp=time.time(),
+            duration=duration,
+            chunk_index=max(chunk_index, 1),
+            chunk_total=max(chunk_total, 1),
+            model=model,
+            context=context,
+        )
+
+        with self._lock:
+            self._total_chunks += 1
+            self._total_duration += duration
+            self._files_with_llm.add(context.correlation_id)
+            self._recent_chunks.appendleft(record)
+            self._last_chunk = record
+
+    def snapshot(self) -> LLMProgressSnapshot:
+        """Return a copy of the current metrics suitable for UI rendering."""
+
+        with self._lock:
+            total_chunks = self._total_chunks
+            total_duration = self._total_duration
+            files_touched = len(self._files_with_llm)
+            last_chunk = self._last_chunk
+            recent = list(self._recent_chunks)
+
+        avg_duration = (
+            total_duration / total_chunks if total_chunks > 0 else None
+        )
+        chunk_rate = (
+            (total_chunks / total_duration) * 60
+            if total_duration > 0 and total_chunks > 0
+            else None
+        )
+
+        return LLMProgressSnapshot(
+            total_chunks=total_chunks,
+            total_duration=total_duration,
+            files_touched=files_touched,
+            average_chunk_duration=avg_duration,
+            chunk_rate_per_minute=chunk_rate,
+            last_chunk=last_chunk,
+            recent_chunks=recent,
+        )
+
+    def estimate_eta_seconds(self, remaining_files: int) -> float | None:
+        """Estimate completion time based on chunk throughput."""
+
+        if remaining_files <= 0:
+            return 0.0
+
+        with self._lock:
+            total_chunks = self._total_chunks
+            total_duration = self._total_duration
+            files_touched = len(self._files_with_llm)
+
+        if total_chunks <= 0 or total_duration <= 0 or files_touched <= 0:
+            return None
+
+        avg_chunk_duration = total_duration / total_chunks
+        avg_chunks_per_file = total_chunks / files_touched
+        estimated_remaining_chunks = avg_chunks_per_file * remaining_files
+        return estimated_remaining_chunks * avg_chunk_duration
+
+
+_llm_context_state = threading.local()
+
+
+@contextmanager
+def llm_context(
+    correlation_id: str,
+    file_label: str,
+    task_label: str,
+) -> Any:
+    """Context manager to expose LLM call metadata to instrumentation."""
+
+    ctx = LLMCallContext(correlation_id, file_label, task_label)
+    stack = getattr(_llm_context_state, "stack", None)
+    if stack is None:
+        stack = []
+    stack.append(ctx)
+    _llm_context_state.stack = stack
+    try:
+        yield
+    finally:
+        stack = getattr(_llm_context_state, "stack", [])
+        if stack:
+            stack.pop()
+        if stack:
+            _llm_context_state.stack = stack
+        else:
+            if hasattr(_llm_context_state, "stack"):
+                delattr(_llm_context_state, "stack")
+
+
+def _current_llm_context() -> LLMCallContext | None:
+    """Return the innermost LLM context for the current thread."""
+
+    stack = getattr(_llm_context_state, "stack", None)
+    if stack:
+        return stack[-1]
+    return None
+
+
+llm_progress_tracker = LLMProgressTracker()
+_original_ollama_chat = None
+
+_CHUNK_PATTERNS = [
+    re.compile(r"chunk\s+(\d+)\s*/\s*(\d+)", re.IGNORECASE),
+    re.compile(r"chunk\s+(\d+)\s+of\s+(\d+)", re.IGNORECASE),
+]
+
+
+def _parse_chunk_position(prompt_text: str) -> tuple[int, int]:
+    """Extract chunk index/total metadata from a prompt string."""
+
+    for pattern in _CHUNK_PATTERNS:
+        match = pattern.search(prompt_text)
+        if match:
+            try:
+                index = int(match.group(1))
+                total = int(match.group(2))
+                if total <= 0:
+                    total = index
+                return index, max(total, index)
+            except (ValueError, TypeError):
+                continue
+    return 1, 1
+
+
+def _format_timespan(seconds: float | None) -> str:
+    """Format a timespan for operator-friendly display."""
+
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return "—"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, remainder = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def _format_short_duration(seconds: float | None) -> str:
+    """Provide compact formatting for chunk-level durations."""
+
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return "—"
+    if seconds < 1:
+        return f"{seconds:.2f}s"
+    if seconds < 10:
+        return f"{seconds:.2f}s"
+    return f"{seconds:.1f}s"
+
+
+def _install_llm_instrumentation() -> None:
+    """Monkey-patch ollama.chat to capture per-chunk timing details."""
+
+    global _original_ollama_chat
+
+    if ollama is None:
+        logging.getLogger(LOGGER_NAME).debug(
+            "Ollama unavailable; skipping LLM instrumentation",
+        )
+        return
+
+    if _original_ollama_chat is not None:
+        return
+
+    original_chat = ollama.chat
+
+    def instrumented_chat(*args, **kwargs):  # type: ignore[override]
+        context = _current_llm_context()
+        if context is None:
+            return original_chat(*args, **kwargs)
+
+        start = time.time()
+        response = original_chat(*args, **kwargs)
+        duration = time.time() - start
+
+        messages = kwargs.get("messages")
+        if messages is None and args:
+            first_arg = args[0]
+            if isinstance(first_arg, dict):
+                messages = first_arg.get("messages")
+
+        prompt_text = ""
+        if isinstance(messages, list) and messages:
+            last_message = messages[-1]
+            if isinstance(last_message, dict):
+                prompt_text = str(last_message.get("content", ""))
+            else:
+                prompt_text = str(last_message)
+
+        chunk_index, chunk_total = _parse_chunk_position(prompt_text)
+
+        model = kwargs.get("model")
+        if model is None and args:
+            first_arg = args[0]
+            if isinstance(first_arg, dict):
+                model = first_arg.get("model")
+
+        llm_progress_tracker.record(
+            duration=duration,
+            chunk_index=chunk_index,
+            chunk_total=chunk_total,
+            model=model,
+            context=context,
+        )
+
+        return response
+
+    _original_ollama_chat = original_chat
+    ollama.chat = instrumented_chat
+    logging.getLogger(LOGGER_NAME).debug(
+        "Installed LLM instrumentation for ollama.chat",
+    )
 
 
 class AnalysisModel(str, Enum):
@@ -140,6 +424,8 @@ database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
 
 LIVE_CONSOLE = Console()
 LOG_PANEL_RATIO = 0.5
+
+_install_llm_instrumentation()
 
 
 def _calculate_log_panel_display_limit(
@@ -290,28 +576,150 @@ def _build_live_layout() -> Layout:
 def _update_progress_panel(
     layout: Layout,
     *,
+    total_files: int,
     completed: int,
     failed: int,
     remaining: int,
     active: list[str],
+    start_time: float,
+    llm_snapshot: LLMProgressSnapshot,
+    llm_eta_seconds: float | None,
+    queue_sizes: dict[str, int],
+    worker_counts: dict[str, int],
 ) -> None:
+    """Render a rich overview of pipeline status in the top panel."""
+
+    now = time.time()
+    elapsed = max(now - start_time, 0.0)
+    processed = completed + failed
     remaining_value = max(remaining, 0)
-    lines = [
-        f"Completed: {completed}",
-        f"Failed: {failed}",
-        f"Remaining: {remaining_value}",
-    ]
+
+    files_per_hour = (
+        (processed / elapsed) * 3600 if elapsed > 0 and processed > 0 else None
+    )
+    files_per_minute = (
+        (processed / elapsed) * 60 if elapsed > 0 and processed > 0 else None
+    )
+    overall_eta = (
+        (elapsed / processed) * remaining_value
+        if processed > 0 and remaining_value > 0
+        else None
+    )
+
+    summary_table = Table.grid(expand=True)
+    summary_table.add_column(style="cyan", ratio=1)
+    summary_table.add_column(justify="right", style="bold white")
+    summary_table.add_row("Total files", str(total_files))
+    summary_table.add_row("Processed", str(processed))
+    summary_table.add_row("Completed", str(completed))
+    summary_table.add_row("Failed", str(failed))
+    summary_table.add_row("Remaining", str(remaining_value))
+
+    timing_table = Table.grid(expand=True)
+    timing_table.add_column(style="green", ratio=1)
+    timing_table.add_column(justify="right", style="white")
+    timing_table.add_row("Elapsed", _format_timespan(elapsed))
+    throughput_value = (
+        f"{files_per_hour:.2f}/hr" if files_per_hour is not None else "—"
+    )
+    if files_per_minute is not None:
+        throughput_value += f" ({files_per_minute:.2f}/min)"
+    timing_table.add_row("Throughput", throughput_value)
+    timing_table.add_row("Overall ETA", _format_timespan(overall_eta))
+    timing_table.add_row("LLM ETA", _format_timespan(llm_eta_seconds))
+
+    queue_table = Table.grid(expand=True)
+    queue_table.add_column(style="yellow", ratio=1)
+    queue_table.add_column(justify="right", style="white")
+    queue_table.add_column(justify="right", style="white")
+    for stage in ("extraction", "analysis", "database"):
+        size = queue_sizes.get(stage, 0)
+        workers = worker_counts.get(stage, 0)
+        queue_table.add_row(
+            stage.title(),
+            f"{size} queued",
+            f"{workers} worker{'s' if workers != 1 else ''}",
+        )
+
+    llm_table = Table.grid(expand=True)
+    llm_table.add_column(style="magenta", ratio=1)
+    llm_table.add_column(justify="right", style="white")
+    llm_table.add_row("Chunks", str(llm_snapshot.total_chunks))
+    llm_table.add_row(
+        "Avg chunk",
+        _format_short_duration(llm_snapshot.average_chunk_duration),
+    )
+    llm_rate_display = (
+        f"{llm_snapshot.chunk_rate_per_minute:.2f}/min"
+        if llm_snapshot.chunk_rate_per_minute is not None
+        else "—"
+    )
+    llm_table.add_row("Chunk rate", llm_rate_display)
+    llm_table.add_row("Files w/LLM", str(llm_snapshot.files_touched))
+
+    if llm_snapshot.recent_chunks:
+        recent = " / ".join(
+            _format_short_duration(record.duration)
+            for record in llm_snapshot.recent_chunks[:3]
+        )
+        llm_table.add_row("Recent", recent)
+
+    if llm_snapshot.last_chunk is not None:
+        last_chunk = llm_snapshot.last_chunk
+        last_lines = Text()
+        last_lines.append(
+            f"{_format_short_duration(last_chunk.duration)}",
+            style="bold",
+        )
+        last_lines.append(
+            f" • {last_chunk.context.task_label} [{last_chunk.chunk_index}/{last_chunk.chunk_total}]",
+        )
+        last_lines.append(
+            f"\n{last_chunk.context.file_label}",
+            style="dim",
+        )
+        if last_chunk.model:
+            last_lines.append(f"\nModel: {last_chunk.model}", style="dim")
+        llm_table.add_row("Last chunk", last_lines)
 
     if active:
-        max_preview = 3
-        lines.append("")
-        lines.append("Active files:")
-        lines.extend(active[:max_preview])
+        max_preview = 5
+        active_table = Table.grid(padding=(0, 1))
+        active_table.add_column(justify="left")
+        for name in active[:max_preview]:
+            active_table.add_row(f"• {name}")
         if len(active) > max_preview:
-            lines.append("...")
+            active_table.add_row(
+                Text(f"• … (+{len(active) - max_preview} more)", style="dim")
+            )
+        active_renderable: Any = active_table
+    else:
+        active_renderable = Text("No files currently in model analysis.", style="dim")
 
-    top_body = "\n".join(lines)
-    layout["top"].update(Panel(top_body, title="Progress"))
+    top_group = Group(
+        Text("Files", style="bold cyan"),
+        summary_table,
+        Text(""),
+        Text("Timing", style="bold green"),
+        timing_table,
+        Text(""),
+        Text("Queues", style="bold yellow"),
+        queue_table,
+        Text(""),
+        Text("LLM", style="bold magenta"),
+        llm_table,
+        Text(""),
+        Text("Active", style="bold blue"),
+        active_renderable,
+    )
+
+    layout["top"].update(
+        Panel(
+            top_group,
+            title="Pipeline Overview",
+            border_style="cyan",
+        )
+    )
 
 
 def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Group:
@@ -799,36 +1207,46 @@ def analysis_worker(
                                 task.status = AnalysisStatus.COMPLETE
                                 continue
 
-                            if task.name == AnalysisName.PASSWORD_DETECTION:
-                                _check_for_shutdown()
+                        if task.name == AnalysisName.PASSWORD_DETECTION:
+                            _check_for_shutdown()
+                            with llm_context(
+                                correlation_id,
+                                source_name,
+                                AnalysisName.PASSWORD_DETECTION.value,
+                            ):
                                 password_result = detect_passwords(
                                     file_record.extracted_text,
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
                                 )
-                                file_record.contains_password = password_result.get(
-                                    "contains_password"
+                            file_record.contains_password = password_result.get(
+                                "contains_password"
+                            )
+                            file_record.passwords = password_result.get(
+                                "passwords", {}
+                            )
+                            if file_record.contains_password:
+                                worker_logger.info(
+                                    "Password detector found %d candidate(s) in %s",
+                                    len(file_record.passwords),
+                                    file_record.file_path,
                                 )
-                                file_record.passwords = password_result.get(
-                                    "passwords", {}
+                            else:
+                                worker_logger.debug(
+                                    "Password detector found no passwords for %s",
+                                    file_record.file_path,
                                 )
-                                if file_record.contains_password:
-                                    worker_logger.info(
-                                        "Password detector found %d candidate(s) in %s",
-                                        len(file_record.passwords),
-                                        file_record.file_path,
-                                    )
-                                else:
-                                    worker_logger.debug(
-                                        "Password detector found no passwords for %s",
-                                        file_record.file_path,
-                                    )
-                                task.status = AnalysisStatus.COMPLETE
-                                continue
-                            if task.name == AnalysisName.ESTATE_ANALYSIS:
-                                if estate_analysis_result is None:
-                                    _check_for_shutdown()
+                            task.status = AnalysisStatus.COMPLETE
+                            continue
+                        if task.name == AnalysisName.ESTATE_ANALYSIS:
+                            if estate_analysis_result is None:
+                                _check_for_shutdown()
+                                with llm_context(
+                                    correlation_id,
+                                    source_name,
+                                    AnalysisName.ESTATE_ANALYSIS.value,
+                                ):
                                     estate_analysis_result = (
                                         analyze_estate_relevant_information(
                                             file_record.extracted_text,
@@ -851,12 +1269,17 @@ def analysis_worker(
 
                             if text_analysis_result is None:
                                 _check_for_shutdown()
-                                text_analysis_result = analyze_text_content(
-                                    file_record.extracted_text,
-                                    source_name=source_name,
-                                    should_abort=_check_for_shutdown,
-                                    max_chunks=max_chunks,
-                                )
+                                with llm_context(
+                                    correlation_id,
+                                    source_name,
+                                    AnalysisName.TEXT_ANALYSIS.value,
+                                ):
+                                    text_analysis_result = analyze_text_content(
+                                        file_record.extracted_text,
+                                        source_name=source_name,
+                                        should_abort=_check_for_shutdown,
+                                        max_chunks=max_chunks,
+                                    )
                             if task.name == AnalysisName.TEXT_ANALYSIS:
                                 file_record.summary = text_analysis_result.get(
                                     "summary"
@@ -870,10 +1293,15 @@ def analysis_worker(
                         elif task.name == AnalysisName.IMAGE_DESCRIPTION:
                             if file_record.mime_type.startswith("image/"):
                                 _check_for_shutdown()
-                                description = describe_image(
-                                    file_record.file_path,
-                                    should_abort=_check_for_shutdown,
-                                )
+                                with llm_context(
+                                    correlation_id,
+                                    source_name,
+                                    AnalysisName.IMAGE_DESCRIPTION.value,
+                                ):
+                                    description = describe_image(
+                                        file_record.file_path,
+                                        should_abort=_check_for_shutdown,
+                                    )
                                 file_record.description = description
                                 if not file_record.summary:
                                     file_record.summary = description
@@ -920,13 +1348,25 @@ def analysis_worker(
                                     )
                                 else:
                                     frame_descriptions = []
-                                    for frame_path in file_record.extracted_frames:
+                                    total_frames = len(file_record.extracted_frames)
+                                    for index, frame_path in enumerate(
+                                        file_record.extracted_frames
+                                    ):
                                         _check_for_shutdown()
                                         try:
-                                            description = describe_image(
-                                                frame_path,
-                                                should_abort=_check_for_shutdown,
+                                            frame_label = (
+                                                f"{source_name} "
+                                                f"[frame {index + 1}/{total_frames}]"
                                             )
+                                            with llm_context(
+                                                correlation_id,
+                                                frame_label,
+                                                AnalysisName.IMAGE_DESCRIPTION.value,
+                                            ):
+                                                description = describe_image(
+                                                    frame_path,
+                                                    should_abort=_check_for_shutdown,
+                                                )
                                             frame_descriptions.append(description)
                                         except Exception as e:
                                             worker_logger.warning(
@@ -936,10 +1376,15 @@ def analysis_worker(
                                             )
                                     if frame_descriptions:
                                         _check_for_shutdown()
-                                        video_summary = summarize_video_frames(
-                                            frame_descriptions,
-                                            should_abort=_check_for_shutdown,
-                                        )
+                                        with llm_context(
+                                            correlation_id,
+                                            source_name,
+                                            AnalysisName.VIDEO_SUMMARY.value,
+                                        ):
+                                            video_summary = summarize_video_frames(
+                                                frame_descriptions,
+                                                should_abort=_check_for_shutdown,
+                                            )
                                         file_record.description = video_summary
                                         if not file_record.summary:
                                             file_record.summary = video_summary
@@ -977,12 +1422,17 @@ def analysis_worker(
                                     or Path(file_record.file_path).name
                                 )
                                 _check_for_shutdown()
-                                financial_analysis = analyze_financial_document(
-                                    file_record.extracted_text,
-                                    source_name=source_name,
-                                    should_abort=_check_for_shutdown,
-                                    max_chunks=max_chunks,
-                                )
+                                with llm_context(
+                                    correlation_id,
+                                    source_name,
+                                    AnalysisName.FINANCIAL_ANALYSIS.value,
+                                ):
+                                    financial_analysis = analyze_financial_document(
+                                        file_record.extracted_text,
+                                        source_name=source_name,
+                                        should_abort=_check_for_shutdown,
+                                        max_chunks=max_chunks,
+                                    )
                                 file_record.summary = financial_analysis.get("summary")
                                 file_record.potential_red_flags = (
                                     financial_analysis.get("potential_red_flags")
@@ -1662,13 +2112,25 @@ def main(
 
     run_logger.info("Queued %d pending files for processing", pending_files)
 
+    start_time = time.time()
     layout = _build_live_layout()
+    initial_snapshot = llm_progress_tracker.snapshot()
     _update_progress_panel(
         layout,
+        total_files=len(full_manifest),
         completed=len(completed_files),
         failed=len(failed_files),
         remaining=pending_files,
         active=[],
+        start_time=start_time,
+        llm_snapshot=initial_snapshot,
+        llm_eta_seconds=llm_progress_tracker.estimate_eta_seconds(pending_files),
+        queue_sizes={
+            "extraction": extraction_queue.qsize(),
+            "analysis": analysis_queue.qsize(),
+            "database": database_queue.qsize(),
+        },
+        worker_counts=dict(_active_worker_counts),
     )
 
     root_logger = logging.getLogger()
@@ -1686,7 +2148,6 @@ def main(
         log_handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
     root_logger.addHandler(log_handler)
 
-    start_time = time.time()
     last_progress_time = start_time
     try:
 
@@ -1697,12 +2158,25 @@ def main(
                 active_files = list(in_progress_files.values())
 
             initial_remaining = pending_files - (completed_count + failed_count)
+            llm_snapshot = llm_progress_tracker.snapshot()
             _update_progress_panel(
                 layout,
+                total_files=len(full_manifest),
                 completed=completed_count,
                 failed=failed_count,
                 remaining=initial_remaining,
                 active=active_files,
+                start_time=start_time,
+                llm_snapshot=llm_snapshot,
+                llm_eta_seconds=llm_progress_tracker.estimate_eta_seconds(
+                    initial_remaining
+                ),
+                queue_sizes={
+                    "extraction": extraction_queue.qsize(),
+                    "analysis": analysis_queue.qsize(),
+                    "database": database_queue.qsize(),
+                },
+                worker_counts=dict(_active_worker_counts),
             )
 
             while pending_files > 0 and not shutdown_event.is_set():
@@ -1714,12 +2188,25 @@ def main(
                 processed_count = completed_count + failed_count
                 remaining = pending_files - processed_count
 
+                llm_snapshot = llm_progress_tracker.snapshot()
                 _update_progress_panel(
                     layout,
+                    total_files=len(full_manifest),
                     completed=completed_count,
                     failed=failed_count,
                     remaining=remaining,
                     active=active_files,
+                    start_time=start_time,
+                    llm_snapshot=llm_snapshot,
+                    llm_eta_seconds=llm_progress_tracker.estimate_eta_seconds(
+                        remaining
+                    ),
+                    queue_sizes={
+                        "extraction": extraction_queue.qsize(),
+                        "analysis": analysis_queue.qsize(),
+                        "database": database_queue.qsize(),
+                    },
+                    worker_counts=dict(_active_worker_counts),
                 )
 
                 if shutdown_event.is_set():
@@ -1797,12 +2284,25 @@ def main(
                     pending_files - (final_completed + final_failed), 0
                 )
 
+            llm_snapshot = llm_progress_tracker.snapshot()
             _update_progress_panel(
                 layout,
+                total_files=len(full_manifest),
                 completed=final_completed,
                 failed=final_failed,
                 remaining=remaining_after,
                 active=[],
+                start_time=start_time,
+                llm_snapshot=llm_snapshot,
+                llm_eta_seconds=llm_progress_tracker.estimate_eta_seconds(
+                    remaining_after
+                ),
+                queue_sizes={
+                    "extraction": extraction_queue.qsize(),
+                    "analysis": analysis_queue.qsize(),
+                    "database": database_queue.qsize(),
+                },
+                worker_counts=dict(_active_worker_counts),
             )
 
     except KeyboardInterrupt:
