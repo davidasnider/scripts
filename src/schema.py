@@ -29,6 +29,7 @@ class AnalysisName(str, Enum):
     FINANCIAL_ANALYSIS = "financial_analysis"
     NSFW_CLASSIFICATION = "nsfw_classification"
     ACCESS_DB_ANALYSIS = "access_db_analysis"
+    PASSWORD_DETECTION = "password_detection"
 
 
 DEFAULT_ANALYSIS_TASK_VERSION = 1
@@ -40,6 +41,7 @@ VIDEO_SUMMARY_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 FINANCIAL_ANALYSIS_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 NSFW_CLASSIFICATION_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 ACCESS_DB_ANALYSIS_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
+PASSWORD_DETECTION_VERSION = 3
 
 ANALYSIS_TASK_VERSIONS: dict[AnalysisName, int] = {
     AnalysisName.TEXT_ANALYSIS: TEXT_ANALYSIS_VERSION,
@@ -49,6 +51,7 @@ ANALYSIS_TASK_VERSIONS: dict[AnalysisName, int] = {
     AnalysisName.FINANCIAL_ANALYSIS: FINANCIAL_ANALYSIS_VERSION,
     AnalysisName.NSFW_CLASSIFICATION: NSFW_CLASSIFICATION_VERSION,
     AnalysisName.ACCESS_DB_ANALYSIS: ACCESS_DB_ANALYSIS_VERSION,
+    AnalysisName.PASSWORD_DETECTION: PASSWORD_DETECTION_VERSION,
 }
 
 
@@ -82,3 +85,5 @@ class FileRecord(BaseModel):
     potential_red_flags: list[str] = Field(default_factory=list)
     incriminating_items: list[str] = Field(default_factory=list)
     confidence_score: int | None = None
+    contains_password: bool | None = None
+    passwords: dict[str, str] = Field(default_factory=dict)

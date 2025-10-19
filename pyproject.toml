@@ -29,6 +29,7 @@ dependencies = [
     "pydantic>=2.11.10",
     "typing-extensions>=4.12.2,<5.0.0",
     "access-parser>=0.0.6",
+    "rich>=13.7.0,<14.0.0",
 ]
 
 [project.scripts]

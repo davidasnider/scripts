@@ -498,6 +498,22 @@ def compute_nsfw_index(entries: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def compute_password_index(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create an index of files suspected of containing passwords."""
+    password_files = [
+        entry
+        for entry in entries
+        if entry.get("contains_password") or entry.get("passwords")
+    ]
+    return {
+        "count": len(password_files),
+        "files": sorted(
+            password_files,
+            key=get_entry_display_name,
+        ),
+    }
+
+
 @st.cache_data(show_spinner=False)
 def load_manifest_assets(manifest_path: str = "data/manifest.json") -> dict[str, Any]:
     """Load manifest entries and build reusable indexes."""
@@ -931,6 +947,27 @@ def render_nsfw_browser(nsfw_index: dict[str, Any]):
     )
 
 
+def render_password_browser(password_index: dict[str, Any]):
+    """Render controls for browsing suspected password files."""
+    if not password_index or not password_index.get("files"):
+        st.info("No password candidates found for the current filters.")
+        return
+
+    files = password_index.get("files", [])
+    st.caption(f"{len(files)} file(s) may contain passwords.")
+
+    table_rows = make_table_rows(files)
+
+    render_related_file_table(
+        table_rows,
+        files,
+        select_state_key="password_file_select",
+        table_state_key="password_file_table",
+        last_selection_state_key="password_file_table_last_selection",
+        log_label="Password view",
+    )
+
+
 def render_file_browser(filter_state: dict[str, Any]):
     """Top-level renderer for the file browser tab."""
     manifest_assets = load_manifest_assets()
@@ -953,6 +990,7 @@ def render_file_browser(filter_state: dict[str, Any]):
     mime_index = compute_mime_index(filtered_entries)
     people_index = compute_people_index(filtered_entries)
     nsfw_index = compute_nsfw_index(filtered_entries)
+    password_index = compute_password_index(filtered_entries)
     filtered_lookup = {
         entry["file_path"]: entry
         for entry in filtered_entries
@@ -965,13 +1003,22 @@ def render_file_browser(filter_state: dict[str, Any]):
     total_mime_types = len(mime_index)
     total_people = len(people_index)
     total_nsfw = nsfw_index.get("count", 0)
+    total_passwords = password_index.get("count", 0)
 
-    met_col1, met_col2, met_col3, met_col4, met_col5 = st.columns(5)
+    (
+        met_col1,
+        met_col2,
+        met_col3,
+        met_col4,
+        met_col5,
+        met_col6,
+    ) = st.columns(6)
     met_col1.metric("Files", f"{total_files:,}")
     met_col2.metric("Directories", f"{total_directories:,}")
     met_col3.metric("MIME types", f"{total_mime_types:,}")
     met_col4.metric("People", f"{total_people:,}")
     met_col5.metric("NSFW", f"{total_nsfw:,}")
+    met_col6.metric("Passwords", f"{total_passwords:,}")
 
     if "file_browser_view_mode" not in st.session_state:
         st.session_state.file_browser_view_mode = "Directory"
@@ -979,13 +1026,14 @@ def render_file_browser(filter_state: dict[str, Any]):
         "Directory",
         "MIME type",
         "People",
+        "Passwords",
         "NSFW",
     }:
         st.session_state.file_browser_view_mode = "Directory"
 
     view_mode = st.radio(
         "Browse files by",
-        ["Directory", "MIME type", "People", "NSFW"],
+        ["Directory", "MIME type", "People", "Passwords", "NSFW"],
         horizontal=True,
         key="file_browser_view_mode",
     )
@@ -998,6 +1046,8 @@ def render_file_browser(filter_state: dict[str, Any]):
             render_mime_browser(mime_index, filtered_entries)
         elif view_mode == "People":
             render_people_browser(people_index)
+        elif view_mode == "Passwords":
+            render_password_browser(password_index)
         elif view_mode == "NSFW":
             render_nsfw_browser(nsfw_index)
 

@@ -38,6 +38,7 @@ def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[Analys
                 AnalysisName.ACCESS_DB_ANALYSIS,
                 AnalysisName.TEXT_ANALYSIS,
                 AnalysisName.PEOPLE_ANALYSIS,
+                AnalysisName.PASSWORD_DETECTION,
             )
         )
         return tasks
@@ -52,6 +53,7 @@ def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[Analys
             _create_tasks(
                 AnalysisName.TEXT_ANALYSIS,
                 AnalysisName.PEOPLE_ANALYSIS,
+                AnalysisName.PASSWORD_DETECTION,
             )
         )
     if mime_type.startswith("image/"):
@@ -61,6 +63,7 @@ def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[Analys
                 AnalysisName.NSFW_CLASSIFICATION,
                 AnalysisName.TEXT_ANALYSIS,
                 AnalysisName.PEOPLE_ANALYSIS,
+                AnalysisName.PASSWORD_DETECTION,
             )
         )
     if mime_type.startswith("video/") and not file_path.lower().endswith(".asx"):

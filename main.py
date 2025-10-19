@@ -16,6 +16,7 @@ import signal
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -24,6 +25,12 @@ from xml.etree import ElementTree as ET
 
 import pandas as pd
 import typer
+from rich.align import Align
+from rich.console import Console, Group
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.text import Text
 from typing_extensions import Annotated
 
 from src.access_analysis import analyze_access_database
@@ -31,6 +38,7 @@ from src.ai_analyzer import (
     analyze_financial_document,
     analyze_text_content,
     describe_image,
+    detect_passwords,
     summarize_video_frames,
 )
 from src.content_extractor import (
@@ -85,6 +93,7 @@ DB_PATH = Path("data/chromadb")
 TEXT_BASED_ANALYSES = {
     AnalysisName.TEXT_ANALYSIS,
     AnalysisName.PEOPLE_ANALYSIS,
+    AnalysisName.PASSWORD_DETECTION,
 }
 TEXT_BASED_ANALYSIS_MODEL_VALUES = {analysis.value for analysis in TEXT_BASED_ANALYSES}
 
@@ -102,6 +111,8 @@ completed_files = set()
 failed_files = set()
 in_progress_files: dict[str, str] = {}
 lock = threading.Lock()
+shutdown_event = threading.Event()
+_shutdown_signals_sent = threading.Event()
 
 # Global manifest for signal handlers
 current_manifest = None
@@ -111,6 +122,20 @@ pipeline_logger = logging.getLogger(LOGGER_NAME)
 extraction_logger = logging.getLogger(f"{LOGGER_NAME}.extraction")
 analysis_logger = logging.getLogger(f"{LOGGER_NAME}.analysis")
 database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
+
+LIVE_CONSOLE = Console()
+LOG_PANEL_RATIO = 0.5
+
+
+def _calculate_log_panel_display_limit(
+    console: Console,
+    *,
+    ratio: float = LOG_PANEL_RATIO,
+) -> int:
+    """Return log panel line budget based on the current terminal height."""
+
+    terminal_height = max(console.size.height, 1)
+    return max(int(terminal_height * ratio) - 1, 1)
 
 
 def _format_active_files(active: list[str], limit: int = 3) -> str:
@@ -122,19 +147,193 @@ def _format_active_files(active: list[str], limit: int = 3) -> str:
     return preview + ("..." if len(active) > limit else "")
 
 
-def signal_handler(signum, frame):
-    """Handle SIGINT/SIGTERM by saving manifest before exit."""
-    pipeline_logger.info("Received signal %d, saving manifest before exit...", signum)
+class ShutdownRequested(Exception):
+    """Raised to abort processing when a shutdown has been requested."""
+
+
+def _check_for_shutdown() -> None:
+    if shutdown_event.is_set():
+        raise ShutdownRequested
+
+
+def dispatch_shutdown_to_workers() -> None:
+    """Send sentinel values to worker queues exactly once."""
+
+    if _shutdown_signals_sent.is_set():
+        return
+
+    _shutdown_signals_sent.set()
+    for worker_count, queue_ref in (
+        (NUM_EXTRACTION_WORKERS, extraction_queue),
+        (NUM_ANALYSIS_WORKERS, analysis_queue),
+        (NUM_DATABASE_WORKERS, database_queue),
+    ):
+        for _ in range(worker_count):
+            queue_ref.put(None)
+
+
+def request_shutdown(reason: str, *, raise_interrupt: bool = False) -> None:
+    """Trigger a coordinated shutdown of the pipeline."""
+
+    if shutdown_event.is_set():
+        pipeline_logger.warning(
+            "Additional shutdown request received (%s); forcing termination.",
+            reason,
+        )
+        if raise_interrupt:
+            os._exit(1)
+        return
+
+    pipeline_logger.info("Shutdown requested: %s", reason)
+    shutdown_event.set()
+    dispatch_shutdown_to_workers()
 
     if current_manifest is not None:
         try:
             save_manifest(current_manifest)
-            pipeline_logger.info("Manifest saved successfully")
-        except Exception as e:
-            pipeline_logger.error("Failed to save manifest on exit: %s", e)
+            pipeline_logger.info("Manifest saved during shutdown request")
+        except Exception as exc:
+            pipeline_logger.error(
+                "Failed to save manifest during shutdown request: %s", exc
+            )
 
-    # Exit gracefully
-    sys.exit(1)
+    if raise_interrupt:
+        threading.interrupt_main()
+
+
+def _build_live_layout() -> Layout:
+    layout = Layout()
+    bottom_units = max(int(round(LOG_PANEL_RATIO * 100)), 1)
+    top_units = max(100 - bottom_units, 1)
+    layout.split_column(
+        Layout(name="top", ratio=top_units),
+        Layout(name="bottom", ratio=bottom_units),
+    )
+    layout["top"].update(Panel("Initializing pipeline...", title="Progress"))
+    initial_limit = _calculate_log_panel_display_limit(LIVE_CONSOLE)
+    layout["bottom"].update(_render_logs_view([], total=0, display_limit=initial_limit))
+    return layout
+
+
+def _update_progress_panel(
+    layout: Layout,
+    *,
+    completed: int,
+    failed: int,
+    remaining: int,
+    active: list[str],
+) -> None:
+    remaining_value = max(remaining, 0)
+    lines = [
+        f"Completed: {completed}",
+        f"Failed: {failed}",
+        f"Remaining: {remaining_value}",
+    ]
+
+    if active:
+        max_preview = 3
+        lines.append("")
+        lines.append("Active files:")
+        lines.extend(active[:max_preview])
+        if len(active) > max_preview:
+            lines.append("...")
+
+    top_body = "\n".join(lines)
+    layout["top"].update(Panel(top_body, title="Progress"))
+
+
+def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Group:
+    visible = lines if lines else []
+    display_count = len(visible)
+    if total > display_count and display_count > 0:
+        header_text = f"Logs (showing last {display_count} of {total})"
+    else:
+        header_text = "Logs"
+
+    header = Text(header_text, style="bold")
+    if visible:
+        body_text = Text("\n".join(visible), overflow="crop", no_wrap=False)
+    else:
+        body_text = Text("No log messages yet.")
+    aligned_body = Align(
+        body_text,
+        align="left",
+        vertical="bottom",
+        height=max(display_limit, 1),
+    )
+    return Group(header, aligned_body)
+
+
+class LiveLogHandler(logging.Handler):
+    """Logging handler that streams records into the live Logs panel."""
+
+    def __init__(
+        self,
+        layout: Layout,
+        console: Console,
+        *,
+        panel_name: str = "bottom",
+        max_lines: int | None = None,
+        panel_ratio: float = LOG_PANEL_RATIO,
+    ) -> None:
+        super().__init__()
+        self.layout = layout
+        self.console = console
+        self.panel_name = panel_name
+        self._panel_ratio = panel_ratio
+        limit = max_lines if max_lines is not None and max_lines > 0 else None
+        self._lines: deque[str]
+        if limit is None:
+            self._lines = deque()
+        else:
+            self._lines = deque(maxlen=limit)
+        self._lock = threading.Lock()
+        self._display_limit = _calculate_log_panel_display_limit(
+            self.console, ratio=self._panel_ratio
+        )
+        self._last_console_height = self.console.size.height
+
+    def _refresh_display_limit_if_needed(self) -> None:
+        current_height = self.console.size.height
+        if current_height == self._last_console_height:
+            return
+        self._display_limit = _calculate_log_panel_display_limit(
+            self.console, ratio=self._panel_ratio
+        )
+        self._last_console_height = current_height
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+        except Exception:
+            message = record.getMessage()
+
+        with self._lock:
+            self._lines.append(message)
+            lines_snapshot = list(self._lines)
+
+        self._refresh_display_limit_if_needed()
+        visible_lines = lines_snapshot[-self._display_limit :]
+
+        self.layout[self.panel_name].update(
+            _render_logs_view(
+                visible_lines,
+                total=len(lines_snapshot),
+                display_limit=self._display_limit,
+            )
+        )
+
+
+def signal_handler(signum, frame):
+    """Handle termination signals by initiating a coordinated shutdown."""
+
+    try:
+        signal_name = signal.Signals(signum).name  # type: ignore[call-arg]
+    except Exception:
+        signal_name = str(signum)
+
+    pipeline_logger.info("Received signal %s; initiating shutdown", signal_name)
+    request_shutdown(f"signal {signal_name}", raise_interrupt=True)
 
 
 def log_unprocessed_file(
@@ -265,6 +464,7 @@ def extraction_worker(worker_id: int) -> None:
             )
 
             try:
+                _check_for_shutdown()
                 stage_start = time.time()
                 extracted_frames: list[str] = []
                 extracted_text = ""
@@ -273,10 +473,12 @@ def extraction_worker(worker_id: int) -> None:
                     file_record.mime_type.startswith("text/")
                     or file_record.mime_type == "application/pdf"
                 ):
+                    _check_for_shutdown()
                     if file_record.mime_type == "application/pdf":
                         extracted_text = extract_content_from_pdf(file_record.file_path)
                     else:
                         try:
+                            _check_for_shutdown()
                             with open(
                                 file_record.file_path, "r", encoding="utf-8"
                             ) as f:
@@ -289,6 +491,7 @@ def extraction_worker(worker_id: int) -> None:
                     "application/vnd.openxmlformats-"
                     "officedocument.wordprocessingml.document"
                 ):
+                    _check_for_shutdown()
                     extracted_text = extract_content_from_docx(file_record.file_path)
                     file_record.extracted_text = extracted_text
 
@@ -296,28 +499,34 @@ def extraction_worker(worker_id: int) -> None:
                     "application/vnd.openxmlformats-"
                     "officedocument.spreadsheetml.sheet"
                 ):
+                    _check_for_shutdown()
                     extracted_text = extract_content_from_xlsx(file_record.file_path)
                     file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type == "image/svg+xml":
+                    _check_for_shutdown()
                     extracted_text = extract_text_from_svg(file_record.file_path)
                     file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type.startswith("image/"):
+                    _check_for_shutdown()
                     extracted_text = extract_content_from_image(file_record.file_path)
                     file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type.startswith(
                     "video/"
                 ) and not file_record.file_path.lower().endswith(".asx"):
+                    _check_for_shutdown()
                     extracted_frames = extract_frames_from_video(
                         file_record.file_path, "data/frames", interval_sec=10
                     )
                     file_record.extracted_frames = extracted_frames
 
                 elif file_record.mime_type == "application/x-msaccess":
+                    _check_for_shutdown()
                     ensure_required_tasks(file_record)
 
+                _check_for_shutdown()
                 extraction_duration = time.time() - stage_start
                 extracted_text_len = len(file_record.extracted_text or "")
                 extracted_frame_count = len(file_record.extracted_frames or [])
@@ -333,6 +542,7 @@ def extraction_worker(worker_id: int) -> None:
                 )
 
                 file_record.status = PENDING_ANALYSIS
+                _check_for_shutdown()
                 analysis_item = WorkItem(file_record, correlation_id)
                 analysis_queue.put(analysis_item)
 
@@ -343,6 +553,21 @@ def extraction_worker(worker_id: int) -> None:
                     correlation_id,
                 )
 
+            except ShutdownRequested:
+                worker_logger.info(
+                    "Extraction cancelled for %s [%s] due to shutdown",
+                    file_record.file_path,
+                    correlation_id,
+                )
+                file_record.status = FAILED
+                log_unprocessed_file(
+                    file_record.file_path,
+                    file_record.mime_type,
+                    "shutdown_requested",
+                    "extraction_cancelled",
+                )
+                with lock:
+                    failed_files.add(correlation_id)
             except Exception as e:
                 worker_logger.error(
                     "Worker %d failed to extract content from %s [%s]: %s",
@@ -363,6 +588,8 @@ def extraction_worker(worker_id: int) -> None:
             extraction_queue.task_done()
 
         except queue.Empty:
+            if shutdown_event.is_set():
+                break
             continue
         except Exception as e:
             worker_logger.error("Extraction worker %d error: %s", worker_id, e)
@@ -402,204 +629,249 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
             )
 
             try:
+                _check_for_shutdown()
                 stage_start = time.time()
 
                 text_analysis_result: dict[str, Any] | None = None
+                source_name = file_record.file_name or Path(file_record.file_path).name
 
                 for task in file_record.analysis_tasks:
-                    if task.status == AnalysisStatus.PENDING:
-                        if (
-                            model != AnalysisModel.ALL
-                            and task.name.value != model.value
-                        ):
+                    _check_for_shutdown()
+                    if task.status != AnalysisStatus.PENDING:
+                        continue
+                    if model != AnalysisModel.ALL and task.name.value != model.value:
+                        continue
+
+                    try:
+                        if task.name in TEXT_BASED_ANALYSES:
+                            if not (file_record.extracted_text or "").strip():
+                                if task.name == AnalysisName.PASSWORD_DETECTION:
+                                    file_record.contains_password = False
+                                    file_record.passwords = {}
+                                worker_logger.debug(
+                                    "Skipping %s for %s due to missing text",
+                                    task.name.value,
+                                    file_record.file_path,
+                                )
+                                task.status = AnalysisStatus.COMPLETE
+                                continue
+
+                            if task.name == AnalysisName.PASSWORD_DETECTION:
+                                _check_for_shutdown()
+                                password_result = detect_passwords(
+                                    file_record.extracted_text,
+                                    source_name=source_name,
+                                    should_abort=_check_for_shutdown,
+                                )
+                                file_record.contains_password = password_result.get(
+                                    "contains_password"
+                                )
+                                file_record.passwords = password_result.get(
+                                    "passwords", {}
+                                )
+                                if file_record.contains_password:
+                                    worker_logger.info(
+                                        "Password detector found %d candidate(s) in %s",
+                                        len(file_record.passwords),
+                                        file_record.file_path,
+                                    )
+                                else:
+                                    worker_logger.debug(
+                                        "Password detector found no passwords for %s",
+                                        file_record.file_path,
+                                    )
+                                task.status = AnalysisStatus.COMPLETE
+                                continue
+
+                            if text_analysis_result is None:
+                                _check_for_shutdown()
+                                text_analysis_result = analyze_text_content(
+                                    file_record.extracted_text,
+                                    source_name=source_name,
+                                    should_abort=_check_for_shutdown,
+                                )
+                            if task.name == AnalysisName.TEXT_ANALYSIS:
+                                file_record.summary = text_analysis_result.get(
+                                    "summary"
+                                )
+                            elif task.name == AnalysisName.PEOPLE_ANALYSIS:
+                                file_record.mentioned_people = text_analysis_result.get(
+                                    "mentioned_people", []
+                                )
+                            task.status = AnalysisStatus.COMPLETE
                             continue
+                        elif task.name == AnalysisName.IMAGE_DESCRIPTION:
+                            if file_record.mime_type.startswith("image/"):
+                                _check_for_shutdown()
+                                description = describe_image(
+                                    file_record.file_path,
+                                    should_abort=_check_for_shutdown,
+                                )
+                                file_record.description = description
+                                if not file_record.summary:
+                                    file_record.summary = description
 
-                        try:
-                            if task.name in TEXT_BASED_ANALYSES:
-                                if file_record.extracted_text:
-                                    if text_analysis_result is None:
-                                        source_name = (
-                                            file_record.file_name
-                                            or Path(file_record.file_path).name
-                                        )
-                                        text_analysis_result = analyze_text_content(
-                                            file_record.extracted_text,
-                                            source_name=source_name,
-                                        )
-                                    if task.name == AnalysisName.TEXT_ANALYSIS:
-                                        file_record.summary = text_analysis_result.get(
-                                            "summary"
-                                        )
-                                    elif task.name == AnalysisName.PEOPLE_ANALYSIS:
-                                        file_record.mentioned_people = (
-                                            text_analysis_result.get(
-                                                "mentioned_people", []
-                                            )
-                                        )
-
-                            elif task.name == AnalysisName.IMAGE_DESCRIPTION:
-                                if file_record.mime_type.startswith("image/"):
-                                    description = describe_image(file_record.file_path)
-                                    file_record.description = description
-                                    if not file_record.summary:
-                                        file_record.summary = description
-
-                            elif task.name == AnalysisName.NSFW_CLASSIFICATION:
-                                if file_record.mime_type.startswith("image/"):
+                        elif task.name == AnalysisName.NSFW_CLASSIFICATION:
+                            if file_record.mime_type.startswith("image/"):
+                                _check_for_shutdown()
+                                classifier = NSFWClassifier()
+                                _check_for_shutdown()
+                                nsfw_result = classifier.classify_image(
+                                    file_record.file_path
+                                )
+                                file_record.is_nsfw = (
+                                    nsfw_result["label"].lower() == "nsfw"
+                                )
+                            elif file_record.mime_type.startswith("video/"):
+                                if file_record.extracted_frames:
                                     classifier = NSFWClassifier()
-                                    nsfw_result = classifier.classify_image(
-                                        file_record.file_path
-                                    )
-                                    file_record.is_nsfw = (
-                                        nsfw_result["label"].lower() == "nsfw"
-                                    )
-                                elif file_record.mime_type.startswith("video/"):
-                                    if file_record.extracted_frames:
-                                        classifier = NSFWClassifier()
-                                        for frame_path in file_record.extracted_frames:
-                                            nsfw_result = classifier.classify_image(
-                                                frame_path
-                                            )
-                                            if nsfw_result["label"].lower() == "nsfw":
-                                                file_record.is_nsfw = True
-                                                break
+                                    for frame_path in file_record.extracted_frames:
+                                        _check_for_shutdown()
+                                        nsfw_result = classifier.classify_image(
+                                            frame_path
+                                        )
+                                        if nsfw_result["label"].lower() == "nsfw":
+                                            file_record.is_nsfw = True
+                                            break
 
-                            elif task.name == AnalysisName.VIDEO_SUMMARY:
-                                if file_record.mime_type.startswith(
-                                    "video/"
-                                ) and not file_record.file_path.lower().endswith(
-                                    ".asx"
-                                ):
-                                    if not file_record.extracted_frames:
+                        elif task.name == AnalysisName.VIDEO_SUMMARY:
+                            if file_record.mime_type.startswith("video/") and not (
+                                file_record.file_path.lower().endswith(".asx")
+                            ):
+                                _check_for_shutdown()
+                                if not file_record.extracted_frames:
+                                    worker_logger.warning(
+                                        "No frames extracted for video %s, "
+                                        "cannot generate summary",
+                                        file_record.file_path,
+                                    )
+                                    log_unprocessed_file(
+                                        file_record.file_path,
+                                        file_record.mime_type,
+                                        "no_video_frames_extracted",
+                                        "Video too short or frame extraction failed",
+                                    )
+                                else:
+                                    frame_descriptions = []
+                                    for frame_path in file_record.extracted_frames:
+                                        _check_for_shutdown()
+                                        try:
+                                            description = describe_image(
+                                                frame_path,
+                                                should_abort=_check_for_shutdown,
+                                            )
+                                            frame_descriptions.append(description)
+                                        except Exception as e:
+                                            worker_logger.warning(
+                                                "Failed to describe frame %s: %s",
+                                                frame_path,
+                                                e,
+                                            )
+                                    if frame_descriptions:
+                                        _check_for_shutdown()
+                                        video_summary = summarize_video_frames(
+                                            frame_descriptions,
+                                            should_abort=_check_for_shutdown,
+                                        )
+                                        file_record.description = video_summary
+                                        if not file_record.summary:
+                                            file_record.summary = video_summary
+                                        worker_logger.info(
+                                            "Generated video summary for %s "
+                                            "with %d frames",
+                                            file_record.file_path,
+                                            len(frame_descriptions),
+                                        )
+                                    else:
                                         worker_logger.warning(
-                                            "No frames extracted for video %s, "
-                                            "cannot generate summary",
+                                            "No frame descriptions generated "
+                                            "for video %s",
                                             file_record.file_path,
                                         )
                                         log_unprocessed_file(
                                             file_record.file_path,
                                             file_record.mime_type,
-                                            "no_video_frames_extracted",
-                                            "Video too short or frame "
-                                            "extraction failed",
+                                            "video_frame_description_failed",
+                                            "All frame descriptions failed",
                                         )
-                                        # Still mark as complete since there's
-                                        # nothing to summarize
-                                    else:
-                                        frame_descriptions = []
-                                        for frame_path in file_record.extracted_frames:
-                                            try:
-                                                description = describe_image(frame_path)
-                                                frame_descriptions.append(description)
-                                            except Exception as e:
-                                                worker_logger.warning(
-                                                    "Failed to describe frame %s: %s",
-                                                    frame_path,
-                                                    e,
-                                                )
-                                        if frame_descriptions:
-                                            video_summary = summarize_video_frames(
-                                                frame_descriptions
-                                            )
-                                            file_record.description = video_summary
-                                            if not file_record.summary:
-                                                file_record.summary = video_summary
-                                            worker_logger.info(
-                                                "Generated video summary for %s "
-                                                "with %d frames",
-                                                file_record.file_path,
-                                                len(frame_descriptions),
-                                            )
-                                        else:
-                                            worker_logger.warning(
-                                                "No frame descriptions generated "
-                                                "for video %s",
-                                                file_record.file_path,
-                                            )
-                                            log_unprocessed_file(
-                                                file_record.file_path,
-                                                file_record.mime_type,
-                                                "video_frame_description_failed",
-                                                "All frame descriptions failed",
-                                            )
+                            else:
+                                worker_logger.debug(
+                                    "Skipping video summary for non-video file %s",
+                                    file_record.file_path,
+                                )
+
+                        elif task.name == AnalysisName.FINANCIAL_ANALYSIS:
+                            if file_record.extracted_text and (
+                                "financial" in file_record.extracted_text.lower()
+                                or "account" in file_record.extracted_text.lower()
+                            ):
+                                source_name = (
+                                    file_record.file_name
+                                    or Path(file_record.file_path).name
+                                )
+                                _check_for_shutdown()
+                                financial_analysis = analyze_financial_document(
+                                    file_record.extracted_text,
+                                    source_name=source_name,
+                                    should_abort=_check_for_shutdown,
+                                )
+                                file_record.summary = financial_analysis.get("summary")
+                                file_record.potential_red_flags = (
+                                    financial_analysis.get("potential_red_flags")
+                                )
+                                file_record.incriminating_items = (
+                                    financial_analysis.get("incriminating_items")
+                                )
+                                file_record.confidence_score = financial_analysis.get(
+                                    "confidence_score"
+                                )
+                                file_record.has_financial_red_flags = bool(
+                                    financial_analysis.get("potential_red_flags")
+                                )
+
+                        elif task.name == AnalysisName.ACCESS_DB_ANALYSIS:
+                            _check_for_shutdown()
+                            result = analyze_access_database(file_record.file_path)
+                            if result.combined_text:
+                                existing_text = file_record.extracted_text or ""
+                                if existing_text:
+                                    if result.combined_text not in existing_text:
+                                        file_record.extracted_text = "\n\n".join(
+                                            [existing_text, result.combined_text]
+                                        )
                                 else:
-                                    worker_logger.debug(
-                                        "Skipping video summary for non-video file %s",
-                                        file_record.file_path,
-                                    )
-
-                            elif task.name == AnalysisName.FINANCIAL_ANALYSIS:
-                                if file_record.extracted_text and (
-                                    "financial" in file_record.extracted_text.lower()
-                                    or "account" in file_record.extracted_text.lower()
+                                    file_record.extracted_text = result.combined_text
+                            if result.text_analysis:
+                                first_text_analysis = next(
+                                    iter(result.text_analysis), None
+                                )
+                                if (
+                                    first_text_analysis is not None
+                                    and not file_record.summary
                                 ):
-                                    source_name = (
-                                        file_record.file_name
-                                        or Path(file_record.file_path).name
-                                    )
-                                    financial_analysis = analyze_financial_document(
-                                        file_record.extracted_text,
-                                        source_name=source_name,
-                                    )
-                                    file_record.summary = financial_analysis.get(
-                                        "summary"
-                                    )
-                                    file_record.potential_red_flags = (
-                                        financial_analysis.get("potential_red_flags")
-                                    )
-                                    file_record.incriminating_items = (
-                                        financial_analysis.get("incriminating_items")
-                                    )
-                                    file_record.confidence_score = (
-                                        financial_analysis.get("confidence_score")
-                                    )
-                                    file_record.has_financial_red_flags = bool(
-                                        financial_analysis.get("potential_red_flags")
-                                    )
+                                    file_record.summary = first_text_analysis.summary
+                            if result.financial_analysis:
+                                worker_logger.info(
+                                    "Financial analysis for %s: %s",
+                                    file_record.file_path,
+                                    result.financial_analysis,
+                                )
 
-                            elif task.name == AnalysisName.ACCESS_DB_ANALYSIS:
-                                result = analyze_access_database(file_record.file_path)
-                                if result.combined_text:
-                                    existing_text = file_record.extracted_text or ""
-                                    if existing_text:
-                                        if result.combined_text not in existing_text:
-                                            file_record.extracted_text = "\n\n".join(
-                                                [existing_text, result.combined_text]
-                                            )
-                                    else:
-                                        file_record.extracted_text = (
-                                            result.combined_text
-                                        )
-                                if result.text_analysis:
-                                    first_text_analysis = next(
-                                        iter(result.text_analysis), None
-                                    )
-                                    if (
-                                        first_text_analysis is not None
-                                        and not file_record.summary
-                                    ):
-                                        file_record.summary = (
-                                            first_text_analysis.summary
-                                        )
-                                if result.financial_analysis:
-                                    worker_logger.info(
-                                        "Financial analysis for %s: %s",
-                                        file_record.file_path,
-                                        result.financial_analysis,
-                                    )
+                        task.status = AnalysisStatus.COMPLETE
 
-                            task.status = AnalysisStatus.COMPLETE
+                    except ShutdownRequested:
+                        raise
+                    except Exception as e:
+                        worker_logger.error(
+                            "Failed to run analysis task %s for %s: %s",
+                            task.name,
+                            file_record.file_path,
+                            e,
+                        )
+                        task.status = AnalysisStatus.ERROR
+                        task.error_message = str(e)
 
-                        except Exception as e:
-                            worker_logger.error(
-                                "Failed to run analysis task %s for %s: %s",
-                                task.name,
-                                file_record.file_path,
-                                e,
-                            )
-                            task.status = AnalysisStatus.ERROR
-                            task.error_message = str(e)
-
+                _check_for_shutdown()
                 database_item = WorkItem(file_record, correlation_id)
                 database_queue.put(database_item)
 
@@ -636,6 +908,21 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                     file_record.file_path,
                     correlation_id,
                 )
+            except ShutdownRequested:
+                worker_logger.info(
+                    "Analysis cancelled for %s [%s] due to shutdown",
+                    file_record.file_path,
+                    correlation_id,
+                )
+                file_record.status = FAILED
+                log_unprocessed_file(
+                    file_record.file_path,
+                    file_record.mime_type,
+                    "shutdown_requested",
+                    "analysis_cancelled",
+                )
+                with lock:
+                    failed_files.add(correlation_id)
             except Exception as e:
                 worker_logger.error(
                     "Worker %d failed to analyze content from %s [%s]: %s",
@@ -659,6 +946,8 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
             analysis_queue.task_done()
 
         except queue.Empty:
+            if shutdown_event.is_set():
+                break
             continue
         except Exception as e:
             worker_logger.error("Analysis worker %d error: %s", worker_id, e)
@@ -693,6 +982,7 @@ def database_worker(worker_id: int, collection: Any) -> None:
             )
 
             try:
+                _check_for_shutdown()
                 add_file_to_db(file_record.model_dump(), collection)
 
                 all_tasks_done = all(
@@ -758,6 +1048,21 @@ def database_worker(worker_id: int, collection: Any) -> None:
                     correlation_id,
                 )
 
+            except ShutdownRequested:
+                worker_logger.info(
+                    "Database update cancelled for %s [%s] due to shutdown",
+                    file_record.file_path,
+                    correlation_id,
+                )
+                file_record.status = FAILED
+                log_unprocessed_file(
+                    file_record.file_path,
+                    file_record.mime_type,
+                    "shutdown_requested",
+                    "database_cancelled",
+                )
+                with lock:
+                    failed_files.add(correlation_id)
             except Exception as e:
                 worker_logger.error(
                     "Worker %d failed to add %s to database [%s]: %s",
@@ -772,6 +1077,8 @@ def database_worker(worker_id: int, collection: Any) -> None:
             database_queue.task_done()
 
         except queue.Empty:
+            if shutdown_event.is_set():
+                break
             continue
         except Exception as e:
             worker_logger.error("Database worker %d error: %s", worker_id, e)
@@ -839,8 +1146,15 @@ def main(
     """Run the main threaded pipeline."""
     configure_logging(
         level=logging.DEBUG if debug else logging.INFO,
+        console=False,
         force=True,
     )
+
+    shutdown_event.clear()
+    _shutdown_signals_sent.clear()
+    completed_files.clear()
+    failed_files.clear()
+    in_progress_files.clear()
 
     import warnings
 
@@ -880,9 +1194,7 @@ def main(
     # Set up signal handlers for safe shutdown
     global current_manifest
     current_manifest = full_manifest
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    run_logger.debug("Signal handlers installed for safe manifest saving")
+    run_logger.debug("Manifest reference stored for shutdown handling")
 
     if target_filename:
         candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
@@ -1103,79 +1415,152 @@ def main(
 
     run_logger.info("Queued %d pending files for processing", pending_files)
 
+    layout = _build_live_layout()
+    _update_progress_panel(
+        layout,
+        completed=len(completed_files),
+        failed=len(failed_files),
+        remaining=pending_files,
+        active=[],
+    )
+
+    root_logger = logging.getLogger()
+    log_handler = LiveLogHandler(layout, LIVE_CONSOLE)
+    log_handler.setLevel(logging.NOTSET)
+
+    existing_formatter = next(
+        (handler.formatter for handler in root_logger.handlers if handler.formatter),
+        None,
+    )
+
+    if existing_formatter is not None:
+        log_handler.setFormatter(existing_formatter)
+    else:
+        log_handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+    root_logger.addHandler(log_handler)
+
+    start_time = time.time()
+    last_progress_time = start_time
     try:
-        start_time = time.time()
-        last_progress_time = start_time
 
-        while pending_files > 0:
-            time.sleep(2)
-
+        with Live(layout, console=LIVE_CONSOLE, refresh_per_second=4):
             with lock:
                 completed_count = len(completed_files)
                 failed_count = len(failed_files)
                 active_files = list(in_progress_files.values())
 
-            processed_count = completed_count + failed_count
-            remaining = pending_files - processed_count
+            initial_remaining = pending_files - (completed_count + failed_count)
+            _update_progress_panel(
+                layout,
+                completed=completed_count,
+                failed=failed_count,
+                remaining=initial_remaining,
+                active=active_files,
+            )
 
-            current_time = time.time()
-            if current_time - last_progress_time >= 30:
-                elapsed = current_time - start_time
-                if processed_count > 0:
-                    estimated_total = elapsed * pending_files / processed_count
-                    estimated_remaining = estimated_total - elapsed
-                    if active_files:
-                        run_logger.info(
-                            "Progress: %d/%d completed, %d failed, %d remaining "
-                            "(%.1f%% complete, ~%.1f minutes remaining) | active: %s",
-                            completed_count,
-                            pending_files,
-                            failed_count,
-                            remaining,
-                            (processed_count / pending_files) * 100,
-                            estimated_remaining / 60,
-                            _format_active_files(active_files),
-                        )
+            while pending_files > 0 and not shutdown_event.is_set():
+                with lock:
+                    completed_count = len(completed_files)
+                    failed_count = len(failed_files)
+                    active_files = list(in_progress_files.values())
+
+                processed_count = completed_count + failed_count
+                remaining = pending_files - processed_count
+
+                _update_progress_panel(
+                    layout,
+                    completed=completed_count,
+                    failed=failed_count,
+                    remaining=remaining,
+                    active=active_files,
+                )
+
+                if shutdown_event.is_set():
+                    break
+
+                current_time = time.time()
+                if current_time - last_progress_time >= 30:
+                    elapsed = current_time - start_time
+                    if processed_count > 0:
+                        estimated_total = elapsed * pending_files / processed_count
+                        estimated_remaining = estimated_total - elapsed
+                        if active_files:
+                            run_logger.info(
+                                (
+                                    "Progress: %d/%d completed, %d failed, %d "
+                                    "remaining (%.1f%% complete, ~%.1f minutes "
+                                    "remaining) | active: %s"
+                                ),
+                                completed_count,
+                                pending_files,
+                                failed_count,
+                                remaining,
+                                (processed_count / pending_files) * 100,
+                                estimated_remaining / 60,
+                                _format_active_files(active_files),
+                            )
+                        else:
+                            run_logger.info(
+                                (
+                                    "Progress: %d/%d completed, %d failed, %d "
+                                    "remaining (%.1f%% complete, ~%.1f minutes "
+                                    "remaining)"
+                                ),
+                                completed_count,
+                                pending_files,
+                                failed_count,
+                                remaining,
+                                (processed_count / pending_files) * 100,
+                                estimated_remaining / 60,
+                            )
                     else:
-                        run_logger.info(
-                            "Progress: %d/%d completed, %d failed, %d remaining "
-                            "(%.1f%% complete, ~%.1f minutes remaining)",
-                            completed_count,
-                            pending_files,
-                            failed_count,
-                            remaining,
-                            (processed_count / pending_files) * 100,
-                            estimated_remaining / 60,
-                        )
-                else:
-                    if active_files:
-                        run_logger.info(
-                            "Progress: %d/%d completed, %d failed, %d remaining | "
-                            "active: %s",
-                            completed_count,
-                            pending_files,
-                            failed_count,
-                            remaining,
-                            _format_active_files(active_files),
-                        )
-                    else:
-                        run_logger.info(
-                            "Progress: %d/%d completed, %d failed, %d remaining",
-                            completed_count,
-                            pending_files,
-                            failed_count,
-                            remaining,
-                        )
-                last_progress_time = current_time
+                        if active_files:
+                            run_logger.info(
+                                (
+                                    "Progress: %d/%d completed, %d failed, %d "
+                                    "remaining | active: %s"
+                                ),
+                                completed_count,
+                                pending_files,
+                                failed_count,
+                                remaining,
+                                _format_active_files(active_files),
+                            )
+                        else:
+                            run_logger.info(
+                                "Progress: %d/%d completed, %d failed, %d remaining",
+                                completed_count,
+                                pending_files,
+                                failed_count,
+                                remaining,
+                            )
+                    last_progress_time = current_time
 
-            if remaining <= 0:
-                break
+                if remaining <= 0:
+                    break
 
-        run_logger.info("Waiting for all work to complete...")
-        extraction_queue.join()
-        analysis_queue.join()
-        database_queue.join()
+                time.sleep(2)
+                if shutdown_event.is_set():
+                    break
 
+            with lock:
+                final_completed = len(completed_files)
+                final_failed = len(failed_files)
+                remaining_after = max(
+                    pending_files - (final_completed + final_failed), 0
+                )
+
+            _update_progress_panel(
+                layout,
+                completed=final_completed,
+                failed=final_failed,
+                remaining=remaining_after,
+                active=[],
+            )
+
+    except KeyboardInterrupt:
+        run_logger.info("Keyboard interrupt received; cancelling current work...")
+        request_shutdown("keyboard_interrupt")
     finally:
         # Ensure manifest is saved even if there's an unexpected exception
         run_logger.info("Ensuring manifest is saved...")
@@ -1184,14 +1569,16 @@ def main(
             run_logger.info("Manifest saved successfully")
         except Exception as e:
             run_logger.error("Failed to save manifest: %s", e)
+        if log_handler in root_logger.handlers:
+            root_logger.removeHandler(log_handler)
+
+    run_logger.info("Waiting for all work to complete...")
+    extraction_queue.join()
+    analysis_queue.join()
+    database_queue.join()
 
     run_logger.debug("Sending shutdown signals to workers...")
-    for _ in range(NUM_EXTRACTION_WORKERS):
-        extraction_queue.put(None)
-    for _ in range(NUM_ANALYSIS_WORKERS):
-        analysis_queue.put(None)
-    for _ in range(NUM_DATABASE_WORKERS):
-        database_queue.put(None)
+    dispatch_shutdown_to_workers()
 
     run_logger.debug("Waiting for worker threads to stop...")
     for thread in threads:
@@ -1204,14 +1591,22 @@ def main(
         completed_count = len(completed_files)
         failed_count = len(failed_files)
 
-    run_logger.info(
-        "Pipeline complete! Processed %d files in %.1f seconds "
-        "(%d completed, %d failed)",
-        len(full_manifest),
-        elapsed_time,
-        completed_count,
-        failed_count,
-    )
+    if shutdown_event.is_set():
+        run_logger.info(
+            "Pipeline interrupted after %.1f seconds (%d completed, %d failed)",
+            elapsed_time,
+            completed_count,
+            failed_count,
+        )
+    else:
+        run_logger.info(
+            "Pipeline complete! Processed %d files in %.1f seconds "
+            "(%d completed, %d failed)",
+            len(full_manifest),
+            elapsed_time,
+            completed_count,
+            failed_count,
+        )
 
     # Log files with incomplete analysis for future AI analyzer development
     incomplete_files = []
@@ -1240,7 +1635,7 @@ def main(
             len(incomplete_files),
         )
 
-    if csv_output:
+    if csv_output and not shutdown_event.is_set():
         processed_files_data = [
             record.model_dump()
             for record in processing_manifest
@@ -1255,6 +1650,15 @@ def main(
             write_processed_files_to_csv(processed_files_data, csv_output)
         else:
             run_logger.info("No files to write to CSV.")
+
+    elif csv_output and shutdown_event.is_set():
+        run_logger.info(
+            "Skipping CSV export because the run was interrupted before completion."
+        )
+
+    if shutdown_event.is_set():
+        run_logger.warning("Shutdown request interrupted processing before completion.")
+        return 1
 
     if failed_count > 0:
         run_logger.warning("Some files failed to process. Check logs for details.")
