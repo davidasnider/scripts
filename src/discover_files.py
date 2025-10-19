@@ -132,6 +132,8 @@ def _safe_extract_tar(tar_file: tarfile.TarFile, target_directory: Path) -> None
     target_directory = target_directory.resolve()
 
     for member in tar_file.getmembers():
+        if member.issym() or member.islnk():
+            raise ValueError(f"Disallowed link entry in archive: {member.name}")
         member_path = (target_directory / member.name).resolve()
         if not member_path.is_relative_to(target_directory):
             raise ValueError(f"Unsafe path detected in archive: {member.name}")
