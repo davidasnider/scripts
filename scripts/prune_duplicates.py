@@ -275,8 +275,8 @@ def delete_duplicate_files(
             is_symlink = path.is_symlink()
             is_broken_symlink = is_symlink and not path_exists
 
-            if path_exists or is_broken_symlink:
-                if path_exists and path.is_dir():
+            if path_exists:
+                if path.is_dir():
                     logger.warning(
                         "Skipping removal for SHA %s because %s is a directory.",
                         sha,
@@ -289,6 +289,10 @@ def delete_duplicate_files(
                 path.unlink()
                 removed_file_count += 1
                 logger.info("Removed duplicate file %s (SHA %s)", file_path, sha)
+            elif is_broken_symlink:
+                path.unlink()
+                removed_file_count += 1
+                logger.info("Removed broken symlink %s (SHA %s)", file_path, sha)
             else:
                 missing_file_count += 1
                 logger.info(
@@ -300,6 +304,10 @@ def delete_duplicate_files(
         except OSError:
             logger.exception(
                 "Failed to remove duplicate file %s (SHA %s)", file_path, sha
+            )
+            mark_for_removal(
+                entry_index,
+                f"SHA {sha} duplicate file {file_path} (manifest removal after error)",
             )
 
     if dry_run:
