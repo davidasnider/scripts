@@ -99,9 +99,8 @@ TEXT_BASED_ANALYSES = {
     AnalysisName.PASSWORD_DETECTION,
 }
 TEXT_BASED_ANALYSIS_MODEL_VALUES = {analysis.value for analysis in TEXT_BASED_ANALYSES}
-MIN_ASCII_CHUNK_LENGTH = (
-    4  # avoids treating random bytes as content during strings-style fallback
-)
+# avoids treating random bytes as content during strings-style fallback
+MIN_ASCII_CHUNK_LENGTH = 4
 
 
 # Threading configuration
@@ -455,7 +454,9 @@ def _read_text_file_best_effort(file_path: str) -> str:
             )
             return text
 
-        ascii_pattern = re.compile(rb"[ -~]{%d,}" % MIN_ASCII_CHUNK_LENGTH)
+        ascii_pattern = re.compile(
+            rb"[ -~]{" + str(MIN_ASCII_CHUNK_LENGTH).encode("ascii") + rb",}"
+        )
         ascii_chunks = [
             match.group().decode("ascii", errors="ignore")
             for match in ascii_pattern.finditer(raw_bytes)

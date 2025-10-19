@@ -1192,22 +1192,19 @@ def render_file_browser(filter_state: dict[str, Any]):
     total_passwords = password_index.get("count", 0)
     total_estate = estate_index.get("count", 0)
 
-    (
-        met_col1,
-        met_col2,
-        met_col3,
-        met_col4,
-        met_col5,
-        met_col6,
-        met_col7,
-    ) = st.columns(7)
-    met_col1.metric("Files", f"{total_files:,}")
-    met_col2.metric("Directories", f"{total_directories:,}")
-    met_col3.metric("MIME types", f"{total_mime_types:,}")
-    met_col4.metric("People", f"{total_people:,}")
-    met_col5.metric("NSFW", f"{total_nsfw:,}")
-    met_col6.metric("Passwords", f"{total_passwords:,}")
-    met_col7.metric("Estate info", f"{total_estate:,}")
+    summary_metrics = [
+        ("Files", total_files),
+        ("Directories", total_directories),
+        ("MIME types", total_mime_types),
+        ("People", total_people),
+        ("NSFW", total_nsfw),
+        ("Passwords", total_passwords),
+        ("Estate info", total_estate),
+    ]
+    for column, (label, value) in zip(
+        st.columns(len(summary_metrics)), summary_metrics
+    ):
+        column.metric(label, f"{value:,}")
 
     if "file_browser_view_mode" not in st.session_state:
         st.session_state.file_browser_view_mode = "Directory"
