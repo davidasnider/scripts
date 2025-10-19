@@ -181,7 +181,7 @@ def _identify_archive_type(path: Path) -> str | None:
     """Return the archive type string handled by the extractor mapping."""
     name = path.name.lower()
     if name.endswith(".tar.gz") or name.endswith(".tgz"):
-        return "tar"
+        return "tar"  # tarfile handles gzip-compressed tar archives via mode="r:*"
     if name.endswith(".tar"):
         return "tar"
     if name.endswith(".zip"):
