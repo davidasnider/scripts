@@ -812,7 +812,7 @@ def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Gr
     if display_limit <= 0:
         visible: list[str] = []
     else:
-        visible = lines if lines else []
+        visible = lines[-display_limit:] if lines else []
     display_count = len(visible)
     if total > display_count and display_count > 0:
         header_text = f"Logs (showing last {display_count} of {total})"
@@ -1289,55 +1289,6 @@ def analysis_worker(
         file_chunk_count = 0
         file_chunk_duration = 0.0
 
-        def _update_active_status(**kwargs: Any) -> None:
-            if correlation_id is None:
-                return
-            with lock:
-                status = in_progress_files.get(correlation_id)
-                if not status:
-                    return
-                for key, value in kwargs.items():
-                    setattr(status, key, value)
-
-        def _plan_chunk_usage(chunk_estimate: int) -> None:
-            if correlation_id is None or chunk_estimate <= 0:
-                return
-            with lock:
-                status = in_progress_files.get(correlation_id)
-                if not status:
-                    return
-                current_total = status.chunks_total or 0
-                status.chunks_total = current_total + chunk_estimate
-
-        def _refresh_task_progress() -> None:
-            if correlation_id is None:
-                return
-            completed = sum(
-                1
-                for task in file_record.analysis_tasks
-                if task.status == AnalysisStatus.COMPLETE
-            )
-            total = len(file_record.analysis_tasks)
-            with lock:
-                status = in_progress_files.get(correlation_id)
-                if status:
-                    status.tasks_completed = completed
-                    status.tasks_total = total
-
-        def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
-            nonlocal file_chunk_count, file_chunk_duration
-            if chunk_count > 0 and duration > 0:
-                file_chunk_count += chunk_count
-                file_chunk_duration += duration
-                if correlation_id is not None:
-                    with lock:
-                        status = in_progress_files.get(correlation_id)
-                        if status:
-                            status.chunks_processed = file_chunk_count
-                            status.chunks_total = max(
-                                status.chunks_total or 0, file_chunk_count
-                            )
-
         try:
             work_item = analysis_queue.get(timeout=1.0)
             if work_item is None:
@@ -1365,6 +1316,50 @@ def analysis_worker(
                     tasks_completed=completed_tasks,
                 )
 
+            def _update_active_status(**kwargs: Any) -> None:
+                with lock:
+                    status = in_progress_files.get(correlation_id)
+                    if not status:
+                        return
+                    for key, value in kwargs.items():
+                        setattr(status, key, value)
+
+            def _plan_chunk_usage(chunk_estimate: int) -> None:
+                if chunk_estimate <= 0:
+                    return
+                with lock:
+                    status = in_progress_files.get(correlation_id)
+                    if not status:
+                        return
+                    current_total = status.chunks_total or 0
+                    status.chunks_total = current_total + chunk_estimate
+
+            def _refresh_task_progress() -> None:
+                completed = sum(
+                    1
+                    for task in file_record.analysis_tasks
+                    if task.status == AnalysisStatus.COMPLETE
+                )
+                total = len(file_record.analysis_tasks)
+                with lock:
+                    status = in_progress_files.get(correlation_id)
+                    if status:
+                        status.tasks_completed = completed
+                        status.tasks_total = total
+
+            def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
+                nonlocal file_chunk_count, file_chunk_duration
+                if chunk_count > 0 and duration > 0:
+                    file_chunk_count += chunk_count
+                    file_chunk_duration += duration
+                    with lock:
+                        status = in_progress_files.get(correlation_id)
+                        if status:
+                            status.chunks_processed = file_chunk_count
+                            status.chunks_total = max(
+                                status.chunks_total or 0, file_chunk_count
+                            )
+
             worker_logger.debug(
                 "Worker %d analyzing content from %s [%s]",
                 worker_id,
@@ -1373,6 +1368,8 @@ def analysis_worker(
             )
             _update_active_status(current_task="Preparing tasks")
             _refresh_task_progress()
+
+            handed_to_database = False
 
             try:
                 _check_for_shutdown()
@@ -1690,6 +1687,7 @@ def analysis_worker(
                 _check_for_shutdown()
                 database_item = WorkItem(file_record, correlation_id)
                 database_queue.put(database_item)
+                handed_to_database = True
                 _update_active_status(stage="Database", current_task="Writing results")
 
                 completed_tasks = sum(
@@ -1759,16 +1757,11 @@ def analysis_worker(
                 with lock:
                     failed_files.add(correlation_id)
             finally:
-                if isinstance(work_item, WorkItem):
-                    if file_chunk_count > 0 and file_chunk_duration > 0:
-                        _record_file_chunk_metrics(
-                            file_chunk_duration, file_chunk_count
-                        )
-                    if correlation_id is not None:
-                        with lock:
-                            status = in_progress_files.get(correlation_id)
-                            if status and status.stage != "Database":
-                                in_progress_files.pop(correlation_id, None)
+                if file_chunk_count > 0 and file_chunk_duration > 0:
+                    _record_file_chunk_metrics(file_chunk_duration, file_chunk_count)
+                if correlation_id is not None and not handed_to_database:
+                    with lock:
+                        in_progress_files.pop(correlation_id, None)
 
             analysis_queue.task_done()
 
