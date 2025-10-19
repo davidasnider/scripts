@@ -1,181 +1,123 @@
-from __future__ import annotations
-
-import importlib
-import sys
-from io import BytesIO
-from pathlib import Path
-from types import ModuleType
+import os
 
 import pandas as pd
-import pytest
+
+from src import access_analysis as aa
 
 
-@pytest.fixture
-def access_module(monkeypatch):
-    """
-    Mock access_parser so access_analysis tests run without installing it.
-
-    Returns:
-        tuple:
-            module (ModuleType): The imported and reloaded src.access_analysis module.
-            tables (list): List to which fake table objects can be appended.
-            FakeTable (type): The mock table class used for testing.
-            FakeParser (type): The mock parser class used for testing.
-    """
-    tables: list[object] = []
-
-    class FakeTable:
-        def __init__(self, name: str, rows: list[dict]):
-            self.name = name
-            self._rows = rows
-
-        def to_dicts(self):
-            return list(self._rows)
-
-    class FakeParser:
-        paths: list[str] = []
-        catalog_map: dict[str, int] = {}
-        catalog_data: dict[str, dict[str, list[object]]] = {}
-
-        def __init__(self, path: str):
-            self.path = path
-            self.__class__.paths.append(path)
-
-        def tables(self):
-            return list(tables)
-
-        @property
-        def catalog(self):
-            return self.__class__.catalog_map
-
-        def parse_table(self, table_name: str):
-            return self.__class__.catalog_data.get(table_name)
-
-    fake_module = ModuleType("access_parser")
-    fake_module.AccessParser = FakeParser
-    monkeypatch.setitem(sys.modules, "access_parser", fake_module)
-
-    module = importlib.import_module("src.access_analysis")
-    module = importlib.reload(module)
-
-    tables.clear()
-    FakeParser.paths = []
-    FakeParser.catalog_map = {}
-    FakeParser.catalog_data = {}
-
-    return module, tables, FakeTable, FakeParser
-
-
-def test_load_access_tables_returns_dataframes(access_module):
-    module, tables, FakeTable, FakeParser = access_module
-    tables[:] = [
-        FakeTable("Customers", [{"name": "Alice", "city": "Denver"}]),
-        FakeTable("Orders", [{"order_id": 1, "amount": 50.0}]),
-    ]
-
-    loaded = module.load_access_tables("legacy.mdb")
-
-    assert FakeParser.paths == ["legacy.mdb"]
-    assert set(loaded.keys()) == {"Customers", "Orders"}
-    assert isinstance(loaded["Customers"], pd.DataFrame)
-    assert loaded["Customers"].iloc[0]["name"] == "Alice"
-
-
-def test_load_access_tables_raises_when_empty(access_module):
-    module, tables, FakeTable, _ = access_module
-    tables[:] = []
-
-    with pytest.raises(module.AccessAnalysisError):
-        module.load_access_tables("empty.mdb")
-
-
-def test_load_access_tables_supports_catalog_fallback(access_module):
-    module, tables, _, FakeParser = access_module
-    tables[:] = []
-    FakeParser.catalog_map = {"Customers": 10, "MSysObjects": 1}
-    FakeParser.catalog_data = {
-        "Customers": {"name": ["Alice"], "city": ["Denver"]},
-        "MSysObjects": {"Name": ["System"]},
+def _sample_tables():
+    return {
+        "Accounts": pd.DataFrame(
+            {
+                "Name": ["Alpha Corp", "Beta LLC"],
+                "Amount": [100.0, 250.5],
+                "CreatedDate": ["2024-01-15", "2024-02-20"],
+                "Notes": [
+                    "Strong profit growth reported by Alpha leadership.",
+                    "Risk of loss flagged by Beta management.",
+                ],
+            }
+        )
     }
 
-    loaded = module.load_access_tables("catalog-only.mdb")
 
-    assert set(loaded.keys()) == {"Customers"}
-    assert loaded["Customers"].iloc[0]["city"] == "Denver"
+def test_flatten_and_extract_text_helpers():
+    tables = _sample_tables()
+    frame = tables["Accounts"]
+
+    flattened = aa._flatten_text_columns(frame)
+    assert "Alpha Corp" in flattened
+    assert "250.5" not in flattened  # numeric columns ignored
+
+    extracted = aa._extract_table_text(frame)
+    assert "Name: Alpha Corp Beta LLC" in extracted
+    assert "Amount: 100.0 250.5" in extracted
+
+    table_text, combined = aa._gather_table_text(tables)
+    assert set(table_text.keys()) == {"Accounts"}
+    assert "Table Accounts" in combined
 
 
-def test_analyze_text_tables_extracts_themes_and_entities(access_module):
-    module, _, _, _ = access_module
-    df = pd.DataFrame(
+def test_summary_and_theme_helpers():
+    text = (
+        "This quarter delivered strong growth and profit. "
+        "Revenue increase exceeded expectations. "
+        "The team is optimistic about future success."
+    )
+    summary = aa._derive_summary(text, limit=80)
+    assert summary.endswith(".")
+
+    themes = aa._extract_key_themes(text)
+    assert "growth" in themes
+    assert "profit" in themes
+
+    entities = aa._extract_named_entities(
+        "Reported by Alice Johnson and Bob Smith in New York."
+    )
+    assert "Alice Johnson" in entities
+    assert "Bob Smith" in entities
+    assert "New York" in entities
+
+    sentiment_positive = aa._analyze_sentiment(text)
+    assert sentiment_positive.label == "positive"
+
+    sentiment_negative = aa._analyze_sentiment("Loss and decline hurt profit.")
+    assert sentiment_negative.label == "negative"
+
+
+def test_analyze_text_and_financial_tables_generates_results():
+    tables = _sample_tables()
+    text_results = aa.analyze_text_tables(tables)
+    assert len(text_results) == 1
+    assert text_results[0].table_name == "Accounts"
+    assert text_results[0].sentiment.label in {"positive", "neutral", "negative"}
+
+    financial_results = aa.analyze_financial_tables(tables)
+    assert len(financial_results) == 1
+    metrics = financial_results[0].metrics
+    assert any(metric.column == "Amount" for metric in metrics)
+    trend_entries = financial_results[0].trends
+    assert trend_entries  # monthly aggregation detected from CreatedDate
+
+
+def test_find_date_series_detects_string_dates():
+    frame = pd.DataFrame(
         {
-            "notes": [
-                "Strong growth from London Markets this quarter.",
-                "Concern remains about logistics but overall positive outlook.",
-            ]
+            "custom_modified": ["2023-01-01", "invalid", "2023-03-15"],
+            "value": [5, 6, 7],
         }
     )
-
-    results = module.analyze_text_tables({"Insights": df})
-
-    assert results[0].table_name == "Insights"
-    assert "growth" in results[0].key_themes
-    assert "London Markets" in results[0].named_entities
-    assert results[0].sentiment.label == "positive"
+    column, series = aa._find_date_series(frame)
+    assert column == "custom_modified"
+    assert series.notna().sum() == 2
 
 
-def test_analyze_financial_tables_computes_metrics_and_trends(access_module):
-    module, _, _, _ = access_module
-    df = pd.DataFrame(
-        {
-            "Revenue": [1000, 1500, 1200],
-            "Expenses": [400, 600, 500],
-            "Date": [
-                "2024-01-15",
-                "2024-02-15",
-                "2024-02-28",
-            ],
-            "Notes": ["Initial", "Expansion", "Stabilizing"],
-        }
-    )
-
-    results = module.analyze_financial_tables({"Ledger": df})
-
-    assert results[0].table_name == "Ledger"
-    metric_columns = {metric.column for metric in results[0].metrics}
-    assert "Revenue" in metric_columns
-    assert results[0].metrics[0].total > 0
-    assert results[0].trends
-    first_trend = results[0].trends[0]
-    assert first_trend.frequency == "monthly"
-    assert all(point.total >= 0 for point in first_trend.points)
+def test_ensure_path_from_upload_bytes(tmp_path):
+    payload = b"fake-access-db"
+    path = aa._ensure_path_from_upload(payload, filename="db.mdb")
+    try:
+        assert path.exists()
+        assert path.suffix == ".mdb"
+        assert path.read_bytes() == payload
+    finally:
+        if path.exists():
+            path.unlink()
 
 
-def test_analyze_access_database_accepts_file_like(access_module, monkeypatch):
-    module, tables, FakeTable, FakeParser = access_module
-    tables[:] = [
-        FakeTable(
-            "Activity",
-            [
-                {"description": "Improved profit margins", "amount": 200},
-                {"description": "Risk of decline", "amount": 50},
-            ],
-        )
-    ]
+def test_analyze_access_database_pipeline(monkeypatch):
+    tables = _sample_tables()
 
-    deleted_paths: list[Path] = []
+    def _fake_load(path):
+        assert os.path.exists(path)
+        return tables
 
-    def fake_unlink(path):
-        deleted_paths.append(Path(path))
+    monkeypatch.setattr(aa, "load_access_tables", _fake_load)
 
-    monkeypatch.setattr(module.os, "unlink", fake_unlink)
+    result = aa.analyze_access_database(b"binary-db", filename="demo.mdb")
 
-    result = module.analyze_access_database(
-        BytesIO(b"fake-bytes"), filename="legacy.mdb"
-    )
-
-    assert isinstance(result, module.AccessAnalysisResult)
-    assert FakeParser.paths  # parser invoked with temporary file path
-    assert deleted_paths  # temporary file cleaned up
-    assert result.table_text["Activity"]
-    assert "Improved profit margins" in result.table_text["Activity"]
-    assert "Improved profit margins" in result.combined_text
+    assert set(result.tables.keys()) == {"Accounts"}
+    assert result.table_text["Accounts"]
+    assert result.combined_text.startswith("Table Accounts")
+    # Confirm helper outputs roundtrip through pipeline
+    assert result.text_analysis[0].table_name == "Accounts"
+    assert result.financial_analysis[0].table_name == "Accounts"

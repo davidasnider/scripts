@@ -1,7 +1,11 @@
 import json
 from unittest.mock import patch
 
-from src.ai_analyzer import analyze_text_content, detect_passwords
+from src.ai_analyzer import (
+    analyze_financial_document,
+    analyze_text_content,
+    detect_passwords,
+)
 
 
 @patch("src.ai_analyzer.ollama.chat")
@@ -95,3 +99,84 @@ def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_
         "backup": "b@ckup",
     }
     assert mock_ollama_chat.call_count == 2
+
+
+@patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
+@patch("src.ai_analyzer.ollama.chat")
+def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
+    """Ensure multi-chunk text analysis honors the max_chunks limit."""
+
+    # Responses for first two chunks plus combined summary call
+    chunk_payload = json.dumps({"summary": "part", "mentioned_people": ["Alice"]})
+    mock_chat.side_effect = [
+        {"message": {"content": chunk_payload}},
+        {"message": {"content": chunk_payload}},
+        {"message": {"content": "Final summary"}},
+    ]
+
+    result = analyze_text_content("A" * 5000, source_name="doc.txt", max_chunks=2)
+
+    assert result["summary"] == "Final summary"
+    assert result["mentioned_people"] == ["Alice"]
+    assert mock_chat.call_count == 3
+
+
+@patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
+@patch("src.ai_analyzer.ollama.chat")
+def test_detect_passwords_respects_max_chunks(mock_chat, _mock_chunk):
+    """Password detection should only request the configured number of chunks."""
+
+    responses = [
+        {
+            "message": {
+                "content": json.dumps(
+                    {"contains_password": True, "passwords": {"pwd": "123"}}
+                )
+            }
+        },
+        {
+            "message": {
+                "content": json.dumps(
+                    {"contains_password": True, "passwords": {"pwd": "456"}}
+                )
+            }
+        },
+    ]
+    mock_chat.side_effect = responses
+
+    result = detect_passwords("B" * 5000, source_name="secrets.txt", max_chunks=2)
+
+    assert result["contains_password"] is True
+    assert result["passwords"] == {"pwd": "123", "pwd_2": "456"}
+    assert mock_chat.call_count == 2
+
+
+@patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
+@patch("src.ai_analyzer.ollama.chat")
+def test_analyze_financial_document_respects_max_chunks(mock_chat, _mock_chunk):
+    """Financial analysis should obey the chunk limit and combine summaries."""
+
+    chunk_payload = json.dumps(
+        {
+            "summary": "Segment summary",
+            "potential_red_flags": ["late filing"],
+            "incriminating_items": ["cash"],
+            "confidence_score": 80,
+        }
+    )
+    mock_chat.side_effect = [
+        {"message": {"content": chunk_payload}},
+        {"message": {"content": chunk_payload}},
+        {"message": {"content": "Combined summary"}},
+    ]
+
+    result = analyze_financial_document(
+        "C" * 5000, source_name="ledger.csv", max_chunks=2
+    )
+
+    assert result["summary"] == "Combined summary"
+    assert set(result["potential_red_flags"]) == {"late filing"}
+    assert set(result["incriminating_items"]) == {"cash"}
+    # Average of chunk scores remains 80
+    assert result["confidence_score"] == 80
+    assert mock_chat.call_count == 3

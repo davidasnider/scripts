@@ -74,11 +74,33 @@ def _maybe_abort(callback: AbortCallback | None) -> None:
         callback()
 
 
+def _limit_chunk_list(
+    chunks: list[str],
+    max_chunks: int | None,
+    *,
+    analysis_name: str,
+    source_name: str,
+) -> list[str]:
+    """Limit chunked text to at most max_chunks entries."""
+
+    if max_chunks and max_chunks > 0 and len(chunks) > max_chunks:
+        logger.info(
+            "Limiting %s on %s to first %d chunk(s) (from %d).",
+            analysis_name,
+            source_name,
+            max_chunks,
+            len(chunks),
+        )
+        return chunks[:max_chunks]
+    return chunks
+
+
 def analyze_text_content(
     text: str,
     *,
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
+    max_chunks: int | None = None,
 ) -> dict[str, Any]:
     """Analyze text content using an LLM to extract summary and mentioned people."""
     text_bytes = len(text.encode("utf-8"))
@@ -127,6 +149,12 @@ def analyze_text_content(
 
     # Multi-chunk processing
     chunks = chunk_text(text, max_tokens=2048)
+    chunks = _limit_chunk_list(
+        chunks,
+        max_chunks,
+        analysis_name="text analysis",
+        source_name=source_display_name,
+    )
     total_chunks = len(chunks)
     logger.info(
         "Text analysis processing %d chunk(s) for %s",
@@ -147,7 +175,7 @@ def analyze_text_content(
             remaining_chunks,
         )
         prompt = (
-            f"You are a document analyst. Analyze chunk {i+1} of {len(chunks)} of the "
+            f"You are a document analyst. Analyze chunk {i+1} of {total_chunks} of the "
             "following text and provide a JSON response with exactly two keys:\n\n"
             '- "summary": a concise paragraph summarizing the main points of this '
             "chunk.\n"
@@ -163,7 +191,7 @@ def analyze_text_content(
             logger.debug(
                 "Sending Ollama request for text chunk %d/%d for %s, prompt length: %d",
                 i + 1,
-                len(chunks),
+                total_chunks,
                 source_display_name,
                 len(prompt),
             )
@@ -175,7 +203,7 @@ def analyze_text_content(
             logger.debug(
                 "Received Ollama response for text chunk %d/%d for %s",
                 i + 1,
-                len(chunks),
+                total_chunks,
                 source_display_name,
             )
             json_str = response["message"]["content"]
@@ -238,6 +266,7 @@ def detect_passwords(
     *,
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
+    max_chunks: int | None = None,
 ) -> dict[str, Any]:
     """Detect potential passwords within text using an LLM."""
 
@@ -309,6 +338,12 @@ def detect_passwords(
             return DEFAULT_PASSWORD_RESULT
 
     chunks = chunk_text(text, max_tokens=2048)
+    chunks = _limit_chunk_list(
+        chunks,
+        max_chunks,
+        analysis_name="password detection",
+        source_name=source_display_name,
+    )
     total_chunks = len(chunks)
     detected_passwords: dict[str, str] = {}
     any_passwords = False
@@ -420,6 +455,7 @@ def analyze_estate_relevant_information(
     *,
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
+    max_chunks: int | None = None,
 ) -> dict[str, Any]:
     """Identify estate management details within text."""
 
@@ -488,6 +524,12 @@ def analyze_estate_relevant_information(
             return DEFAULT_ESTATE_RESULT
 
     chunks = chunk_text(text, max_tokens=2048)
+    chunks = _limit_chunk_list(
+        chunks,
+        max_chunks,
+        analysis_name="estate analysis",
+        source_name=source_display_name,
+    )
     total_chunks = len(chunks)
     chunk_results: list[dict[str, list[dict[str, Any]]]] = []
 
@@ -536,6 +578,7 @@ def analyze_financial_document(
     *,
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
+    max_chunks: int | None = None,
 ) -> dict[str, Any]:
     """Analyze financial document text using an LLM as a forensic accountant.
 
@@ -604,6 +647,12 @@ def analyze_financial_document(
 
     # Multi-chunk processing
     chunks = chunk_text(text, max_tokens=2048)
+    chunks = _limit_chunk_list(
+        chunks,
+        max_chunks,
+        analysis_name="financial analysis",
+        source_name=source_display_name,
+    )
     total_chunks = len(chunks)
     logger.info(
         "Financial analysis processing %d chunk(s) for %s",
@@ -627,7 +676,7 @@ def analyze_financial_document(
         )
         prompt = (
             f"You are a meticulous forensic accountant. Analyze chunk {i+1} of "
-            f"{len(chunks)} of the following financial document text and provide a "
+            f"{total_chunks} of the following financial document text and provide a "
             "JSON response with exactly four keys:\n\n"
             '- "summary": a concise paragraph summarizing this chunk.\n'
             '- "potential_red_flags": a list of potential red flags or irregularities '
@@ -646,7 +695,7 @@ def analyze_financial_document(
                 "Sending Ollama request for financial chunk %d/%d for %s, "
                 "prompt length: %d",
                 i + 1,
-                len(chunks),
+                total_chunks,
                 source_display_name,
                 len(prompt),
             )
@@ -659,7 +708,7 @@ def analyze_financial_document(
             logger.debug(
                 "Received Ollama response for financial chunk %d/%d for %s",
                 i + 1,
-                len(chunks),
+                total_chunks,
                 source_display_name,
             )
             json_str = response["message"]["content"]

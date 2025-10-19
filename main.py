@@ -104,9 +104,12 @@ MIN_ASCII_CHUNK_LENGTH = 4
 
 
 # Threading configuration
-NUM_EXTRACTION_WORKERS = 2
-NUM_ANALYSIS_WORKERS = 4  # More workers since AI analysis is the bottleneck
+NUM_EXTRACTION_WORKERS = 10
+NUM_ANALYSIS_WORKERS = (
+    3  # AI analysis remains a bottleneck; keep a few dedicated threads
+)
 NUM_DATABASE_WORKERS = 1
+MINIMUM_WORKER_TOTAL = 3
 
 # Shared state
 extraction_queue = queue.Queue()
@@ -118,6 +121,13 @@ in_progress_files: dict[str, str] = {}
 lock = threading.Lock()
 shutdown_event = threading.Event()
 _shutdown_signals_sent = threading.Event()
+
+# Active worker counts (updated when pipeline runs)
+_active_worker_counts = {
+    "extraction": NUM_EXTRACTION_WORKERS,
+    "analysis": NUM_ANALYSIS_WORKERS,
+    "database": NUM_DATABASE_WORKERS,
+}
 
 # Global manifest for signal handlers
 current_manifest = None
@@ -162,6 +172,53 @@ def _format_active_files(active: list[str], limit: int = 3) -> str:
     return preview + ("..." if len(active) > limit else "")
 
 
+def _resolve_worker_counts(
+    max_threads: int | None,
+) -> tuple[int, int, int, int | None, bool]:
+    """
+    Determine worker thread counts after applying an optional max_threads limit.
+
+    Returns:
+        tuple: extraction_workers, analysis_workers, database_workers,
+        applied_limit (or None if unused), limit_was_increased (bool).
+    """
+
+    extraction_workers = NUM_EXTRACTION_WORKERS
+    analysis_workers = NUM_ANALYSIS_WORKERS
+    database_workers = NUM_DATABASE_WORKERS
+
+    if not max_threads or max_threads <= 0:
+        return extraction_workers, analysis_workers, database_workers, None, False
+
+    applied_limit = max(max_threads, MINIMUM_WORKER_TOTAL)
+    limit_was_increased = applied_limit != max_threads
+
+    worker_counts = {
+        "analysis": analysis_workers,
+        "extraction": extraction_workers,
+        "database": database_workers,
+    }
+    total_workers = sum(worker_counts.values())
+
+    while total_workers > applied_limit:
+        for key in ("analysis", "extraction", "database"):
+            min_allowed = 1
+            if worker_counts[key] > min_allowed:
+                worker_counts[key] -= 1
+                total_workers -= 1
+                break
+        else:
+            break
+
+    return (
+        worker_counts["extraction"],
+        worker_counts["analysis"],
+        worker_counts["database"],
+        applied_limit,
+        limit_was_increased,
+    )
+
+
 class ShutdownRequested(Exception):
     """Raised to abort processing when a shutdown has been requested."""
 
@@ -179,9 +236,9 @@ def dispatch_shutdown_to_workers() -> None:
 
     _shutdown_signals_sent.set()
     for worker_count, queue_ref in (
-        (NUM_EXTRACTION_WORKERS, extraction_queue),
-        (NUM_ANALYSIS_WORKERS, analysis_queue),
-        (NUM_DATABASE_WORKERS, database_queue),
+        (_active_worker_counts["extraction"], extraction_queue),
+        (_active_worker_counts["analysis"], analysis_queue),
+        (_active_worker_counts["database"], database_queue),
     ):
         for _ in range(worker_count):
             queue_ref.put(None)
@@ -677,7 +734,9 @@ def extraction_worker(worker_id: int) -> None:
     worker_logger.debug("Extraction worker %d stopped", worker_id)
 
 
-def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
+def analysis_worker(
+    worker_id: int, model: AnalysisModel, max_chunks: int | None = None
+) -> None:
     """Worker thread for AI analysis."""
     worker_logger = analysis_logger.getChild(f"worker-{worker_id}")
     worker_logger.debug("Analysis worker %d started", worker_id)
@@ -746,6 +805,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     file_record.extracted_text,
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
+                                    max_chunks=max_chunks,
                                 )
                                 file_record.contains_password = password_result.get(
                                     "contains_password"
@@ -774,6 +834,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                             file_record.extracted_text,
                                             source_name=source_name,
                                             should_abort=_check_for_shutdown,
+                                            max_chunks=max_chunks,
                                         )
                                     )
                                 file_record.estate_information = (
@@ -794,6 +855,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     file_record.extracted_text,
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
+                                    max_chunks=max_chunks,
                                 )
                             if task.name == AnalysisName.TEXT_ANALYSIS:
                                 file_record.summary = text_analysis_result.get(
@@ -919,6 +981,7 @@ def analysis_worker(worker_id: int, model: AnalysisModel) -> None:
                                     file_record.extracted_text,
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
+                                    max_chunks=max_chunks,
                                 )
                                 file_record.summary = financial_analysis.get("summary")
                                 file_record.potential_red_flags = (
@@ -1246,6 +1309,26 @@ def main(
             rich_help_panel="Filtering",
         ),
     ] = 0,
+    max_chunks: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Maximum number of text chunks to analyze per document "
+                "(0 disables the limit)."
+            ),
+            rich_help_panel="Processing",
+        ),
+    ] = 0,
+    max_threads: Annotated[
+        int,
+        typer.Option(
+            help=(
+                "Maximum number of worker threads across extraction, analysis, "
+                "and database stages (0 uses defaults)."
+            ),
+            rich_help_panel="Processing",
+        ),
+    ] = 0,
     debug: Annotated[bool, typer.Option(help="Enable debug logging.")] = False,
 ) -> int:
     """Run the main threaded pipeline."""
@@ -1285,6 +1368,63 @@ def main(
     sys.stderr = MuPDFErrorFilter(sys.stderr)
     run_logger = pipeline_logger.getChild("run")
     run_logger.info("Starting threaded file catalog pipeline...")
+
+    (
+        extraction_workers,
+        analysis_workers,
+        database_workers,
+        applied_thread_limit,
+        limit_was_increased,
+    ) = _resolve_worker_counts(max_threads)
+    global _active_worker_counts
+    _active_worker_counts = {
+        "extraction": extraction_workers,
+        "analysis": analysis_workers,
+        "database": database_workers,
+    }
+    total_workers = extraction_workers + analysis_workers + database_workers
+    default_total_workers = (
+        NUM_EXTRACTION_WORKERS + NUM_ANALYSIS_WORKERS + NUM_DATABASE_WORKERS
+    )
+    if max_threads > 0:
+        if limit_was_increased:
+            run_logger.warning(
+                "Requested max threads %d is below minimum %d; using %d instead.",
+                max_threads,
+                MINIMUM_WORKER_TOTAL,
+                applied_thread_limit,
+            )
+        run_logger.info(
+            "Worker threads capped at %d: extraction=%d, analysis=%d, database=%d "
+            "(total=%d).",
+            applied_thread_limit,
+            extraction_workers,
+            analysis_workers,
+            database_workers,
+            total_workers,
+        )
+    else:
+        run_logger.info(
+            "Worker threads default to extraction=%d, analysis=%d, database=%d "
+            "(total=%d).",
+            extraction_workers,
+            analysis_workers,
+            database_workers,
+            total_workers,
+        )
+        if total_workers != default_total_workers:
+            run_logger.debug(
+                "Worker counts differ from defaults after initialization "
+                "(defaults total %d).",
+                default_total_workers,
+            )
+
+    max_chunk_limit = max_chunks if max_chunks > 0 else None
+    if max_chunk_limit:
+        run_logger.info(
+            "Limiting text analyses to the first %d chunk(s) per document.",
+            max_chunk_limit,
+        )
 
     collection = initialize_db(str(DB_PATH))
     run_logger.debug("Database initialized")
@@ -1424,7 +1564,7 @@ def main(
     run_logger.debug("Started manifest saver thread")
 
     threads = []
-    for i in range(NUM_EXTRACTION_WORKERS):
+    for i in range(extraction_workers):
         thread = threading.Thread(
             target=extraction_worker, args=(i,), name=f"ExtractionWorker-{i}"
         )
@@ -1432,15 +1572,17 @@ def main(
         threads.append(thread)
         extraction_logger.debug("Started extraction worker %d", i)
 
-    for i in range(NUM_ANALYSIS_WORKERS):
+    for i in range(analysis_workers):
         thread = threading.Thread(
-            target=analysis_worker, args=(i, model), name=f"AnalysisWorker-{i}"
+            target=analysis_worker,
+            args=(i, model, max_chunk_limit),
+            name=f"AnalysisWorker-{i}",
         )
         thread.start()
         threads.append(thread)
         analysis_logger.debug("Started analysis worker %d", i)
 
-    for i in range(NUM_DATABASE_WORKERS):
+    for i in range(database_workers):
         thread = threading.Thread(
             target=database_worker, args=(i, collection), name=f"DatabaseWorker-{i}"
         )
