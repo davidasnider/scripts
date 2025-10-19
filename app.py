@@ -399,7 +399,7 @@ def _summarize_estate_highlights(entry: dict[str, Any]) -> str:
             )
             if label:
                 highlights.append(f"{category}: {label}")
-        elif isinstance(items[0], str):
+        elif items and isinstance(items[0], str):
             highlights.append(f"{category}: {items[0]}")
 
     return "; ".join(highlights)
