@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import inspect
 import json
 import logging
 import mimetypes
+import shutil
+import tarfile
 import time
+import zipfile
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from src.logging_utils import configure_logging
 from src.schema import AnalysisTask, FileRecord
@@ -95,6 +100,147 @@ def _detect_mime_type(path: Path, mime_detector: Any) -> str:
     return "application/octet-stream"
 
 
+def _safe_extract_zip(zip_file: zipfile.ZipFile, target_directory: Path) -> None:
+    """Extract ZIP contents while preventing path traversal attacks."""
+    target_directory = target_directory.resolve()
+
+    for member in zip_file.infolist():
+        member_path = (target_directory / member.filename).resolve()
+        if not member_path.is_relative_to(target_directory):
+            raise ValueError(f"Unsafe path detected in archive: {member.filename}")
+
+    zip_file.extractall(target_directory)
+
+
+def _extract_zip_file(zip_path: Path) -> None:
+    """Extract a single ZIP archive into its parent directory and remove the archive."""
+    logger.info("Extracting %s", zip_path)
+    extraction_dir = zip_path.parent
+
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            _safe_extract_zip(archive, extraction_dir)
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"Invalid ZIP archive {zip_path}: {exc}") from exc
+
+    zip_path.unlink()
+    logger.info("Removed extracted archive %s", zip_path)
+
+
+def _safe_extract_tar(tar_file: tarfile.TarFile, target_directory: Path) -> None:
+    """Extract TAR contents while preventing path traversal attacks."""
+    target_directory = target_directory.resolve()
+
+    for member in tar_file.getmembers():
+        member_path = (target_directory / member.name).resolve()
+        if not member_path.is_relative_to(target_directory):
+            raise ValueError(f"Unsafe path detected in archive: {member.name}")
+
+    extract_kwargs: dict[str, object] = {}
+    if "filter" in inspect.signature(tar_file.extractall).parameters:
+        extract_kwargs["filter"] = "data"
+
+    tar_file.extractall(target_directory, **extract_kwargs)
+
+
+def _extract_tar_archive(tar_path: Path) -> None:
+    """Extract a TAR-based archive into its parent directory and remove the archive."""
+    logger.info("Extracting %s", tar_path)
+    extraction_dir = tar_path.parent
+
+    try:
+        with tarfile.open(tar_path, mode="r:*") as archive:
+            _safe_extract_tar(archive, extraction_dir)
+    except tarfile.TarError as exc:
+        raise ValueError(f"Invalid TAR archive {tar_path}: {exc}") from exc
+
+    tar_path.unlink()
+    logger.info("Removed extracted archive %s", tar_path)
+
+
+def _extract_gzip_file(gz_path: Path) -> None:
+    """Decompress a single-file GZIP archive and remove the archive."""
+    logger.info("Extracting %s", gz_path)
+    destination_path = gz_path.with_suffix("")
+
+    if destination_path.exists():
+        raise ValueError(
+            f"Destination file already exists for gzip archive: {destination_path}"
+        )
+
+    with gzip.open(gz_path, "rb") as source, destination_path.open("wb") as target:
+        shutil.copyfileobj(source, target)
+
+    gz_path.unlink()
+    logger.info("Removed extracted archive %s", gz_path)
+
+
+def _identify_archive_type(path: Path) -> str | None:
+    """Return the archive type string handled by the extractor mapping."""
+    name = path.name.lower()
+    if name.endswith(".tar.gz") or name.endswith(".tgz"):
+        return "tar"
+    if name.endswith(".tar"):
+        return "tar"
+    if name.endswith(".zip"):
+        return "zip"
+    if name.endswith(".gz"):
+        return "gzip"
+    return None
+
+
+ARCHIVE_EXTRACTORS: dict[str, Callable[[Path], None]] = {
+    "zip": _extract_zip_file,
+    "tar": _extract_tar_archive,
+    "gzip": _extract_gzip_file,
+}
+
+
+def _extract_all_archives(root_directory: Path) -> None:
+    """Recursively extract supported archives discovered under the given root."""
+    extraction_round = 0
+    failed_archives: set[Path] = set()
+
+    while True:
+        archive_paths: list[tuple[Path, str]] = []
+        for path in sorted(root_directory.rglob("*")):
+            if not path.is_file() or path in failed_archives:
+                continue
+            archive_type = _identify_archive_type(path)
+            if archive_type is None:
+                continue
+            archive_paths.append((path, archive_type))
+
+        if not archive_paths:
+            if extraction_round == 0:
+                logger.info("No archives found under %s", root_directory)
+            else:
+                logger.info(
+                    "Archive extraction complete after %d pass(es)", extraction_round
+                )
+            if failed_archives:
+                logger.warning(
+                    "Skipped %d archive(s) due to extraction errors",
+                    len(failed_archives),
+                )
+            break
+
+        extraction_round += 1
+        logger.info(
+            "Archive extraction pass %d: found %d archive(s)",
+            extraction_round,
+            len(archive_paths),
+        )
+
+        for archive_path, archive_type in archive_paths:
+            try:
+                extractor = ARCHIVE_EXTRACTORS[archive_type]
+                extractor(archive_path)
+            except Exception as exc:  # pragma: no cover - depends on filesystem layout
+                logger.error("Failed to extract archive %s: %s", archive_path, exc)
+                failed_archives.add(archive_path)
+
+
 def create_file_manifest(
     root_directory: Path, manifest_path: Path, max_files: int = 0
 ) -> list[dict[str, object]]:
@@ -112,13 +258,16 @@ def create_file_manifest(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Created manifest directory: %s", manifest_path.parent)
 
-    logger.info("Phase 1: Counting files for progress tracking")
+    logger.info("Phase 1: Extracting archives")
+    _extract_all_archives(root_directory)
+
+    logger.info("Phase 2: Counting files for progress tracking")
     total_files = _count_files(root_directory)
     if total_files == 0:
         logger.warning("No files found in directory: %s", root_directory)
         return []
 
-    logger.info("Phase 2: Initializing MIME detector")
+    logger.info("Phase 3: Initializing MIME detector")
     mime_detector = _create_mime_detector()
     if mime_detector is not None:
         logger.info("Using python-magic for MIME type detection")
@@ -127,9 +276,9 @@ def create_file_manifest(
 
     max_limit = max_files if max_files and max_files > 0 else None
     if max_limit is None:
-        logger.info("Phase 3: Processing all files (no limit)")
+        logger.info("Phase 4: Processing all files (no limit)")
     else:
-        logger.info("Phase 3: Processing up to %d files", max_limit)
+        logger.info("Phase 4: Processing up to %d files", max_limit)
     start_time = time.time()
     records = []
 
@@ -198,7 +347,7 @@ def create_file_manifest(
     if error_count > 0:
         logger.warning("Encountered %d errors during processing", error_count)
 
-    logger.info("Phase 4: Writing manifest to %s", manifest_path)
+    logger.info("Phase 5: Writing manifest to %s", manifest_path)
     write_start = time.time()
 
     manifest_data = [record.model_dump(mode="json") for record in records]
