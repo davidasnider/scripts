@@ -12,6 +12,7 @@ import csv
 import json
 import logging
 import queue
+import re
 import signal
 import sys
 import threading
@@ -412,6 +413,68 @@ def has_text_content(file_record: FileRecord) -> bool:
     return bool((file_record.extracted_text or "").strip())
 
 
+def _read_text_file_best_effort(file_path: str) -> str:
+    """Read a text file, trying a few common encodings before giving up."""
+    encodings_to_try = ["utf-8", "utf-8-sig", "cp1252", "latin-1"]
+    last_error: Exception | None = None
+
+    for encoding in encodings_to_try:
+        try:
+            with open(file_path, "r", encoding=encoding) as handle:
+                text = handle.read()
+                if encoding != "utf-8":
+                    extraction_logger.debug(
+                        "Loaded %s using fallback encoding %s", file_path, encoding
+                    )
+                return text
+        except UnicodeDecodeError as exc:
+            extraction_logger.debug(
+                "Failed to decode %s as %s: %s", file_path, encoding, exc
+            )
+            last_error = exc
+        except Exception as exc:  # pragma: no cover - unexpected I/O failure
+            extraction_logger.warning(
+                "Unexpected error reading %s with encoding %s: %s",
+                file_path,
+                encoding,
+                exc,
+            )
+            last_error = exc
+
+    try:
+        with open(file_path, "rb") as handle:
+            raw_bytes = handle.read()
+        text = raw_bytes.decode("utf-8", errors="ignore")
+        if text.strip():
+            extraction_logger.info(
+                "Decoded %s with utf-8/ignore after failures; chars may be missing",
+                file_path,
+            )
+            return text
+
+        ascii_pattern = re.compile(rb"[ -~]{4,}")
+        ascii_chunks = [
+            match.group().decode("ascii", errors="ignore")
+            for match in ascii_pattern.finditer(raw_bytes)
+        ]
+        if ascii_chunks:
+            extraction_logger.info(
+                "Recovered %d ASCII chunk(s) from %s using strings-style fallback",
+                len(ascii_chunks),
+                file_path,
+            )
+            return "\n".join(ascii_chunks)
+    except Exception as exc:  # pragma: no cover - unexpected I/O failure
+        extraction_logger.error(
+            "Failed to read text file %s after exhausting fallbacks: %s "
+            "(last error: %s)",
+            file_path,
+            exc,
+            last_error,
+        )
+        return ""
+
+
 def extract_text_from_svg(file_path: str) -> str:
     """Extract visible text from an SVG, fallback to raw XML if parsing fails."""
     try:
@@ -494,14 +557,10 @@ def extraction_worker(worker_id: int) -> None:
                     if file_record.mime_type == "application/pdf":
                         extracted_text = extract_content_from_pdf(file_record.file_path)
                     else:
-                        try:
-                            _check_for_shutdown()
-                            with open(
-                                file_record.file_path, "r", encoding="utf-8"
-                            ) as f:
-                                extracted_text = f.read()
-                        except Exception:
-                            extracted_text = ""
+                        _check_for_shutdown()
+                        extracted_text = _read_text_file_best_effort(
+                            file_record.file_path
+                        )
                     file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type == (
