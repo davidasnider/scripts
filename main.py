@@ -161,6 +161,7 @@ database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
 LIVE_CONSOLE = Console()
 LOG_PANEL_RATIO = 0.5
 TOP_PANEL_ROWS = 31
+CHUNK_TOKEN_LIMIT = 2048
 
 
 def _calculate_log_panel_display_limit(
@@ -216,6 +217,21 @@ class ChunkMetrics:
 
 
 chunk_metrics = ChunkMetrics()
+
+
+@dataclass
+class FileChunkProgress:
+    """Mutable accumulator tracking per-file chunk usage."""
+
+    count: int = 0
+    duration: float = 0.0
+
+    def add(self, *, chunk_count: int, duration: float) -> bool:
+        if chunk_count <= 0 or duration <= 0:
+            return False
+        self.count += chunk_count
+        self.duration += duration
+        return True
 
 
 def _format_active_files(active: list[ActiveFileStatus], limit: int = 3) -> str:
@@ -391,7 +407,7 @@ def _estimate_chunk_count(text: str | None, *, max_chunks: int | None) -> int:
     if token_count <= 0:
         return 1
 
-    chunks_estimate = max((token_count + 2047) // 2048, 1)
+    chunks_estimate = max((token_count + CHUNK_TOKEN_LIMIT - 1) // CHUNK_TOKEN_LIMIT, 1)
     if max_chunks and max_chunks > 0:
         chunks_estimate = min(chunks_estimate, max_chunks)
     return chunks_estimate
@@ -826,10 +842,8 @@ def _update_progress_panel(layout: Layout, snapshot: ProgressSnapshot) -> None:
 
 
 def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Group:
-    if display_limit <= 0:
-        visible = []
-    else:
-        visible = lines[-display_limit:] if lines else []
+    limit = max(display_limit, 1)
+    visible = lines[-limit:] if lines else []
     display_count = len(visible)
     if total > display_count and display_count > 0:
         header_text = f"Logs (showing last {display_count} of {total})"
@@ -845,7 +859,7 @@ def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Gr
         body_text,
         align="left",
         vertical="bottom",
-        height=max(display_limit, 1),
+        height=limit,
     )
     return Group(header, aligned_body)
 
@@ -1099,7 +1113,14 @@ def _backup_manifest() -> None:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_path = MANIFEST_BACKUP_DIR / f"manifest-{timestamp}.json.bak"
     suffix = 1
+    max_suffix_attempts = 100
     while backup_path.exists():
+        if suffix > max_suffix_attempts:
+            backup_logger.warning(
+                "Unable to determine unique manifest backup name after %d attempts",
+                max_suffix_attempts,
+            )
+            return
         backup_path = (
             MANIFEST_BACKUP_DIR / f"manifest-{timestamp}-{suffix:02d}.json.bak"
         )
@@ -1309,8 +1330,7 @@ def analysis_worker(
     while True:
         work_item = None
         correlation_id: str | None = None
-        file_chunk_count = 0
-        file_chunk_duration = 0.0
+        chunk_progress = FileChunkProgress()
 
         try:
             work_item = analysis_queue.get(timeout=1.0)
@@ -1371,17 +1391,15 @@ def analysis_worker(
                         status.tasks_total = total
 
             def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
-                nonlocal file_chunk_count, file_chunk_duration
-                if chunk_count > 0 and duration > 0:
-                    file_chunk_count += chunk_count
-                    file_chunk_duration += duration
-                    with lock:
-                        status = in_progress_files.get(correlation_id)
-                        if status:
-                            status.chunks_processed = file_chunk_count
-                            status.chunks_total = max(
-                                status.chunks_total or 0, file_chunk_count
-                            )
+                if not chunk_progress.add(chunk_count=chunk_count, duration=duration):
+                    return
+                with lock:
+                    status = in_progress_files.get(correlation_id)
+                    if status:
+                        status.chunks_processed = chunk_progress.count
+                        status.chunks_total = max(
+                            status.chunks_total or 0, chunk_progress.count
+                        )
 
             worker_logger.debug(
                 "Worker %d analyzing content from %s [%s]",
@@ -1780,8 +1798,10 @@ def analysis_worker(
                 with lock:
                     failed_files.add(correlation_id)
             finally:
-                if file_chunk_count > 0 and file_chunk_duration > 0:
-                    _record_file_chunk_metrics(file_chunk_duration, file_chunk_count)
+                if chunk_progress.duration > 0 and chunk_progress.count > 0:
+                    _record_file_chunk_metrics(
+                        chunk_progress.duration, chunk_progress.count
+                    )
                 if correlation_id is not None and not handed_to_database:
                     # For items that never made it to the database queue, ensure
                     # we release the active-file entry here; otherwise the
