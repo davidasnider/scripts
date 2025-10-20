@@ -162,6 +162,8 @@ LIVE_CONSOLE = Console()
 LOG_PANEL_RATIO = 0.5
 TOP_PANEL_ROWS = 31
 CHUNK_TOKEN_LIMIT = 2048
+SMALL_TEXT_BYTE_THRESHOLD = 3000
+MAX_BACKUP_SUFFIX_ATTEMPTS = 100
 
 
 def _calculate_log_panel_display_limit(
@@ -191,8 +193,13 @@ def _join_threads_with_timeout(
     """Join threads for up to timeout seconds, returning names still alive."""
 
     lingering: list[str] = []
+    deadline = time.monotonic() + max(timeout, 0)
     for thread in threads:
-        thread.join(timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            lingering.append(thread.name or repr(thread))
+            continue
+        thread.join(remaining)
         if thread.is_alive():
             lingering.append(thread.name or repr(thread))
     return lingering
@@ -227,7 +234,7 @@ class FileChunkProgress:
     duration: float = 0.0
 
     def add(self, *, chunk_count: int, duration: float) -> bool:
-        if chunk_count <= 0 or duration <= 0:
+        if chunk_count <= 0 or duration < 0:
             return False
         self.count += chunk_count
         self.duration += duration
@@ -400,7 +407,7 @@ def _estimate_chunk_count(text: str | None, *, max_chunks: int | None) -> int:
         return 0
 
     text_bytes = len(text.encode("utf-8"))
-    if text_bytes <= 3000:
+    if text_bytes <= SMALL_TEXT_BYTE_THRESHOLD:
         return 1
 
     token_count = count_tokens(text)
@@ -416,10 +423,10 @@ def _estimate_chunk_count(text: str | None, *, max_chunks: int | None) -> int:
 def _record_file_chunk_metrics(duration: float, chunk_count: int) -> None:
     """Persist aggregated chunk timing information for a processed file."""
 
-    if chunk_count <= 0 or duration <= 0:
+    if chunk_count <= 0 or duration < 0:
         return
 
-    per_chunk = duration / chunk_count
+    per_chunk = duration / chunk_count if duration else 0.0
     timestamp = time.time()
 
     with lock:
@@ -1113,7 +1120,7 @@ def _backup_manifest() -> None:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup_path = MANIFEST_BACKUP_DIR / f"manifest-{timestamp}.json.bak"
     suffix = 1
-    max_suffix_attempts = 100
+    max_suffix_attempts = MAX_BACKUP_SUFFIX_ATTEMPTS
     while backup_path.exists():
         if suffix > max_suffix_attempts:
             backup_logger.warning(
@@ -1360,12 +1367,29 @@ def analysis_worker(
                 )
 
             def _update_active_status(**kwargs: Any) -> None:
+                allowed_attrs = {
+                    "file_name",
+                    "stage",
+                    "current_task",
+                    "chunks_processed",
+                    "chunks_total",
+                    "tasks_completed",
+                    "tasks_total",
+                }
+                invalid = set(kwargs) - allowed_attrs
+                if invalid:
+                    worker_logger.debug(
+                        "Ignoring invalid active status fields for %s: %s",
+                        correlation_id,
+                        ", ".join(sorted(invalid)),
+                    )
                 with lock:
                     status = in_progress_files.get(correlation_id)
                     if not status:
                         return
                     for key, value in kwargs.items():
-                        setattr(status, key, value)
+                        if key in allowed_attrs:
+                            setattr(status, key, value)
 
             def _plan_chunk_usage(chunk_estimate: int) -> None:
                 if chunk_estimate <= 0:
@@ -1798,7 +1822,7 @@ def analysis_worker(
                 with lock:
                     failed_files.add(correlation_id)
             finally:
-                if chunk_progress.duration > 0 and chunk_progress.count > 0:
+                if chunk_progress.duration >= 0 and chunk_progress.count > 0:
                     _record_file_chunk_metrics(
                         chunk_progress.duration, chunk_progress.count
                     )
