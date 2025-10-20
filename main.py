@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 
 # Disable tokenizers parallelism to avoid warnings in threaded environment
@@ -243,7 +244,7 @@ def _update_active_file_status(
 ) -> None:
     """Safely merge ActiveFileStatus updates for a given correlation ID."""
 
-    invalid = set(kwargs) - ACTIVE_STATUS_FIELDS
+    invalid = [key for key in kwargs if key not in ACTIVE_STATUS_FIELDS]
     if invalid:
         logger.debug(
             "Ignoring invalid active status fields for %s: %s",
@@ -257,6 +258,21 @@ def _update_active_file_status(
         for key, value in kwargs.items():
             if key in ACTIVE_STATUS_FIELDS:
                 setattr(status, key, value)
+
+
+def _increment_active_chunks_total(
+    correlation_id: str | None, *, increment: int
+) -> None:
+    """Increase the planned chunk total for an active file, if present."""
+
+    if increment <= 0 or not correlation_id:
+        return
+    with lock:
+        status = in_progress_files.get(correlation_id)
+        if not status:
+            return
+        current_total = status.chunks_total or 0
+        status.chunks_total = current_total + increment
 
 
 @dataclass
@@ -447,7 +463,10 @@ def _estimate_chunk_count(text: str | None, *, max_chunks: int | None) -> int:
     if token_count <= 0:
         return 1
 
-    chunks_estimate = max((token_count + CHUNK_TOKEN_LIMIT - 1) // CHUNK_TOKEN_LIMIT, 1)
+    chunks_estimate = max(
+        math.ceil(token_count / CHUNK_TOKEN_LIMIT),
+        1,
+    )
     if max_chunks and max_chunks > 0:
         chunks_estimate = min(chunks_estimate, max_chunks)
     return chunks_estimate
@@ -691,8 +710,7 @@ def _render_progress_panel(snapshot: ProgressSnapshot) -> Panel:
     bar_end = min(processed, bar_total)
     bar_width = 40
     fill_ratio = bar_end / bar_total if bar_total else 0.0
-    filled_chars = int(round(fill_ratio * bar_width))
-    filled_chars = max(0, min(bar_width, filled_chars))
+    filled_chars = max(0, min(bar_width, int(round(fill_ratio * bar_width))))
     empty_chars = bar_width - filled_chars
 
     outline_top = Text("╭" + "─" * bar_width + "╮", style="magenta")
@@ -1399,16 +1417,6 @@ def analysis_worker(
                     tasks_completed=completed_tasks,
                 )
 
-            def _plan_chunk_usage(chunk_estimate: int) -> None:
-                if chunk_estimate <= 0:
-                    return
-                with lock:
-                    status = in_progress_files.get(correlation_id)
-                    if not status:
-                        return
-                    current_total = status.chunks_total or 0
-                    status.chunks_total = current_total + chunk_estimate
-
             def _refresh_task_progress() -> None:
                 completed = sum(
                     1
@@ -1495,7 +1503,9 @@ def analysis_worker(
                                     file_record.extracted_text,
                                     max_chunks=max_chunks,
                                 )
-                                _plan_chunk_usage(chunk_estimate)
+                                _increment_active_chunks_total(
+                                    correlation_id, increment=chunk_estimate
+                                )
                                 operation_start = time.time()
                                 password_result = detect_passwords(
                                     file_record.extracted_text,
@@ -1532,7 +1542,9 @@ def analysis_worker(
                                         file_record.extracted_text,
                                         max_chunks=max_chunks,
                                     )
-                                    _plan_chunk_usage(chunk_estimate)
+                                    _increment_active_chunks_total(
+                                        correlation_id, increment=chunk_estimate
+                                    )
                                     operation_start = time.time()
                                     estate_analysis_result = (
                                         analyze_estate_relevant_information(
@@ -1563,7 +1575,9 @@ def analysis_worker(
                                     file_record.extracted_text,
                                     max_chunks=max_chunks,
                                 )
-                                _plan_chunk_usage(chunk_estimate)
+                                _increment_active_chunks_total(
+                                    correlation_id, increment=chunk_estimate
+                                )
                                 operation_start = time.time()
                                 text_analysis_result = analyze_text_content(
                                     file_record.extracted_text,
@@ -1698,7 +1712,9 @@ def analysis_worker(
                                     file_record.extracted_text,
                                     max_chunks=max_chunks,
                                 )
-                                _plan_chunk_usage(chunk_estimate)
+                                _increment_active_chunks_total(
+                                    correlation_id, increment=chunk_estimate
+                                )
                                 operation_start = time.time()
                                 financial_analysis = analyze_financial_document(
                                     file_record.extracted_text,
@@ -1855,7 +1871,7 @@ def analysis_worker(
                 if correlation_id is not None and not handed_to_database:
                     # For items that never made it to the database queue, ensure
                     # we release the active-file entry here; otherwise the
-                    # database worker removes it after indexing.
+                    # database worker removes it after indexing (see database worker).
                     with lock:
                         in_progress_files.pop(correlation_id, None)
 
@@ -1996,6 +2012,8 @@ def database_worker(worker_id: int, collection: Any) -> None:
                     failed_files.add(correlation_id)
             finally:
                 with lock:
+                    # Analysis worker clears entries if enqueue fails; on success
+                    # the database worker owns final cleanup here.
                     in_progress_files.pop(correlation_id, None)
 
             database_queue.task_done()
