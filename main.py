@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 
 # Disable tokenizers parallelism to avoid warnings in threaded environment
@@ -18,10 +19,12 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from shutil import copy2
+from typing import Any, Iterable
 from xml.etree import ElementTree as ET
 
 import pandas as pd
@@ -31,6 +34,8 @@ from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text
 from typing_extensions import Annotated
 
@@ -67,6 +72,7 @@ from src.schema import (
     FileRecord,
 )
 from src.task_utils import ensure_required_tasks
+from src.text_utils import count_tokens
 
 
 class AnalysisModel(str, Enum):
@@ -88,9 +94,24 @@ class WorkItem:
     correlation_id: str
 
 
+@dataclass
+class ActiveFileStatus:
+    """Track live progress information for an in-flight file."""
+
+    file_name: str
+    stage: str
+    current_task: str | None = None
+    chunks_processed: int = 0
+    chunks_total: int | None = None
+    tasks_completed: int = 0
+    tasks_total: int = 0
+
+
 # Constants
 MANIFEST_PATH = Path("data/manifest.json")
 DB_PATH = Path("data/chromadb")
+MANIFEST_BACKUP_DIR = MANIFEST_PATH.parent / "manifest_backups"
+MANIFEST_BACKUP_LIMIT = 20
 
 TEXT_BASED_ANALYSES = {
     AnalysisName.TEXT_ANALYSIS,
@@ -104,9 +125,9 @@ MIN_ASCII_CHUNK_LENGTH = 4
 
 
 # Threading configuration
-NUM_EXTRACTION_WORKERS = 10
+NUM_EXTRACTION_WORKERS = 5
 NUM_ANALYSIS_WORKERS = (
-    3  # AI analysis remains a bottleneck; keep a few dedicated threads
+    2  # AI analysis remains a bottleneck; keep a few dedicated threads
 )
 NUM_DATABASE_WORKERS = 1
 MINIMUM_WORKER_TOTAL = 3
@@ -117,7 +138,7 @@ analysis_queue = queue.Queue()
 database_queue = queue.Queue()
 completed_files = set()
 failed_files = set()
-in_progress_files: dict[str, str] = {}
+in_progress_files: dict[str, ActiveFileStatus] = {}
 lock = threading.Lock()
 shutdown_event = threading.Event()
 _shutdown_signals_sent = threading.Event()
@@ -140,6 +161,21 @@ database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
 
 LIVE_CONSOLE = Console()
 LOG_PANEL_RATIO = 0.5
+TOP_PANEL_ROWS = 31
+CHUNK_TOKEN_LIMIT = 2048
+SMALL_TEXT_BYTE_THRESHOLD = 3000
+MAX_BACKUP_SUFFIX_ATTEMPTS = 100
+ACTIVE_STATUS_FIELDS = {
+    "file_name",
+    "stage",
+    "current_task",
+    "chunks_processed",
+    "chunks_total",
+    "tasks_completed",
+    "tasks_total",
+}
+SHUTDOWN_JOIN_TIMEOUT = 2.0
+NORMAL_JOIN_TIMEOUT = 5.0
 
 
 def _calculate_log_panel_display_limit(
@@ -163,13 +199,118 @@ def _calculate_log_panel_display_limit(
     return max(int(terminal_height * ratio) - 1, 1)
 
 
-def _format_active_files(active: list[str], limit: int = 3) -> str:
+def _join_threads_with_timeout(
+    threads: Iterable[threading.Thread], timeout: float
+) -> list[str]:
+    """Join threads for up to timeout seconds, returning names still alive."""
+
+    lingering: list[str] = []
+    deadline = time.monotonic() + max(timeout, 0)
+    for thread in threads:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            lingering.append(thread.name or repr(thread))
+            continue
+        thread.join(remaining)
+        if thread.is_alive():
+            lingering.append(thread.name or repr(thread))
+    return lingering
+
+
+@dataclass
+class ChunkMetrics:
+    """Aggregated timing information for LLM chunk processing."""
+
+    total_chunks: int = 0
+    total_duration: float = 0.0
+    file_samples: int = 0
+    recent_file_chunk_averages: deque[float] = field(
+        default_factory=lambda: deque(maxlen=20)
+    )
+    recent_file_chunk_counts: deque[int] = field(
+        default_factory=lambda: deque(maxlen=20)
+    )
+    last_file_average: float | None = None
+    last_file_chunks: int = 0
+    last_updated: float | None = None
+
+
+chunk_metrics = ChunkMetrics()
+# All reads/writes of chunk_metrics must hold `lock` to keep metrics atomic.
+
+
+def _update_active_file_status(
+    correlation_id: str, logger: logging.Logger, **kwargs: Any
+) -> None:
+    """Safely merge ActiveFileStatus updates for a given correlation ID."""
+
+    invalid = [key for key in kwargs if key not in ACTIVE_STATUS_FIELDS]
+    if invalid:
+        logger.debug(
+            "Ignoring invalid active status fields for %s: %s",
+            correlation_id,
+            ", ".join(sorted(invalid)),
+        )
+    with lock:
+        status = in_progress_files.get(correlation_id)
+        if not status:
+            return
+        for key, value in kwargs.items():
+            if key in ACTIVE_STATUS_FIELDS:
+                setattr(status, key, value)
+
+
+def _increment_active_chunks_total(
+    correlation_id: str | None, *, increment: int
+) -> None:
+    """Increase the planned chunk total for an active file, if present."""
+
+    if increment <= 0 or not correlation_id:
+        return
+    with lock:
+        status = in_progress_files.get(correlation_id)
+        if not status:
+            return
+        current_total = status.chunks_total or 0
+        status.chunks_total = current_total + increment
+
+
+@dataclass
+class FileChunkProgress:
+    """Mutable accumulator tracking per-file chunk usage."""
+
+    count: int = 0
+    duration: float = 0.0
+
+    def add(self, *, chunk_count: int, duration: float) -> bool:
+        if chunk_count <= 0 or duration < 0:
+            return False
+        self.count += chunk_count
+        self.duration += duration
+        return True
+
+
+def _format_active_files(active: list[ActiveFileStatus], limit: int = 3) -> str:
     """Build a short preview of active files for logging."""
 
     if not active:
         return ""
-    preview = ", ".join(active[:limit])
-    return preview + ("..." if len(active) > limit else "")
+    preview_parts: list[str] = []
+    for status in active[:limit]:
+        details: list[str] = [status.stage]
+        if status.current_task:
+            details.append(status.current_task)
+        chunk_status = _format_chunk_progress(status)
+        if chunk_status != "—":
+            details.append(chunk_status)
+        task_status = _format_task_progress(status)
+        if task_status != "—":
+            details.append(f"tasks {task_status}")
+        detail_text = "; ".join(details)
+        preview_parts.append(f"{status.file_name} ({detail_text})")
+    if len(active) > limit:
+        preview_parts.append("...")
+    return ", ".join(preview_parts)
 
 
 def _resolve_worker_counts(
@@ -273,49 +414,494 @@ def request_shutdown(reason: str, *, raise_interrupt: bool = False) -> None:
         threading.interrupt_main()
 
 
-def _build_live_layout() -> Layout:
-    layout = Layout()
-    bottom_units = max(int(round(LOG_PANEL_RATIO * 100)), 1)
-    top_units = max(100 - bottom_units, 1)
-    layout.split_column(
-        Layout(name="top", ratio=top_units),
-        Layout(name="bottom", ratio=bottom_units),
+@dataclass(frozen=True)
+class ChunkMetricsSnapshot:
+    """Immutable snapshot of aggregated LLM chunk timings."""
+
+    total_chunks: int
+    avg_chunk_seconds: float | None
+    recent_avg_seconds: float | None
+    avg_chunks_per_file: float | None
+    file_samples: int
+    estimated_remaining_chunks: float | None
+    estimated_remaining_seconds: float | None
+    last_file_chunks: int | None
+    last_file_avg_seconds: float | None
+    recent_chunk_counts: list[int]
+    last_updated: float | None
+
+
+@dataclass(frozen=True)
+class ProgressSnapshot:
+    """Point-in-time summary of pipeline activity for the live dashboard."""
+
+    total: int
+    completed: int
+    failed: int
+    remaining: int
+    active_files: list[ActiveFileStatus]
+    elapsed_seconds: float
+    start_timestamp: float
+    model_label: str
+    chunk_limit_label: str
+    chunk_metrics: ChunkMetricsSnapshot
+    queue_sizes: dict[str, int | None]
+    worker_counts: dict[str, int]
+
+
+def _estimate_chunk_count(text: str | None, *, max_chunks: int | None) -> int:
+    """Estimate how many LLM chunks will be processed for the given text."""
+
+    if not text:
+        return 0
+
+    text_bytes = len(text.encode("utf-8"))
+    if text_bytes <= SMALL_TEXT_BYTE_THRESHOLD:
+        return 1
+
+    token_count = count_tokens(text)
+    if token_count <= 0:
+        return 1
+
+    chunks_estimate = max(
+        math.ceil(token_count / CHUNK_TOKEN_LIMIT),
+        1,
     )
-    layout["top"].update(Panel("Initializing pipeline...", title="Progress"))
-    initial_limit = _calculate_log_panel_display_limit(LIVE_CONSOLE)
-    layout["bottom"].update(_render_logs_view([], total=0, display_limit=initial_limit))
-    return layout
+    if max_chunks and max_chunks > 0:
+        chunks_estimate = min(chunks_estimate, max_chunks)
+    return chunks_estimate
 
 
-def _update_progress_panel(
-    layout: Layout,
+def _record_file_chunk_metrics(duration: float, chunk_count: int) -> None:
+    """Persist aggregated chunk timing information for a processed file."""
+
+    if chunk_count <= 0 or duration < 0:
+        return
+
+    per_chunk = duration / chunk_count if duration else 0.0
+    timestamp = time.time()
+
+    with lock:
+        chunk_metrics.total_chunks += chunk_count
+        chunk_metrics.total_duration += duration
+        chunk_metrics.file_samples += 1
+        chunk_metrics.recent_file_chunk_averages.append(per_chunk)
+        chunk_metrics.recent_file_chunk_counts.append(chunk_count)
+        chunk_metrics.last_file_average = per_chunk
+        chunk_metrics.last_file_chunks = chunk_count
+        chunk_metrics.last_updated = timestamp
+
+
+def _get_chunk_metrics_snapshot(remaining_files: int) -> ChunkMetricsSnapshot:
+    """Return a thread-safe snapshot of current chunk timing statistics."""
+
+    with lock:
+        total_chunks = chunk_metrics.total_chunks
+        total_duration = chunk_metrics.total_duration
+        file_samples = chunk_metrics.file_samples
+        recent_avgs = list(chunk_metrics.recent_file_chunk_averages)
+        recent_counts = list(chunk_metrics.recent_file_chunk_counts)
+        last_avg = chunk_metrics.last_file_average
+        last_chunks = chunk_metrics.last_file_chunks or None
+        last_updated = chunk_metrics.last_updated
+
+    avg_chunk_seconds = total_duration / total_chunks if total_chunks > 0 else None
+    avg_chunks_per_file = total_chunks / file_samples if file_samples > 0 else None
+    recent_avg_seconds = sum(recent_avgs) / len(recent_avgs) if recent_avgs else None
+
+    estimated_remaining_chunks: float | None = None
+    estimated_remaining_seconds: float | None = None
+
+    if avg_chunks_per_file is not None:
+        estimated_remaining_chunks = avg_chunks_per_file * max(remaining_files, 0)
+    if estimated_remaining_chunks is not None and avg_chunk_seconds is not None:
+        estimated_remaining_seconds = estimated_remaining_chunks * avg_chunk_seconds
+
+    return ChunkMetricsSnapshot(
+        total_chunks=total_chunks,
+        avg_chunk_seconds=avg_chunk_seconds,
+        recent_avg_seconds=recent_avg_seconds,
+        avg_chunks_per_file=avg_chunks_per_file,
+        file_samples=file_samples,
+        estimated_remaining_chunks=estimated_remaining_chunks,
+        estimated_remaining_seconds=estimated_remaining_seconds,
+        last_file_chunks=last_chunks,
+        last_file_avg_seconds=last_avg,
+        recent_chunk_counts=recent_counts,
+        last_updated=last_updated,
+    )
+
+
+def _safe_queue_size(queue_ref: queue.Queue) -> int | None:
+    """Best-effort retrieval of a queue's size (may not be supported)."""
+
+    try:
+        return queue_ref.qsize()
+    except NotImplementedError:
+        return None
+
+
+def _format_duration(seconds: float | None) -> str:
+    """Return a human-friendly duration string."""
+
+    if seconds is None:
+        return "—"
+    remaining = int(max(seconds, 0))
+    hours, remainder = divmod(remaining, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if not parts or secs or remaining == 0:
+        parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+def _format_seconds(seconds: float | None) -> str:
+    """Format a floating-point duration in seconds."""
+
+    if seconds is None:
+        return "—"
+    return f"{seconds:.1f}s"
+
+
+def _format_rate(value: float | None, unit: str) -> str:
+    """Format a rate measurement with one decimal place."""
+
+    if value is None or value <= 0:
+        return "—"
+    if unit:
+        return f"{value:.1f} {unit}"
+    return f"{value:.1f}"
+
+
+def _format_eta(seconds: float | None) -> str:
+    """Format an ETA string that includes the absolute completion time."""
+
+    if seconds is None:
+        return "Collecting"
+    if seconds <= 0:
+        return "Any moment now"
+
+    return _format_duration(seconds)
+
+
+def _format_time_since(timestamp: float | None) -> str:
+    """Format how long ago a timestamp occurred."""
+
+    if timestamp is None:
+        return "—"
+    delta = max(time.time() - timestamp, 0.0)
+    return _format_duration(delta)
+
+
+def _collect_progress_snapshot(
     *,
+    total: int,
     completed: int,
     failed: int,
     remaining: int,
-    active: list[str],
-) -> None:
-    remaining_value = max(remaining, 0)
-    lines = [
-        f"Completed: {completed}",
-        f"Failed: {failed}",
-        f"Remaining: {remaining_value}",
+    active: list[ActiveFileStatus],
+    start_time: float,
+    model: AnalysisModel,
+    chunk_limit: int | None,
+) -> ProgressSnapshot:
+    """Gather the renderable progress snapshot for the dashboard."""
+
+    elapsed = max(time.time() - start_time, 0.0)
+    chunk_snapshot = _get_chunk_metrics_snapshot(remaining)
+    queue_sizes = {
+        "extraction": _safe_queue_size(extraction_queue),
+        "analysis": _safe_queue_size(analysis_queue),
+        "database": _safe_queue_size(database_queue),
+    }
+    worker_counts = dict(_active_worker_counts)
+
+    chunk_limit_label = str(chunk_limit) if chunk_limit is not None else "Unlimited"
+    active_snapshot = [replace(item) for item in active]
+
+    return ProgressSnapshot(
+        total=total,
+        completed=completed,
+        failed=failed,
+        remaining=remaining,
+        active_files=active_snapshot,
+        elapsed_seconds=elapsed,
+        start_timestamp=start_time,
+        model_label=model.value,
+        chunk_limit_label=chunk_limit_label,
+        chunk_metrics=chunk_snapshot,
+        queue_sizes=queue_sizes,
+        worker_counts=worker_counts,
+    )
+
+
+def _format_chunk_progress(status: ActiveFileStatus) -> str:
+    """Format chunk progress for display."""
+
+    processed = status.chunks_processed
+    total = status.chunks_total
+    if total and total > 0:
+        return f"{processed}/{total}"
+    if processed > 0:
+        return str(processed)
+    return "—"
+
+
+def _format_task_progress(status: ActiveFileStatus) -> str:
+    """Format analysis task progress for display."""
+
+    total = status.tasks_total
+    completed = status.tasks_completed
+    if total > 0:
+        return f"{completed}/{total}"
+    return "—"
+
+
+def _render_active_files_panel(active_files: list[ActiveFileStatus]) -> Panel:
+    """Render the active files section."""
+
+    table = Table(
+        expand=True,
+        show_header=True,
+        header_style="bold cyan",
+        pad_edge=False,
+    )
+    table.add_column("File", justify="left", overflow="fold")
+    table.add_column("Stage", justify="left", no_wrap=True)
+    table.add_column("Tasks", justify="left", no_wrap=True)
+    table.add_column("Task", justify="left", overflow="fold")
+    table.add_column("Chunks", justify="left")
+
+    if active_files:
+        max_display = 5
+        for status in active_files[:max_display]:
+            table.add_row(
+                status.file_name,
+                status.stage,
+                _format_task_progress(status),
+                status.current_task or "—",
+                _format_chunk_progress(status),
+            )
+        if len(active_files) > max_display:
+            table.add_row(
+                f"…and {len(active_files) - max_display} more",
+                "",
+                "",
+                "",
+                "",
+            )
+    else:
+        table.add_row("Pipeline idle", "", "", "", "")
+
+    return Panel(table, title="Active Files", border_style="yellow")
+
+
+def _render_progress_panel(snapshot: ProgressSnapshot) -> Panel:
+    """Render the rich status panel for the top section of the layout."""
+
+    processed = snapshot.completed + snapshot.failed
+    total = max(snapshot.total, processed)
+    percent_complete = (processed / total * 100) if total else 0.0
+
+    bar_total = total or 1
+    bar_end = min(processed, bar_total)
+    bar_width = 40
+    fill_ratio = bar_end / bar_total if bar_total else 0.0
+    filled_chars = max(0, min(bar_width, int(round(fill_ratio * bar_width))))
+    empty_chars = bar_width - filled_chars
+
+    outline_top = Text("╭" + "─" * bar_width + "╮", style="magenta")
+    outline_bottom = Text("╰" + "─" * bar_width + "╯", style="magenta")
+
+    def _build_fill_line() -> Text:
+        line = Text("│", style="magenta")
+        if filled_chars:
+            line.append("█" * filled_chars, style="magenta")
+        if empty_chars:
+            line.append(" " * empty_chars, style="grey30")
+        line.append("│", style="magenta")
+        return line
+
+    fill_line_top = _build_fill_line()
+    fill_line_bottom = _build_fill_line()
+    progress_details = Text(
+        f"{percent_complete:.1f}% complete • {processed}/{total} files",
+        style="bold magenta",
+    )
+    progress_column = Group(
+        outline_top,
+        fill_line_top,
+        fill_line_bottom,
+        outline_bottom,
+        progress_details,
+    )
+
+    files_per_minute = None
+    if snapshot.elapsed_seconds > 0 and processed > 0:
+        files_per_minute = processed / (snapshot.elapsed_seconds / 60)
+    summary_metrics: list[tuple[str, str]] = [
+        ("Completed", str(snapshot.completed)),
+        ("Failed", str(snapshot.failed)),
+        ("Remaining", str(max(snapshot.remaining, 0))),
+        ("Elapsed", _format_duration(snapshot.elapsed_seconds)),
+        ("Files/min", _format_rate(files_per_minute, "")),
+        ("LLM ETA", _format_eta(snapshot.chunk_metrics.estimated_remaining_seconds)),
     ]
+    if len(summary_metrics) % 2:
+        summary_metrics.append(("", ""))
 
-    if active:
-        max_preview = 3
-        lines.append("")
-        lines.append("Active files:")
-        lines.extend(active[:max_preview])
-        if len(active) > max_preview:
-            lines.append("...")
+    summary_table = Table.grid(expand=True, padding=(0, 3))
+    summary_table.add_column(justify="left", ratio=1)
+    summary_table.add_column(justify="left", ratio=1)
+    for index in range(0, len(summary_metrics), 2):
+        left_label, left_value = summary_metrics[index]
+        right_label, right_value = summary_metrics[index + 1]
+        left_cell = f"[bold]{left_label}:[/bold] {left_value}" if left_label else ""
+        right_cell = f"[bold]{right_label}:[/bold] {right_value}" if right_label else ""
+        summary_table.add_row(left_cell, right_cell)
 
-    top_body = "\n".join(lines)
-    layout["top"].update(Panel(top_body, title="Progress"))
+    progress_grid = Table.grid(expand=True, padding=(0, 2))
+    progress_grid.add_column(ratio=2)
+    progress_grid.add_column(ratio=1)
+    progress_grid.add_row(progress_column, summary_table)
+
+    llm_metrics: list[tuple[str, str]] = []
+    llm_metrics.append(("Chunks processed", str(snapshot.chunk_metrics.total_chunks)))
+    llm_metrics.append(
+        ("Avg chunk", _format_seconds(snapshot.chunk_metrics.avg_chunk_seconds))
+    )
+    llm_metrics.append(
+        ("Recent avg", _format_seconds(snapshot.chunk_metrics.recent_avg_seconds))
+    )
+    llm_metrics.append(
+        (
+            "Chunks/file",
+            _format_rate(snapshot.chunk_metrics.avg_chunks_per_file, "per file"),
+        )
+    )
+    chunk_rate_per_minute = None
+    if snapshot.chunk_metrics.avg_chunk_seconds:
+        chunk_rate_per_minute = 60 / snapshot.chunk_metrics.avg_chunk_seconds
+    llm_metrics.append(("Chunks/min", _format_rate(chunk_rate_per_minute, "per min")))
+    if snapshot.chunk_metrics.estimated_remaining_chunks is not None:
+        remaining_chunks = snapshot.chunk_metrics.estimated_remaining_chunks
+        if remaining_chunks >= 10:
+            remaining_display = f"{remaining_chunks:,.0f}"
+        else:
+            remaining_display = f"{remaining_chunks:.1f}"
+        llm_metrics.append(("Est. remaining chunks", remaining_display))
+    llm_metrics.append(("Files sampled", str(snapshot.chunk_metrics.file_samples)))
+    if snapshot.chunk_metrics.last_file_chunks:
+        last_avg = _format_seconds(snapshot.chunk_metrics.last_file_avg_seconds)
+        llm_metrics.append(
+            (
+                "Last file",
+                f"{snapshot.chunk_metrics.last_file_chunks} chunks @ {last_avg}",
+            )
+        )
+    if snapshot.chunk_metrics.recent_chunk_counts:
+        recent_counts = ", ".join(
+            str(count) for count in snapshot.chunk_metrics.recent_chunk_counts
+        )
+        llm_metrics.append(("Recent chunk counts", recent_counts))
+    llm_metrics.append(
+        ("Last update", _format_time_since(snapshot.chunk_metrics.last_updated))
+    )
+
+    if len(llm_metrics) % 2:
+        llm_metrics.append(("", ""))
+
+    llm_table = Table.grid(expand=True, padding=(0, 3))
+    llm_table.add_column(justify="left", ratio=1)
+    llm_table.add_column(justify="left", ratio=1)
+    for index in range(0, len(llm_metrics), 2):
+        left_label, left_value = llm_metrics[index]
+        right_label, right_value = llm_metrics[index + 1]
+        left_cell = f"[bold]{left_label}:[/bold] {left_value}" if left_label else ""
+        right_cell = f"[bold]{right_label}:[/bold] {right_value}" if right_label else ""
+        llm_table.add_row(left_cell, right_cell)
+    llm_panel = Panel(llm_table, title="LLM Throughput", border_style="magenta")
+
+    queue_table = Table.grid(expand=True)
+    queue_table.add_column(justify="left")
+    queue_table.add_column(justify="right")
+    for name, value in snapshot.queue_sizes.items():
+        label = f"{name.capitalize()} queue"
+        queue_table.add_row(label, "—" if value is None else str(value))
+    queue_panel = Panel(queue_table, title="Queue Depths", border_style="green")
+
+    worker_table = Table.grid(expand=True)
+    worker_table.add_column(justify="left")
+    worker_table.add_column(justify="right")
+    for name, value in snapshot.worker_counts.items():
+        worker_table.add_row(f"{name.capitalize()} workers", str(value))
+    worker_panel = Panel(worker_table, title="Workers", border_style="cyan")
+
+    status_grid = Table.grid(expand=True)
+    status_grid.add_column(ratio=1)
+    status_grid.add_column(ratio=1)
+    status_grid.add_row(queue_panel, worker_panel)
+
+    header = Table.grid(expand=True)
+    header.add_column(justify="left")
+    header.add_column(justify="right")
+    started_at = datetime.fromtimestamp(snapshot.start_timestamp).strftime("%H:%M:%S")
+    header.add_row(
+        f"[bold cyan]Model:[/bold cyan] {snapshot.model_label}",
+        f"[bold cyan]Chunk limit:[/bold cyan] {snapshot.chunk_limit_label}",
+    )
+    header.add_row(
+        f"[bold cyan]Started:[/bold cyan] {started_at}",
+        f"[bold cyan]Active:[/bold cyan] {len(snapshot.active_files)} file(s)",
+    )
+
+    body = Group(
+        header,
+        Rule(style="dim"),
+        progress_grid,
+        Rule(style="dim"),
+        llm_panel,
+        status_grid,
+    )
+
+    return Panel(body, title="Pipeline Status", border_style="blue")
+
+
+def _build_live_layout() -> Layout:
+    layout = Layout()
+    layout.split_column(
+        Layout(name="top", size=TOP_PANEL_ROWS),
+        Layout(name="bottom"),
+    )
+    layout["top"].update(
+        Panel("Initializing pipeline dashboard…", title="Pipeline Status")
+    )
+    initial_limit = _calculate_log_panel_display_limit(LIVE_CONSOLE)
+    layout["bottom"].update(_render_logs_view([], total=0, display_limit=initial_limit))
+    top_size = min(TOP_PANEL_ROWS, max(LIVE_CONSOLE.size.height - 1, 1))
+    layout["top"].size = top_size
+    return layout
+
+
+def _update_progress_panel(layout: Layout, snapshot: ProgressSnapshot) -> None:
+    """Update the top panel with the latest progress snapshot."""
+
+    active_panel = _render_active_files_panel(snapshot.active_files)
+    pipeline_panel = _render_progress_panel(snapshot)
+    layout["top"].update(Group(active_panel, pipeline_panel))
+    top_size = min(TOP_PANEL_ROWS, max(LIVE_CONSOLE.size.height - 1, 1))
+    bottom_size = max(LIVE_CONSOLE.size.height - top_size, 0)
+    layout["top"].size = top_size
+    if bottom_size > 0:
+        layout["bottom"].size = bottom_size
 
 
 def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Group:
-    visible = lines if lines else []
+    limit = max(display_limit, 1)
+    visible = lines[-limit:] if lines else []
     display_count = len(visible)
     if total > display_count and display_count > 0:
         header_text = f"Logs (showing last {display_count} of {total})"
@@ -331,7 +917,7 @@ def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Gr
         body_text,
         align="left",
         vertical="bottom",
-        height=max(display_limit, 1),
+        height=limit,
     )
     return Group(header, aligned_body)
 
@@ -569,6 +1155,64 @@ def load_manifest() -> list[FileRecord]:
         return [FileRecord.model_validate(item) for item in data]
 
 
+def _backup_manifest() -> None:
+    """Create a timestamped backup of the manifest, trimming old copies."""
+
+    if not MANIFEST_PATH.exists():
+        return
+
+    backup_logger = pipeline_logger.getChild("backup")
+    try:
+        MANIFEST_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        backup_logger.warning("Unable to create manifest backup directory: %s", exc)
+        return
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = MANIFEST_BACKUP_DIR / f"manifest-{timestamp}.json.bak"
+    suffix = 1
+    max_suffix_attempts = MAX_BACKUP_SUFFIX_ATTEMPTS
+    while backup_path.exists():
+        if suffix > max_suffix_attempts:
+            backup_logger.warning(
+                "Unable to determine unique manifest backup name after %d attempts",
+                max_suffix_attempts,
+            )
+            return
+        backup_path = (
+            MANIFEST_BACKUP_DIR / f"manifest-{timestamp}-{suffix:02d}.json.bak"
+        )
+        suffix += 1
+    try:
+        copy2(MANIFEST_PATH, backup_path)
+        backup_logger.debug("Created manifest backup at %s", backup_path)
+    except Exception as exc:
+        backup_logger.warning("Failed to create manifest backup: %s", exc)
+        return
+
+    try:
+        backup_entries: list[tuple[float, Path]] = []
+        for candidate in MANIFEST_BACKUP_DIR.glob("manifest-*.json.bak"):
+            try:
+                mtime = candidate.stat().st_mtime
+            except OSError as exc:  # pragma: no cover  # unlikely edge case
+                backup_logger.debug("Unable to stat backup %s: %s", candidate, exc)
+                continue
+            backup_entries.append((mtime, candidate))
+    except Exception as exc:
+        backup_logger.warning("Unable to enumerate manifest backups: %s", exc)
+        return
+
+    backup_entries.sort(key=lambda item: item[0], reverse=True)
+
+    for _, stale in backup_entries[MANIFEST_BACKUP_LIMIT:]:
+        try:
+            stale.unlink()
+            backup_logger.debug("Removed old manifest backup %s", stale)
+        except Exception as exc:
+            backup_logger.debug("Unable to remove backup %s: %s", stale, exc)
+
+
 def save_manifest(manifest: list[FileRecord]) -> None:
     """Save the manifest to JSON file."""
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -743,6 +1387,9 @@ def analysis_worker(
 
     while True:
         work_item = None
+        correlation_id: str | None = None
+        chunk_progress = FileChunkProgress()
+
         try:
             work_item = analysis_queue.get(timeout=1.0)
             if work_item is None:
@@ -755,10 +1402,44 @@ def analysis_worker(
             file_record = work_item.file_record
             correlation_id = work_item.correlation_id
 
+            display_name = file_record.file_name or Path(file_record.file_path).name
+            total_tasks = len(file_record.analysis_tasks)
+            completed_tasks = sum(
+                1
+                for task in file_record.analysis_tasks
+                if task.status == AnalysisStatus.COMPLETE
+            )
             with lock:
-                in_progress_files[correlation_id] = (
-                    file_record.file_name or Path(file_record.file_path).name
+                in_progress_files[correlation_id] = ActiveFileStatus(
+                    file_name=display_name,
+                    stage="Analyzing",
+                    tasks_total=total_tasks,
+                    tasks_completed=completed_tasks,
                 )
+
+            def _refresh_task_progress() -> None:
+                completed = sum(
+                    1
+                    for task in file_record.analysis_tasks
+                    if task.status == AnalysisStatus.COMPLETE
+                )
+                total = len(file_record.analysis_tasks)
+                with lock:
+                    status = in_progress_files.get(correlation_id)
+                    if status:
+                        status.tasks_completed = completed
+                        status.tasks_total = total
+
+            def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
+                if not chunk_progress.add(chunk_count=chunk_count, duration=duration):
+                    return
+                with lock:
+                    status = in_progress_files.get(correlation_id)
+                    if status:
+                        status.chunks_processed = chunk_progress.count
+                        status.chunks_total = max(
+                            status.chunks_total or 0, chunk_progress.count
+                        )
 
             worker_logger.debug(
                 "Worker %d analyzing content from %s [%s]",
@@ -766,10 +1447,18 @@ def analysis_worker(
                 file_record.file_path,
                 correlation_id,
             )
+            _update_active_file_status(
+                correlation_id, worker_logger, current_task="Preparing tasks"
+            )
+            _refresh_task_progress()
+
+            handed_to_database = (
+                False  # analysis worker cleans up only if enqueue fails
+            )
 
             try:
                 _check_for_shutdown()
-                stage_start = time.time()
+                analysis_start = time.time()
 
                 text_analysis_result: dict[str, Any] | None = None
                 estate_analysis_result: dict[str, Any] | None = None
@@ -781,6 +1470,14 @@ def analysis_worker(
                         continue
                     if model != AnalysisModel.ALL and task.name.value != model.value:
                         continue
+
+                    task_label = task.name.value.replace("_", " ").title()
+                    _update_active_file_status(
+                        correlation_id,
+                        worker_logger,
+                        stage="Analyzing",
+                        current_task=task_label,
+                    )
 
                     try:
                         if task.name in TEXT_BASED_ANALYSES:
@@ -797,16 +1494,27 @@ def analysis_worker(
                                     file_record.file_path,
                                 )
                                 task.status = AnalysisStatus.COMPLETE
+                                _refresh_task_progress()
                                 continue
 
                             if task.name == AnalysisName.PASSWORD_DETECTION:
                                 _check_for_shutdown()
+                                chunk_estimate = _estimate_chunk_count(
+                                    file_record.extracted_text,
+                                    max_chunks=max_chunks,
+                                )
+                                _increment_active_chunks_total(
+                                    correlation_id, increment=chunk_estimate
+                                )
+                                operation_start = time.time()
                                 password_result = detect_passwords(
                                     file_record.extracted_text,
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
                                 )
+                                duration = time.time() - operation_start
+                                _track_chunk_metrics(duration, chunk_estimate)
                                 file_record.contains_password = password_result.get(
                                     "contains_password"
                                 )
@@ -825,10 +1533,19 @@ def analysis_worker(
                                         file_record.file_path,
                                     )
                                 task.status = AnalysisStatus.COMPLETE
+                                _refresh_task_progress()
                                 continue
                             if task.name == AnalysisName.ESTATE_ANALYSIS:
                                 if estate_analysis_result is None:
                                     _check_for_shutdown()
+                                    chunk_estimate = _estimate_chunk_count(
+                                        file_record.extracted_text,
+                                        max_chunks=max_chunks,
+                                    )
+                                    _increment_active_chunks_total(
+                                        correlation_id, increment=chunk_estimate
+                                    )
+                                    operation_start = time.time()
                                     estate_analysis_result = (
                                         analyze_estate_relevant_information(
                                             file_record.extracted_text,
@@ -837,6 +1554,8 @@ def analysis_worker(
                                             max_chunks=max_chunks,
                                         )
                                     )
+                                    duration = time.time() - operation_start
+                                    _track_chunk_metrics(duration, chunk_estimate)
                                 file_record.estate_information = (
                                     estate_analysis_result.get("estate_information", {})
                                 )
@@ -847,16 +1566,27 @@ def analysis_worker(
                                     has_flag = bool(file_record.estate_information)
                                 file_record.has_estate_relevant_info = bool(has_flag)
                                 task.status = AnalysisStatus.COMPLETE
+                                _refresh_task_progress()
                                 continue
 
                             if text_analysis_result is None:
                                 _check_for_shutdown()
+                                chunk_estimate = _estimate_chunk_count(
+                                    file_record.extracted_text,
+                                    max_chunks=max_chunks,
+                                )
+                                _increment_active_chunks_total(
+                                    correlation_id, increment=chunk_estimate
+                                )
+                                operation_start = time.time()
                                 text_analysis_result = analyze_text_content(
                                     file_record.extracted_text,
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
                                 )
+                                duration = time.time() - operation_start
+                                _track_chunk_metrics(duration, chunk_estimate)
                             if task.name == AnalysisName.TEXT_ANALYSIS:
                                 file_record.summary = text_analysis_result.get(
                                     "summary"
@@ -866,6 +1596,7 @@ def analysis_worker(
                                     "mentioned_people", []
                                 )
                             task.status = AnalysisStatus.COMPLETE
+                            _refresh_task_progress()
                             continue
                         elif task.name == AnalysisName.IMAGE_DESCRIPTION:
                             if file_record.mime_type.startswith("image/"):
@@ -977,12 +1708,22 @@ def analysis_worker(
                                     or Path(file_record.file_path).name
                                 )
                                 _check_for_shutdown()
+                                chunk_estimate = _estimate_chunk_count(
+                                    file_record.extracted_text,
+                                    max_chunks=max_chunks,
+                                )
+                                _increment_active_chunks_total(
+                                    correlation_id, increment=chunk_estimate
+                                )
+                                operation_start = time.time()
                                 financial_analysis = analyze_financial_document(
                                     file_record.extracted_text,
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
                                 )
+                                duration = time.time() - operation_start
+                                _track_chunk_metrics(duration, chunk_estimate)
                                 file_record.summary = financial_analysis.get("summary")
                                 file_record.potential_red_flags = (
                                     financial_analysis.get("potential_red_flags")
@@ -1026,6 +1767,7 @@ def analysis_worker(
                                 )
 
                         task.status = AnalysisStatus.COMPLETE
+                        _refresh_task_progress()
 
                     except ShutdownRequested:
                         raise
@@ -1038,10 +1780,18 @@ def analysis_worker(
                         )
                         task.status = AnalysisStatus.ERROR
                         task.error_message = str(e)
+                        _refresh_task_progress()
 
                 _check_for_shutdown()
                 database_item = WorkItem(file_record, correlation_id)
                 database_queue.put(database_item)
+                handed_to_database = True
+                _update_active_file_status(
+                    correlation_id,
+                    worker_logger,
+                    stage="Database",
+                    current_task="Writing results",
+                )
 
                 completed_tasks = sum(
                     task.status == AnalysisStatus.COMPLETE
@@ -1055,7 +1805,7 @@ def analysis_worker(
                     task.status == AnalysisStatus.PENDING
                     for task in file_record.analysis_tasks
                 )
-                analysis_duration = time.time() - stage_start
+                analysis_duration = time.time() - analysis_start
 
                 worker_logger.info(
                     "Analysis complete for %s [%s] in %.2fs "
@@ -1082,6 +1832,9 @@ def analysis_worker(
                     file_record.file_path,
                     correlation_id,
                 )
+                _update_active_file_status(
+                    correlation_id, worker_logger, stage="Cancelled", current_task=None
+                )
                 file_record.status = FAILED
                 log_unprocessed_file(
                     file_record.file_path,
@@ -1099,6 +1852,9 @@ def analysis_worker(
                     correlation_id,
                     e,
                 )
+                _update_active_file_status(
+                    correlation_id, worker_logger, stage="Error", current_task=None
+                )
                 log_unprocessed_file(
                     file_record.file_path,
                     file_record.mime_type,
@@ -1108,8 +1864,16 @@ def analysis_worker(
                 with lock:
                     failed_files.add(correlation_id)
             finally:
-                with lock:
-                    in_progress_files.pop(correlation_id, None)
+                if chunk_progress.duration >= 0 and chunk_progress.count > 0:
+                    _record_file_chunk_metrics(
+                        chunk_progress.duration, chunk_progress.count
+                    )
+                if correlation_id is not None and not handed_to_database:
+                    # For items that never made it to the database queue, ensure
+                    # we release the active-file entry here; otherwise the
+                    # database worker removes it after indexing (see database worker).
+                    with lock:
+                        in_progress_files.pop(correlation_id, None)
 
             analysis_queue.task_done()
 
@@ -1148,6 +1912,11 @@ def database_worker(worker_id: int, collection: Any) -> None:
                 file_record.file_path,
                 correlation_id,
             )
+            with lock:
+                status = in_progress_files.get(correlation_id)
+                if status:
+                    status.stage = "Database"
+                    status.current_task = "Indexing"
 
             try:
                 _check_for_shutdown()
@@ -1241,6 +2010,11 @@ def database_worker(worker_id: int, collection: Any) -> None:
                 )
                 with lock:
                     failed_files.add(correlation_id)
+            finally:
+                with lock:
+                    # Analysis worker clears entries if enqueue fails; on success
+                    # the database worker owns final cleanup here.
+                    in_progress_files.pop(correlation_id, None)
 
             database_queue.task_done()
 
@@ -1368,6 +2142,7 @@ def main(
     sys.stderr = MuPDFErrorFilter(sys.stderr)
     run_logger = pipeline_logger.getChild("run")
     run_logger.info("Starting threaded file catalog pipeline...")
+    _backup_manifest()
 
     (
         extraction_workers,
@@ -1663,13 +2438,18 @@ def main(
     run_logger.info("Queued %d pending files for processing", pending_files)
 
     layout = _build_live_layout()
-    _update_progress_panel(
-        layout,
+    start_time = time.time()
+    initial_snapshot = _collect_progress_snapshot(
+        total=pending_files,
         completed=len(completed_files),
         failed=len(failed_files),
         remaining=pending_files,
         active=[],
+        start_time=start_time,
+        model=model,
+        chunk_limit=max_chunk_limit,
     )
+    _update_progress_panel(layout, initial_snapshot)
 
     root_logger = logging.getLogger()
     log_handler = LiveLogHandler(layout, LIVE_CONSOLE)
@@ -1686,7 +2466,6 @@ def main(
         log_handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
     root_logger.addHandler(log_handler)
 
-    start_time = time.time()
     last_progress_time = start_time
     try:
 
@@ -1697,13 +2476,17 @@ def main(
                 active_files = list(in_progress_files.values())
 
             initial_remaining = pending_files - (completed_count + failed_count)
-            _update_progress_panel(
-                layout,
+            snapshot = _collect_progress_snapshot(
+                total=pending_files,
                 completed=completed_count,
                 failed=failed_count,
                 remaining=initial_remaining,
                 active=active_files,
+                start_time=start_time,
+                model=model,
+                chunk_limit=max_chunk_limit,
             )
+            _update_progress_panel(layout, snapshot)
 
             while pending_files > 0 and not shutdown_event.is_set():
                 with lock:
@@ -1714,13 +2497,17 @@ def main(
                 processed_count = completed_count + failed_count
                 remaining = pending_files - processed_count
 
-                _update_progress_panel(
-                    layout,
+                snapshot = _collect_progress_snapshot(
+                    total=pending_files,
                     completed=completed_count,
                     failed=failed_count,
                     remaining=remaining,
                     active=active_files,
+                    start_time=start_time,
+                    model=model,
+                    chunk_limit=max_chunk_limit,
                 )
+                _update_progress_panel(layout, snapshot)
 
                 if shutdown_event.is_set():
                     break
@@ -1797,13 +2584,17 @@ def main(
                     pending_files - (final_completed + final_failed), 0
                 )
 
-            _update_progress_panel(
-                layout,
+            final_snapshot = _collect_progress_snapshot(
+                total=pending_files,
                 completed=final_completed,
                 failed=final_failed,
                 remaining=remaining_after,
                 active=[],
+                start_time=start_time,
+                model=model,
+                chunk_limit=max_chunk_limit,
             )
+            _update_progress_panel(layout, final_snapshot)
 
     except KeyboardInterrupt:
         run_logger.info("Keyboard interrupt received; cancelling current work...")
@@ -1819,19 +2610,39 @@ def main(
         if log_handler in root_logger.handlers:
             root_logger.removeHandler(log_handler)
 
-    run_logger.info("Waiting for all work to complete...")
-    extraction_queue.join()
-    analysis_queue.join()
-    database_queue.join()
+    if shutdown_event.is_set():
+        run_logger.info(
+            "Shutdown requested before completion; skipping remaining queue drains."
+        )
+        lingering_threads = _join_threads_with_timeout(
+            threads, timeout=SHUTDOWN_JOIN_TIMEOUT
+        )
+        if lingering_threads:
+            run_logger.warning(
+                "Shutdown timeout reached; threads still running: %s",
+                ", ".join(lingering_threads),
+            )
+        save_manifest(full_manifest)
+    else:
+        run_logger.info("Waiting for all work to complete...")
+        extraction_queue.join()
+        analysis_queue.join()
+        database_queue.join()
 
-    run_logger.debug("Sending shutdown signals to workers...")
-    dispatch_shutdown_to_workers()
+        run_logger.debug("Sending shutdown signals to workers...")
+        dispatch_shutdown_to_workers()
 
-    run_logger.debug("Waiting for worker threads to stop...")
-    for thread in threads:
-        thread.join(timeout=5)
+        run_logger.debug("Waiting for worker threads to stop...")
+        lingering_threads = _join_threads_with_timeout(
+            threads, timeout=NORMAL_JOIN_TIMEOUT
+        )
+        if lingering_threads:
+            run_logger.warning(
+                "Threads still running after shutdown: %s",
+                ", ".join(lingering_threads),
+            )
 
-    save_manifest(full_manifest)
+        save_manifest(full_manifest)
 
     elapsed_time = time.time() - start_time
     with lock:

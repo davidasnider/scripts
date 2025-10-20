@@ -54,3 +54,8 @@ def chunk_text(text: str, max_tokens: int = 256) -> list[str]:
 
     logger.debug("Split text into %d chunks.", len(chunks))
     return chunks
+
+
+def count_tokens(text: str) -> int:
+    """Return the number of tokens for the provided text."""
+    return len(tokenizer.encode(text, add_special_tokens=False))
