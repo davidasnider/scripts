@@ -164,6 +164,17 @@ TOP_PANEL_ROWS = 31
 CHUNK_TOKEN_LIMIT = 2048
 SMALL_TEXT_BYTE_THRESHOLD = 3000
 MAX_BACKUP_SUFFIX_ATTEMPTS = 100
+ACTIVE_STATUS_FIELDS = {
+    "file_name",
+    "stage",
+    "current_task",
+    "chunks_processed",
+    "chunks_total",
+    "tasks_completed",
+    "tasks_total",
+}
+SHUTDOWN_JOIN_TIMEOUT = 2.0
+NORMAL_JOIN_TIMEOUT = 5.0
 
 
 def _calculate_log_panel_display_limit(
@@ -224,6 +235,28 @@ class ChunkMetrics:
 
 
 chunk_metrics = ChunkMetrics()
+# All reads/writes of chunk_metrics must hold `lock` to keep metrics atomic.
+
+
+def _update_active_file_status(
+    correlation_id: str, logger: logging.Logger, **kwargs: Any
+) -> None:
+    """Safely merge ActiveFileStatus updates for a given correlation ID."""
+
+    invalid = set(kwargs) - ACTIVE_STATUS_FIELDS
+    if invalid:
+        logger.debug(
+            "Ignoring invalid active status fields for %s: %s",
+            correlation_id,
+            ", ".join(sorted(invalid)),
+        )
+    with lock:
+        status = in_progress_files.get(correlation_id)
+        if not status:
+            return
+        for key, value in kwargs.items():
+            if key in ACTIVE_STATUS_FIELDS:
+                setattr(status, key, value)
 
 
 @dataclass
@@ -1366,31 +1399,6 @@ def analysis_worker(
                     tasks_completed=completed_tasks,
                 )
 
-            def _update_active_status(**kwargs: Any) -> None:
-                allowed_attrs = {
-                    "file_name",
-                    "stage",
-                    "current_task",
-                    "chunks_processed",
-                    "chunks_total",
-                    "tasks_completed",
-                    "tasks_total",
-                }
-                invalid = set(kwargs) - allowed_attrs
-                if invalid:
-                    worker_logger.debug(
-                        "Ignoring invalid active status fields for %s: %s",
-                        correlation_id,
-                        ", ".join(sorted(invalid)),
-                    )
-                with lock:
-                    status = in_progress_files.get(correlation_id)
-                    if not status:
-                        return
-                    for key, value in kwargs.items():
-                        if key in allowed_attrs:
-                            setattr(status, key, value)
-
             def _plan_chunk_usage(chunk_estimate: int) -> None:
                 if chunk_estimate <= 0:
                     return
@@ -1431,10 +1439,14 @@ def analysis_worker(
                 file_record.file_path,
                 correlation_id,
             )
-            _update_active_status(current_task="Preparing tasks")
+            _update_active_file_status(
+                correlation_id, worker_logger, current_task="Preparing tasks"
+            )
             _refresh_task_progress()
 
-            handed_to_database = False  # database worker owns cleanup after enqueue
+            handed_to_database = (
+                False  # analysis worker cleans up only if enqueue fails
+            )
 
             try:
                 _check_for_shutdown()
@@ -1452,7 +1464,12 @@ def analysis_worker(
                         continue
 
                     task_label = task.name.value.replace("_", " ").title()
-                    _update_active_status(stage="Analyzing", current_task=task_label)
+                    _update_active_file_status(
+                        correlation_id,
+                        worker_logger,
+                        stage="Analyzing",
+                        current_task=task_label,
+                    )
 
                     try:
                         if task.name in TEXT_BASED_ANALYSES:
@@ -1753,7 +1770,12 @@ def analysis_worker(
                 database_item = WorkItem(file_record, correlation_id)
                 database_queue.put(database_item)
                 handed_to_database = True
-                _update_active_status(stage="Database", current_task="Writing results")
+                _update_active_file_status(
+                    correlation_id,
+                    worker_logger,
+                    stage="Database",
+                    current_task="Writing results",
+                )
 
                 completed_tasks = sum(
                     task.status == AnalysisStatus.COMPLETE
@@ -1794,7 +1816,9 @@ def analysis_worker(
                     file_record.file_path,
                     correlation_id,
                 )
-                _update_active_status(stage="Cancelled", current_task=None)
+                _update_active_file_status(
+                    correlation_id, worker_logger, stage="Cancelled", current_task=None
+                )
                 file_record.status = FAILED
                 log_unprocessed_file(
                     file_record.file_path,
@@ -1812,7 +1836,9 @@ def analysis_worker(
                     correlation_id,
                     e,
                 )
-                _update_active_status(stage="Error", current_task=None)
+                _update_active_file_status(
+                    correlation_id, worker_logger, stage="Error", current_task=None
+                )
                 log_unprocessed_file(
                     file_record.file_path,
                     file_record.mime_type,
@@ -2570,7 +2596,9 @@ def main(
         run_logger.info(
             "Shutdown requested before completion; skipping remaining queue drains."
         )
-        lingering_threads = _join_threads_with_timeout(threads, timeout=2)
+        lingering_threads = _join_threads_with_timeout(
+            threads, timeout=SHUTDOWN_JOIN_TIMEOUT
+        )
         if lingering_threads:
             run_logger.warning(
                 "Shutdown timeout reached; threads still running: %s",
@@ -2587,7 +2615,9 @@ def main(
         dispatch_shutdown_to_workers()
 
         run_logger.debug("Waiting for worker threads to stop...")
-        lingering_threads = _join_threads_with_timeout(threads, timeout=5)
+        lingering_threads = _join_threads_with_timeout(
+            threads, timeout=NORMAL_JOIN_TIMEOUT
+        )
         if lingering_threads:
             run_logger.warning(
                 "Threads still running after shutdown: %s",
