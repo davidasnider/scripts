@@ -170,6 +170,9 @@ ESTATE_PLACEHOLDER_VALUES = {
 }
 
 ESTATE_MIN_FIELDS_PER_ENTRY = 2  # Require "item" plus at least one supporting field.
+ESTATE_SKIP_BARE_STRING_LOG = (
+    "Skipping estate entry emitted as bare string; expected structured object."
+)
 
 
 ESTATE_ANALYSIS_INSTRUCTIONS = (
@@ -1006,6 +1009,7 @@ def detect_passwords(
     any_passwords = False
     json_failure_streak = 0
     chunk_durations: list[float] = []
+    fallback_logged = False
     if chunk_count:
         logger.info(
             "Password detection processing %d chunk(s) for %s",
@@ -1040,7 +1044,7 @@ def detect_passwords(
         _baseline, timeout_limit = _compute_dynamic_timeout(chunk_durations)
         use_fallback_only = json_failure_streak >= PASSWORD_DETECTOR_MAX_JSON_FAILURES
         if use_fallback_only:
-            if json_failure_streak == PASSWORD_DETECTOR_MAX_JSON_FAILURES:
+            if not fallback_logged:
                 logger.info(
                     (
                         "Password detection fallback engaged after %d consecutive JSON "
@@ -1048,6 +1052,7 @@ def detect_passwords(
                     ),
                     json_failure_streak,
                 )
+                fallback_logged = True
             fallback_passwords = _fallback_detect_secrets(chunk)
             if fallback_passwords:
                 any_passwords = True
@@ -1236,10 +1241,7 @@ def _normalize_estate_response(
         cleaned_entries: list[dict[str, Any]] = []
         for item in value:
             if isinstance(item, str):
-                logger.debug(
-                    "Skipping estate entry emitted as bare string; expected "
-                    "structured object."
-                )
+                logger.debug(ESTATE_SKIP_BARE_STRING_LOG)
                 continue
             if not isinstance(item, dict):
                 logger.debug(
