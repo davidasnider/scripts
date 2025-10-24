@@ -85,6 +85,7 @@ def configure_logging(
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("transformers").setLevel(logging.ERROR)
     logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
+    logging.getLogger("access_parser").setLevel(logging.INFO)
 
 
 __all__ = ["configure_logging"]

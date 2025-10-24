@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 import threading
 import warnings
-from pathlib import Path
 from typing import Any
 
 import torch
-import yaml
 from PIL import Image, UnidentifiedImageError
 from transformers import pipeline
+
+from src.config_utils import get_model_config, load_config
 
 # Suppress transformers warnings before importing
 warnings.filterwarnings("ignore", message=".*use_fast.*")
@@ -25,8 +25,7 @@ _PIPELINE_INSTANCE = None
 
 
 def _load_config() -> dict[str, Any]:
-    with Path("config.yaml").open("r") as handle:
-        return yaml.safe_load(handle)
+    return load_config()
 
 
 def _pipeline_device() -> tuple[Any, dict[str, Any]]:
@@ -53,10 +52,12 @@ def _get_pipeline():
         if _PIPELINE_INSTANCE is not None:
             return _PIPELINE_INSTANCE
         config = _load_config()
+        models_config = config.get("models", {})
+        nsfw_config = get_model_config(models_config, "nsfw_detector")
         device, model_kwargs = _pipeline_device()
         _PIPELINE_INSTANCE = pipeline(
             "image-classification",
-            model=config["models"]["nsfw_detector"],
+            model=nsfw_config["name"],
             device=device,
             model_kwargs=model_kwargs,
         )
