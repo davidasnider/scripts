@@ -1430,7 +1430,6 @@ def analysis_worker(
                 _update_chunk_progress(
                     correlation_id, processed=processed, total=total
                 )
-
             def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
                 chunk_progress.add(chunk_count=chunk_count, duration=duration)
 
