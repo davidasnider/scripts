@@ -1051,10 +1051,12 @@ class LiveLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         raw_message = record.getMessage()
         if raw_message:
-            try:
-                _apply_chunk_progress_from_log(raw_message)
-            except Exception:  # pragma: no cover - defensive; avoid logging loops
-                pass
+            lowered = raw_message.lower()
+            if " chunk " in lowered and " remaining" in lowered:
+                try:
+                    _apply_chunk_progress_from_log(raw_message)
+                except Exception:  # pragma: no cover - defensive; avoid logging loops
+                    pass
 
         try:
             message = self.format(record)
