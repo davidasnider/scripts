@@ -1424,6 +1424,7 @@ def analysis_worker(
                     if status:
                         status.tasks_completed = completed
                         status.tasks_total = total
+
             def _on_chunk_progress(processed: int, total: int) -> None:
                 """Update both detailed metrics and the active file display."""
                 _update_chunk_progress(
