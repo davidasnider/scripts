@@ -148,22 +148,30 @@ ESTATE_CATEGORY_KEYS = [
 
 
 ESTATE_ANALYSIS_INSTRUCTIONS = (
-    "You are an assistant helping loved ones settle a deceased person's affairs. "
-    "Review the supplied text and capture only information that would help an "
-    "executor or family member locate important assets, instructions, or "
-    "accounts.\n\n"
+    "You are an assistant triaging documents to help loved ones settle a "
+    "deceased person's estate. Review the supplied text and record details "
+    "only when the passage explicitly mentions something an executor could act "
+    "on: legal directives (wills, trusts, POA), financial or insurance "
+    "accounts, titled property, debts to resolve, medical directives, digital "
+    "logins, or instructions on where to find records.\n\n"
+    "Ignore personal narratives, biographies, hobbies, memberships, awards, "
+    "and generic life history unless the text clearly ties them to a legal, "
+    "financial, or administrative obligation. Do not infer assets—cite only "
+    "information that is stated or quoted from the text. Never copy the "
+    "example output or invent placeholders.\n\n"
     "Return a JSON object. Use only these top-level keys when relevant: "
     f"{', '.join(ESTATE_CATEGORY_KEYS)}.\n"
-    "Each present key must map to an array of objects. For each item include:\n"
-    '  - "item": a concise label for the information (e.g., "Living Will", '
-    '"Chase savings account").\n'
-    '  - "why_it_matters": a short phrase on why the detail helps wrap up '
-    "affairs.\n"
-    '  - "details": the critical facts pulled from the text such as account '
-    "numbers, custodian names, login hints, storage locations, or instructions.\n"
-    'Add optional keys like "location", "contact", or "reference" when the '
-    "text supplies them. Do not fabricate information and omit categories that "
-    "have no findings. If nothing is relevant return an empty JSON object {}.\n"
+    "Each present key must map to an array of objects. For every entry include:\n"
+    '  - "item": a concise label (e.g., "Living Will", "Chase savings account").\n'
+    '  - "why_it_matters": how this helps settle the estate.\n'
+    '  - "details": the exact facts or faithful paraphrase from the text such as '
+    "institution names, account numbers, storage locations, instructions, or "
+    "contact details.\n"
+    'Add optional keys like "location", "contact", or "reference" when the text '
+    "supplies them. Skip any entry if you cannot provide meaningful text for "
+    '"item", "why_it_matters", and "details"; never output filler strings like '
+    '"details", "unknown", "N/A", or "none". If the passage lacks actionable '
+    "estate information, return an empty JSON object {}.\n"
     "Respond only with raw JSON (no code fences)."
 )
 
@@ -173,11 +181,18 @@ def _build_estate_single_prompt(text: str) -> str:
         f"{ESTATE_ANALYSIS_INSTRUCTIONS}\n\n"
         "Example response:\n"
         "{\n"
+        '  "Legal": [\n'
+        "    {\n"
+        '      "item": "Last will and testament",\n'
+        '      "why_it_matters": "Names executor and divides property",\n'
+        '      "details": "Stored in the safe at 123 Main St., combination 1965"\n'
+        "    }\n"
+        "  ],\n"
         '  "Financial": [\n'
         "    {\n"
-        '      "item": "Checking account",\n'
+        '      "item": "Chase savings account",\n'
         '      "why_it_matters": "Funds available for estate expenses",\n'
-        '      "details": "Bank of Springfield, account ending 1234"\n'
+        '      "details": "Account ending 1234, branch on 5th Ave"\n'
         "    }\n"
         "  ]\n"
         "}\n\n"
@@ -953,15 +968,62 @@ def _normalize_estate_response(
         cleaned_entries: list[dict[str, Any]] = []
         for item in value:
             if isinstance(item, dict):
-                cleaned_entries.append(
-                    {
-                        str(entry_key): entry_value
-                        for entry_key, entry_value in item.items()
-                        if isinstance(entry_key, str)
+                cleaned_entry: dict[str, Any] = {}
+                for entry_key, entry_value in item.items():
+                    if not isinstance(entry_key, str):
+                        continue
+                    if isinstance(entry_value, str):
+                        stripped = entry_value.strip()
+                        if stripped:
+                            cleaned_entry[entry_key] = stripped
+                    elif entry_value is not None:
+                        cleaned_entry[entry_key] = entry_value
+                if cleaned_entry:
+                    placeholder_values = {
+                        "",
+                        "details",
+                        "detail",
+                        "unknown",
+                        "n/a",
+                        "na",
+                        "none",
+                        "placeholder",
                     }
-                )
+                    item_value = cleaned_entry.get("item")
+                    if not isinstance(item_value, str):
+                        continue
+                    item_trimmed = item_value.strip()
+                    if not item_trimmed or item_trimmed.lower() in placeholder_values:
+                        continue
+                    cleaned_entry["item"] = item_trimmed
+
+                    # Remove placeholder text from other string fields.
+                    keys_to_prune: list[str] = []
+                    for entry_key, entry_value in cleaned_entry.items():
+                        if entry_key == "item":
+                            continue
+                        if isinstance(entry_value, str):
+                            trimmed_value = entry_value.strip()
+                            if (
+                                not trimmed_value
+                                or trimmed_value.lower() in placeholder_values
+                            ):
+                                keys_to_prune.append(entry_key)
+                            else:
+                                cleaned_entry[entry_key] = trimmed_value
+                        elif entry_value is None:
+                            keys_to_prune.append(entry_key)
+                    for key_to_remove in keys_to_prune:
+                        cleaned_entry.pop(key_to_remove, None)
+
+                    if len(cleaned_entry) <= 1:
+                        # Require at least one supporting field besides "item".
+                        continue
+
+                    cleaned_entries.append(cleaned_entry)
             elif isinstance(item, str):
-                cleaned_entries.append({"details": item})
+                # Skip bare strings; estate entries must be structured objects.
+                continue
         if cleaned_entries:
             normalized[key] = cleaned_entries
 
