@@ -44,7 +44,11 @@ def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
 
 def test_detect_passwords_returns_default_for_empty_text():
     """Empty or whitespace-only text should yield a negative password result."""
-    assert detect_passwords("   ") == {"contains_password": False, "passwords": {}}
+    assert detect_passwords("   ") == {
+        "contains_password": False,
+        "passwords": {},
+        "_chunk_count": 0,
+    }
 
 
 @patch("src.ai_analyzer.ollama.chat")
@@ -66,6 +70,7 @@ def test_detect_passwords_single_chunk(mock_ollama_chat):
 
     assert result["contains_password"] is True
     assert result["passwords"] == {"admin_password": "s3cr3t!"}
+    assert result["_chunk_count"] == 1
     mock_ollama_chat.assert_called_once()
 
 
@@ -98,6 +103,7 @@ def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_
         "admin_2": "secret2",
         "backup": "b@ckup",
     }
+    assert result["_chunk_count"] == 2
     assert mock_ollama_chat.call_count == 2
 
 
@@ -118,6 +124,7 @@ def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
 
     assert result["summary"] == "Final summary"
     assert result["mentioned_people"] == ["Alice"]
+    assert result["_chunk_count"] == 2
     assert mock_chat.call_count == 3
 
 
@@ -148,6 +155,7 @@ def test_detect_passwords_respects_max_chunks(mock_chat, _mock_chunk):
 
     assert result["contains_password"] is True
     assert result["passwords"] == {"pwd": "123", "pwd_2": "456"}
+    assert result["_chunk_count"] == 2
     assert mock_chat.call_count == 2
 
 
@@ -179,4 +187,5 @@ def test_analyze_financial_document_respects_max_chunks(mock_chat, _mock_chunk):
     assert set(result["incriminating_items"]) == {"cash"}
     # Average of chunk scores remains 80
     assert result["confidence_score"] == 80
+    assert result["_chunk_count"] == 2
     assert mock_chat.call_count == 3

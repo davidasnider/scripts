@@ -36,6 +36,7 @@ def test_analyze_estate_single_chunk_extracts_information():
     assert result["has_estate_relevant_info"] is True
     assert "Legal" in result["estate_information"]
     assert result["estate_information"]["Legal"][0]["item"] == "Last Will and Testament"
+    assert result["_chunk_count"] == 1
     mock_chat.assert_called_once()
 
 
@@ -81,6 +82,7 @@ def test_analyze_estate_multi_chunk_merges_results():
     assert "Digital" in result["estate_information"]
     assert len(result["estate_information"]["Financial"]) == 1
     assert len(result["estate_information"]["Digital"]) == 1
+    assert result["_chunk_count"] == 2
     assert mock_chat.call_count == 2
 
 
@@ -96,3 +98,4 @@ def test_analyze_estate_returns_default_on_llm_failure():
 
     assert result["has_estate_relevant_info"] is False
     assert result["estate_information"] == {}
+    assert result["_chunk_count"] == 0

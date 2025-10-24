@@ -432,6 +432,7 @@ class ChunkMetricsSnapshot:
     last_file_avg_seconds: float | None
     recent_chunk_counts: list[int]
     last_updated: float | None
+    timeout_p75: float | None
 
 
 @dataclass(frozen=True)
@@ -473,6 +474,14 @@ def _estimate_chunk_count(text: str | None, *, max_chunks: int | None) -> int:
     if max_chunks and max_chunks > 0:
         chunks_estimate = min(chunks_estimate, max_chunks)
     return chunks_estimate
+
+
+def _resolve_chunk_metric(actual_chunks: Any, chunk_estimate: int) -> int:
+    """Prefer a reported chunk count when available, otherwise fall back to estimate."""
+
+    if isinstance(actual_chunks, int) and actual_chunks >= 0:
+        return actual_chunks
+    return chunk_estimate
 
 
 def _record_file_chunk_metrics(duration: float, chunk_count: int) -> None:
@@ -520,6 +529,17 @@ def _get_chunk_metrics_snapshot(remaining_files: int) -> ChunkMetricsSnapshot:
     if estimated_remaining_chunks is not None and avg_chunk_seconds is not None:
         estimated_remaining_seconds = estimated_remaining_chunks * avg_chunk_seconds
 
+    timeout_p75: float | None = None
+    positive_avgs = [value for value in recent_avgs if value > 0]
+    if positive_avgs:
+        positive_avgs.sort()
+        percentile_index = math.ceil(0.75 * (len(positive_avgs) + 1)) - 1
+        percentile_index = min(
+            max(percentile_index, 0),
+            len(positive_avgs) - 1,
+        )
+        timeout_p75 = positive_avgs[percentile_index]
+
     return ChunkMetricsSnapshot(
         total_chunks=total_chunks,
         avg_chunk_seconds=avg_chunk_seconds,
@@ -532,6 +552,7 @@ def _get_chunk_metrics_snapshot(remaining_files: int) -> ChunkMetricsSnapshot:
         last_file_avg_seconds=last_avg,
         recent_chunk_counts=recent_counts,
         last_updated=last_updated,
+        timeout_p75=timeout_p75,
     )
 
 
@@ -797,6 +818,12 @@ def _render_progress_panel(snapshot: ProgressSnapshot) -> Panel:
             remaining_display = f"{remaining_chunks:.1f}"
         llm_metrics.append(("Est. remaining chunks", remaining_display))
     llm_metrics.append(("Files sampled", str(snapshot.chunk_metrics.file_samples)))
+    p75_display = (
+        f"{snapshot.chunk_metrics.timeout_p75:.1f}s"
+        if snapshot.chunk_metrics.timeout_p75 is not None
+        else "—"
+    )
+    llm_metrics.append(("p75 chunk (s)", p75_display))
     if snapshot.chunk_metrics.last_file_chunks:
         last_avg = _format_seconds(snapshot.chunk_metrics.last_file_avg_seconds)
         llm_metrics.append(
@@ -1579,7 +1606,13 @@ def analysis_worker(
                                     max_chunks=max_chunks,
                                 )
                                 duration = time.time() - operation_start
-                                _track_chunk_metrics(duration, chunk_estimate)
+                                actual_chunks = password_result.get("_chunk_count")
+                                _track_chunk_metrics(
+                                    duration,
+                                    _resolve_chunk_metric(
+                                        actual_chunks, chunk_estimate
+                                    ),
+                                )
                                 file_record.contains_password = password_result.get(
                                     "contains_password"
                                 )
@@ -1620,7 +1653,15 @@ def analysis_worker(
                                         )
                                     )
                                     duration = time.time() - operation_start
-                                    _track_chunk_metrics(duration, chunk_estimate)
+                                    actual_chunks = estate_analysis_result.get(
+                                        "_chunk_count"
+                                    )
+                                    _track_chunk_metrics(
+                                        duration,
+                                        _resolve_chunk_metric(
+                                            actual_chunks, chunk_estimate
+                                        ),
+                                    )
                                 file_record.estate_information = (
                                     estate_analysis_result.get("estate_information", {})
                                 )
@@ -1651,7 +1692,13 @@ def analysis_worker(
                                     max_chunks=max_chunks,
                                 )
                                 duration = time.time() - operation_start
-                                _track_chunk_metrics(duration, chunk_estimate)
+                                actual_chunks = text_analysis_result.get("_chunk_count")
+                                _track_chunk_metrics(
+                                    duration,
+                                    _resolve_chunk_metric(
+                                        actual_chunks, chunk_estimate
+                                    ),
+                                )
                             if task.name == AnalysisName.TEXT_ANALYSIS:
                                 file_record.summary = text_analysis_result.get(
                                     "summary"
@@ -1788,7 +1835,13 @@ def analysis_worker(
                                     max_chunks=max_chunks,
                                 )
                                 duration = time.time() - operation_start
-                                _track_chunk_metrics(duration, chunk_estimate)
+                                actual_chunks = financial_analysis.get("_chunk_count")
+                                _track_chunk_metrics(
+                                    duration,
+                                    _resolve_chunk_metric(
+                                        actual_chunks, chunk_estimate
+                                    ),
+                                )
                                 file_record.summary = financial_analysis.get("summary")
                                 file_record.potential_red_flags = (
                                     financial_analysis.get("potential_red_flags")
