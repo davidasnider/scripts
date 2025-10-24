@@ -301,7 +301,6 @@ def _format_active_files(active: list[ActiveFileStatus], limit: int = 3) -> str:
         task_status = _format_task_progress(status)
         if task_status != "—":
             details.append(f"tasks {task_status}")
-
         detail_text = "; ".join(details)
         preview_parts.append(f"{status.file_name} ({detail_text})")
     if len(active) > limit:
@@ -1425,7 +1424,6 @@ def analysis_worker(
                     if status:
                         status.tasks_completed = completed
                         status.tasks_total = total
-
             def _on_chunk_progress(processed: int, total: int) -> None:
                 """Update both detailed metrics and the active file display."""
                 _update_chunk_progress(
