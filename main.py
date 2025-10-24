@@ -120,6 +120,11 @@ TEXT_BASED_ANALYSES = {
     AnalysisName.ESTATE_ANALYSIS,
     AnalysisName.PASSWORD_DETECTION,
 }
+SUMMARY_DEPENDENT_TASKS = {
+    AnalysisName.TEXT_ANALYSIS,
+    AnalysisName.PEOPLE_ANALYSIS,
+    AnalysisName.ESTATE_ANALYSIS,
+}
 TEXT_BASED_ANALYSIS_MODEL_VALUES = {analysis.value for analysis in TEXT_BASED_ANALYSES}
 # avoids treating random bytes as content during strings-style fallback
 MIN_ASCII_CHUNK_LENGTH = 4
@@ -1445,13 +1450,8 @@ def analysis_worker(
                 source_name = file_record.file_name or Path(file_record.file_path).name
 
                 # Pre-calculate summary if any dependent tasks are pending.
-                summary_dependent_tasks = {
-                    AnalysisName.TEXT_ANALYSIS,
-                    AnalysisName.PEOPLE_ANALYSIS,
-                    AnalysisName.ESTATE_ANALYSIS,
-                }
                 needs_summary = any(
-                    task.name in summary_dependent_tasks
+                    task.name in SUMMARY_DEPENDENT_TASKS
                     and task.status == AnalysisStatus.PENDING
                     for task in file_record.analysis_tasks
                 )
