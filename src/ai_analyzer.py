@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import json
 import logging
+import math
+import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 import ollama
 from PIL import Image, UnidentifiedImageError
 
@@ -61,6 +66,12 @@ JSON_SYSTEM_MESSAGE = (
     "keys and string values and ensure the JSON is syntactically correct."
 )
 TOKEN_MARGIN_FACTOR = 2.0
+PASSWORD_DETECTOR_MAX_JSON_FAILURES = 5
+LLM_DEFAULT_TIMEOUT = 60.0
+
+
+class LLMTimeoutError(RuntimeError):
+    """Raised when an LLM request exceeds the configured timeout."""
 
 
 def _build_text_single_prompt(text: str) -> str:
@@ -394,10 +405,15 @@ logger.debug(
     PASSWORD_DETECTOR_CHUNK_TOKENS,
 )
 
-DEFAULT_PASSWORD_RESULT = {"contains_password": False, "passwords": {}}
+DEFAULT_PASSWORD_RESULT = {
+    "contains_password": False,
+    "passwords": {},
+    "_chunk_count": 0,
+}
 DEFAULT_ESTATE_RESULT = {
     "has_estate_relevant_info": False,
     "estate_information": {},
+    "_chunk_count": 0,
 }
 
 
@@ -503,6 +519,7 @@ def _ollama_chat(
     *,
     options: dict[str, Any] | None = None,
     response_format: str | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """Invoke Ollama chat with optional configuration."""
     request: dict[str, Any] = {"model": model, "messages": messages}
@@ -510,6 +527,9 @@ def _ollama_chat(
         request["options"] = dict(options)
     if response_format:
         request["format"] = response_format
+    if timeout and timeout > 0:
+        client = ollama.Client(timeout=timeout)
+        return client.chat(**request)
     return ollama.chat(**request)
 
 
@@ -523,6 +543,33 @@ def _combine_options(*option_dicts: dict[str, Any] | None) -> dict[str, Any]:
     return merged
 
 
+def _compute_dynamic_timeout(history: list[float]) -> tuple[float, float]:
+    """Return (baseline_p75, timeout_limit)."""
+
+    valid = [duration for duration in history if duration > 0]
+    if len(valid) < 4:
+        baseline = LLM_DEFAULT_TIMEOUT
+    else:
+        valid.sort()
+        index = max(0, math.ceil(0.75 * len(valid)) - 1)
+        baseline = valid[index] if valid[index] > 0 else LLM_DEFAULT_TIMEOUT
+    timeout_limit = max(baseline * 5, LLM_DEFAULT_TIMEOUT)
+    return baseline, timeout_limit
+
+
+def _run_with_timeout(func: Callable[[], Any], timeout: float | None) -> Any:
+    if not timeout or timeout <= 0:
+        return func()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:  # pragma: no cover - timing
+            future.cancel()
+            raise LLMTimeoutError("LLM request timed out") from exc
+
+
 def _request_json_response(
     *,
     model: str,
@@ -531,23 +578,45 @@ def _request_json_response(
     should_abort: AbortCallback | None,
     context: str,
     max_attempts: int = 2,
+    max_duration: float | None = None,
 ) -> Any:
     """Send a chat request expecting JSON and retry with stricter instructions."""
 
     base_prompt = prompt
     prompt_to_send = prompt
 
+    timeout_budget = max(max_duration or 0, LLM_DEFAULT_TIMEOUT)
+
     for attempt in range(1, max_attempts + 1):
         _maybe_abort(should_abort)
-        response = _ollama_chat(
-            model,
-            [
-                {"role": "system", "content": JSON_SYSTEM_MESSAGE},
-                {"role": "user", "content": prompt_to_send},
-            ],
-            options=options,
-            response_format=JSON_RESPONSE_FORMAT,
-        )
+
+        def _do_request() -> dict[str, Any]:
+            try:
+                return _ollama_chat(
+                    model,
+                    [
+                        {"role": "system", "content": JSON_SYSTEM_MESSAGE},
+                        {"role": "user", "content": prompt_to_send},
+                    ],
+                    options=options,
+                    response_format=JSON_RESPONSE_FORMAT,
+                    timeout=timeout_budget,
+                )
+            except httpx.TimeoutException as exc:
+                raise LLMTimeoutError("LLM request timed out") from exc
+
+        try:
+            response = _run_with_timeout(_do_request, timeout_budget)
+        except LLMTimeoutError:
+            logger.warning(
+                "%s timed out after %.2f seconds (attempt %d/%d)",
+                context,
+                timeout_budget,
+                attempt,
+                max_attempts,
+            )
+            raise
+
         content = response["message"]["content"]
 
         try:
@@ -603,6 +672,13 @@ def analyze_text_content(
     max_chunks: int | None = None,
 ) -> dict[str, Any]:
     """Analyze text content using an LLM to extract summary and mentioned people."""
+    if not text.strip():
+        return {
+            "summary": "",
+            "mentioned_people": [],
+            "_chunk_count": 0,
+        }
+
     text_bytes = len(text.encode("utf-8"))
     source_display_name = _resolve_source_name(source_name)
     logger.debug(
@@ -647,6 +723,8 @@ def analyze_text_content(
                     should_abort=should_abort,
                     context=f"text analysis single chunk for {source_display_name}",
                 )
+                if isinstance(result, dict):
+                    result["_chunk_count"] = 1
                 return result
             except json.JSONDecodeError as decode_error:
                 logger.warning(
@@ -663,6 +741,7 @@ def analyze_text_content(
                 return {
                     "summary": "Analysis unavailable - Ollama not accessible",
                     "mentioned_people": [],
+                    "_chunk_count": 0,
                 }
 
     # Multi-chunk processing
@@ -694,6 +773,7 @@ def analyze_text_content(
     )
     all_summaries = []
     all_people = set()
+    chunk_durations: list[float] = []
 
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
@@ -710,6 +790,8 @@ def analyze_text_content(
             index=i + 1,
             chunk_count=chunk_count,
         )
+        _baseline, timeout_limit = _compute_dynamic_timeout(chunk_durations)
+        start_time = time.monotonic()
 
         try:
             logger.debug(
@@ -725,10 +807,26 @@ def analyze_text_content(
                 options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
                 should_abort=should_abort,
                 context=(f"text chunk {i + 1}/{chunk_count} for {source_display_name}"),
+                max_duration=timeout_limit,
             )
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             all_summaries.append(chunk_result.get("summary", ""))
             all_people.update(chunk_result.get("mentioned_people", []))
+        except LLMTimeoutError:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration if duration > 0 else (timeout_limit or 0))
+            logger.warning(
+                "Text analysis chunk %d/%d for %s timed out after %.2fs; skipping",
+                i + 1,
+                chunk_count,
+                source_display_name,
+                timeout_limit or 0.0,
+            )
+            continue
         except json.JSONDecodeError as exc:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             logger.warning(
                 "Text analysis chunk %d/%d JSON decode failed for %s after retries: %s",
                 i + 1,
@@ -738,6 +836,8 @@ def analyze_text_content(
             )
             continue
         except Exception as e:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             logger.warning(
                 "Failed to analyze text chunk %d for %s with Ollama: %s",
                 i + 1,
@@ -786,6 +886,7 @@ def analyze_text_content(
     return {
         "summary": final_summary,
         "mentioned_people": list(all_people),
+        "_chunk_count": chunk_count,
     }
 
 
@@ -857,7 +958,9 @@ def detect_passwords(
                         f"password detection single chunk for {source_display_name}"
                     ),
                 )
-                return _normalize_result(raw_result)
+                result = _normalize_result(raw_result)
+                result["_chunk_count"] = 1
+                return result
             except json.JSONDecodeError as exc:
                 logger.warning(
                     (
@@ -892,6 +995,14 @@ def detect_passwords(
     chunk_count = len(chunks)
     detected_passwords: dict[str, str] = {}
     any_passwords = False
+    json_failure_streak = 0
+    chunk_durations: list[float] = []
+    if chunk_count:
+        logger.info(
+            "Password detection processing %d chunk(s) for %s",
+            chunk_count,
+            source_display_name,
+        )
 
     def _deduplicate_key(key: str, value: str, existing: dict[str, str]) -> str:
         """Generate unique key for password to avoid collisions."""
@@ -917,6 +1028,26 @@ def detect_passwords(
             index=i + 1,
             chunk_count=chunk_count,
         )
+        _baseline, timeout_limit = _compute_dynamic_timeout(chunk_durations)
+        use_fallback_only = json_failure_streak >= PASSWORD_DETECTOR_MAX_JSON_FAILURES
+        if use_fallback_only:
+            if json_failure_streak == PASSWORD_DETECTOR_MAX_JSON_FAILURES:
+                logger.info(
+                    (
+                        "Password detection fallback engaged after %d consecutive JSON "
+                        "failures"
+                    ),
+                    json_failure_streak,
+                )
+            fallback_passwords = _fallback_detect_secrets(chunk)
+            if fallback_passwords:
+                any_passwords = True
+                for key, value in fallback_passwords.items():
+                    unique_key = _deduplicate_key(key, value, detected_passwords)
+                    detected_passwords[unique_key] = value
+            continue
+
+        start_time = time.monotonic()
         try:
             raw_result = _request_json_response(
                 model=PASSWORD_DETECTOR_MODEL,
@@ -929,6 +1060,7 @@ def detect_passwords(
                     f"password detection chunk {i + 1}/{chunk_count} for "
                     f"{source_display_name}"
                 ),
+                max_duration=timeout_limit,
             )
             chunk_result = _normalize_result(raw_result)
             if chunk_result["contains_password"]:
@@ -936,7 +1068,30 @@ def detect_passwords(
                 for key, value in chunk_result["passwords"].items():
                     unique_key = _deduplicate_key(key, value, detected_passwords)
                     detected_passwords[unique_key] = value
+            json_failure_streak = 0
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
+        except LLMTimeoutError:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration if duration > 0 else (timeout_limit or 0))
+            json_failure_streak += 1
+            logger.warning(
+                "Password detection chunk %d/%d for %s timed out after %.2fs; skipping",
+                i + 1,
+                chunk_count,
+                source_display_name,
+                timeout_limit or 0.0,
+            )
+            fallback_passwords = _fallback_detect_secrets(chunk)
+            if fallback_passwords:
+                any_passwords = True
+                for key, value in fallback_passwords.items():
+                    unique_key = _deduplicate_key(key, value, detected_passwords)
+                    detected_passwords[unique_key] = value
+            continue
         except json.JSONDecodeError as exc:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             logger.warning(
                 (
                     "Password detection chunk %d/%d JSON decode failed for %s "
@@ -947,8 +1102,17 @@ def detect_passwords(
                 source_display_name,
                 exc,
             )
+            json_failure_streak += 1
+            fallback_passwords = _fallback_detect_secrets(chunk)
+            if fallback_passwords:
+                any_passwords = True
+                for key, value in fallback_passwords.items():
+                    unique_key = _deduplicate_key(key, value, detected_passwords)
+                    detected_passwords[unique_key] = value
             continue
         except Exception as e:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             logger.warning(
                 "Failed to detect passwords for chunk %d/%d of %s: %s",
                 i + 1,
@@ -956,12 +1120,93 @@ def detect_passwords(
                 source_display_name,
                 e,
             )
+            json_failure_streak += 1
+            fallback_passwords = _fallback_detect_secrets(chunk)
+            if fallback_passwords:
+                any_passwords = True
+                for key, value in fallback_passwords.items():
+                    unique_key = _deduplicate_key(key, value, detected_passwords)
+                    detected_passwords[unique_key] = value
             continue
 
     return {
         "contains_password": any_passwords,
         "passwords": detected_passwords,
+        "_chunk_count": chunk_count,
     }
+
+
+@lru_cache(maxsize=1)
+def _load_detect_secrets_plugins():
+    try:
+        from detect_secrets.plugins.common import initialize
+    except ImportError:  # pragma: no cover - optional dependency
+        logger.debug("detect-secrets not installed; skipping fallback password scan")
+        return None
+
+    try:
+        return initialize.initialize_plugins()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to initialize detect-secrets plugins: %s", exc)
+        return None
+
+
+def _fallback_detect_secrets(chunk_text: str) -> dict[str, str]:
+    plugins = _load_detect_secrets_plugins()
+    if not plugins:
+        return {}
+
+    detected: dict[str, str] = {}
+    for line_number, line in enumerate(chunk_text.splitlines(), start=1):
+        for plugin in plugins:
+            try:
+                findings = plugin.analyze_line(line, line_number, filename="<chunk>")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug(
+                    "detect-secrets plugin %s failed on line %d: %s",
+                    plugin.__class__.__name__,
+                    line_number,
+                    exc,
+                )
+                continue
+            if not findings:
+                continue
+
+            if isinstance(findings, dict):
+                candidates = findings.values()
+            elif isinstance(findings, (list, tuple, set)):
+                candidates = findings
+            else:
+                candidates = [findings]
+
+            for candidate in candidates:
+                secret_value = getattr(candidate, "secret_value", None)
+                if callable(secret_value):
+                    try:
+                        secret_value = secret_value()
+                    except Exception:  # pragma: no cover - defensive
+                        secret_value = None
+                if not secret_value:
+                    continue
+
+                base_label = (
+                    getattr(plugin, "secret_type", plugin.__class__.__name__)
+                    .replace(" ", "_")
+                    .lower()
+                )
+                label = f"{base_label}_{line_number}"
+                suffix = 2
+                while label in detected and detected[label] != secret_value:
+                    label = f"{base_label}_{line_number}_{suffix}"
+                    suffix += 1
+                detected[label] = secret_value
+
+    if detected:
+        logger.info(
+            "detect-secrets fallback identified %d candidate(s) in password chunk",
+            len(detected),
+        )
+    return detected
 
 
 def _normalize_estate_response(
@@ -1066,7 +1311,10 @@ def analyze_estate_relevant_information(
     """Identify estate management details within text."""
 
     if not text.strip():
-        return DEFAULT_ESTATE_RESULT
+        return {
+            **DEFAULT_ESTATE_RESULT,
+            "_chunk_count": 0,
+        }
 
     text_bytes = len(text.encode("utf-8"))
     source_display_name = _resolve_source_name(source_name)
@@ -1080,6 +1328,7 @@ def analyze_estate_relevant_information(
         payload: str,
         *,
         context: str,
+        max_duration: float | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         parsed = _request_json_response(
             model=TEXT_ANALYZER_MODEL,
@@ -1087,6 +1336,7 @@ def analyze_estate_relevant_information(
             options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
             should_abort=should_abort,
             context=context,
+            max_duration=max_duration,
         )
         return _normalize_estate_response(parsed)
 
@@ -1118,6 +1368,7 @@ def analyze_estate_relevant_information(
                 return {
                     "has_estate_relevant_info": has_info,
                     "estate_information": normalized,
+                    "_chunk_count": 1,
                 }
             except json.JSONDecodeError as exc:
                 logger.warning(
@@ -1135,9 +1386,12 @@ def analyze_estate_relevant_information(
                     source_display_name,
                     e,
                 )
-                return DEFAULT_ESTATE_RESULT
+                return {
+                    **DEFAULT_ESTATE_RESULT,
+                    "_chunk_count": 0,
+                }
 
-    chunks, _ = _prepare_chunks(
+    chunks, chunk_token_limit = _prepare_chunks(
         text,
         initial_limit=TEXT_ANALYZER_CHUNK_TOKENS,
         context_window=TEXT_ANALYZER_CONTEXT_WINDOW,
@@ -1156,9 +1410,30 @@ def analyze_estate_relevant_information(
     )
     chunk_count = len(chunks)
     chunk_results: list[dict[str, list[dict[str, Any]]]] = []
+    chunk_durations: list[float] = []
+    if chunk_count:
+        logger.info(
+            "Estate analysis processing %d chunk(s) for %s (chunk_token_limit=%d)",
+            chunk_count,
+            source_display_name,
+            chunk_token_limit,
+        )
+        logger.info(
+            "Estate analysis processing %d chunk(s) for %s",
+            chunk_count,
+            source_display_name,
+        )
 
     for index, chunk in enumerate(chunks, start=1):
         _maybe_abort(should_abort)
+        remaining = max(chunk_count - index, 0)
+        logger.info(
+            "Estate analysis chunk %d/%d for %s (%d remaining)",
+            index,
+            chunk_count,
+            source_display_name,
+            remaining,
+        )
         prompt = _build_estate_chunk_prompt(
             chunk=chunk,
             index=index,
@@ -1166,6 +1441,8 @@ def analyze_estate_relevant_information(
             source_name=source_display_name,
         )
         chunk_label = f"{index}/{chunk_count}"
+        _baseline, timeout_limit = _compute_dynamic_timeout(chunk_durations)
+        start_time = time.monotonic()
         try:
             logger.debug(
                 "Sending estate analysis request for chunk %s of %s",
@@ -1177,10 +1454,25 @@ def analyze_estate_relevant_information(
                 context="estate analysis chunk {} for {}".format(
                     chunk_label, source_display_name
                 ),
+                max_duration=timeout_limit,
             )
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             if normalized:
                 chunk_results.append(normalized)
+        except LLMTimeoutError:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration if duration > 0 else (timeout_limit or 0))
+            logger.warning(
+                "Estate analysis chunk %s for %s timed out after %.2fs; skipping",
+                chunk_label,
+                source_display_name,
+                timeout_limit or 0.0,
+            )
+            continue
         except json.JSONDecodeError as exc:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             logger.warning(
                 "Estate analysis chunk %s JSON decode failed for %s after retries: %s",
                 chunk_label,
@@ -1189,6 +1481,8 @@ def analyze_estate_relevant_information(
             )
             continue
         except Exception as e:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             logger.warning(
                 "Estate analysis failed for chunk %d/%d of %s: %s",
                 index,
@@ -1208,6 +1502,7 @@ def analyze_estate_relevant_information(
     return {
         "has_estate_relevant_info": has_info,
         "estate_information": merged,
+        "_chunk_count": chunk_count,
     }
 
 
@@ -1231,6 +1526,15 @@ def analyze_financial_document(
         A dictionary with 'summary', 'potential_red_flags', 'incriminating_items',
         and 'confidence_score'.
     """
+    if not text.strip():
+        return {
+            "summary": "",
+            "potential_red_flags": [],
+            "incriminating_items": [],
+            "confidence_score": 0,
+            "_chunk_count": 0,
+        }
+
     text_bytes = len(text.encode("utf-8"))
     source_display_name = _resolve_source_name(source_name)
     logger.debug(
@@ -1275,6 +1579,8 @@ def analyze_financial_document(
                         f"financial analysis single chunk for {source_display_name}"
                     ),
                 )
+                if isinstance(result, dict):
+                    result["_chunk_count"] = 1
                 return result
             except json.JSONDecodeError as exc:
                 logger.warning(
@@ -1294,6 +1600,7 @@ def analyze_financial_document(
                     "potential_red_flags": [],
                     "incriminating_items": [],
                     "confidence_score": 0,
+                    "_chunk_count": 0,
                 }
 
     # Multi-chunk processing
@@ -1314,15 +1621,17 @@ def analyze_financial_document(
         source_name=source_display_name,
     )
     chunk_count = len(chunks)
-    logger.info(
-        "Financial analysis processing %d chunk(s) for %s",
-        chunk_count,
-        source_display_name,
-    )
+    if chunk_count:
+        logger.info(
+            "Financial analysis processing %d chunk(s) for %s",
+            chunk_count,
+            source_display_name,
+        )
     all_summaries = []
     all_red_flags = set()
     all_incriminating = set()
     confidence_scores = []
+    chunk_durations: list[float] = []
 
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
@@ -1341,6 +1650,8 @@ def analyze_financial_document(
             index=i + 1,
             chunk_count=chunk_count,
         )
+        _baseline, timeout_limit = _compute_dynamic_timeout(chunk_durations)
+        start_time = time.monotonic()
 
         try:
             logger.debug(
@@ -1360,13 +1671,28 @@ def analyze_financial_document(
                     f"financial analysis chunk {chunk_label} for "
                     f"{source_display_name}"
                 ),
+                max_duration=timeout_limit,
             )
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             all_summaries.append(chunk_result.get("summary", ""))
             all_red_flags.update(chunk_result.get("potential_red_flags", []))
             all_incriminating.update(chunk_result.get("incriminating_items", []))
             if isinstance(chunk_result.get("confidence_score"), (int, float)):
                 confidence_scores.append(chunk_result["confidence_score"])
+        except LLMTimeoutError:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration if duration > 0 else (timeout_limit or 0))
+            logger.warning(
+                "Financial analysis chunk %s for %s timed out after %.2fs; skipping",
+                chunk_label,
+                source_display_name,
+                timeout_limit or 0.0,
+            )
+            continue
         except json.JSONDecodeError as exc:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             logger.warning(
                 (
                     "Financial analysis chunk %s JSON decode failed for %s "
@@ -1378,6 +1704,8 @@ def analyze_financial_document(
             )
             continue
         except Exception as e:
+            duration = time.monotonic() - start_time
+            chunk_durations.append(duration)
             logger.warning(
                 "Failed to analyze financial chunk %d for %s with Ollama: %s",
                 i + 1,
@@ -1434,6 +1762,7 @@ def analyze_financial_document(
         "potential_red_flags": list(all_red_flags),
         "incriminating_items": list(all_incriminating),
         "confidence_score": int(avg_confidence),
+        "_chunk_count": chunk_count,
     }
 
 
