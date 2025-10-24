@@ -147,6 +147,20 @@ ESTATE_CATEGORY_KEYS = [
 ]
 
 
+ESTATE_PLACEHOLDER_VALUES = {
+    "",
+    "details",
+    "detail",
+    "unknown",
+    "n/a",
+    "na",
+    "none",
+    "placeholder",
+}
+
+ESTATE_MIN_FIELDS_PER_ENTRY = 2  # Require "item" plus at least one supporting field.
+
+
 ESTATE_ANALYSIS_INSTRUCTIONS = (
     "You are an assistant triaging documents to help loved ones settle a "
     "deceased person's estate. Review the supplied text and record details "
@@ -979,21 +993,14 @@ def _normalize_estate_response(
                     elif entry_value is not None:
                         cleaned_entry[entry_key] = entry_value
                 if cleaned_entry:
-                    placeholder_values = {
-                        "",
-                        "details",
-                        "detail",
-                        "unknown",
-                        "n/a",
-                        "na",
-                        "none",
-                        "placeholder",
-                    }
                     item_value = cleaned_entry.get("item")
                     if not isinstance(item_value, str):
                         continue
                     item_trimmed = item_value.strip()
-                    if not item_trimmed or item_trimmed.lower() in placeholder_values:
+                    if (
+                        not item_trimmed
+                        or item_trimmed.lower() in ESTATE_PLACEHOLDER_VALUES
+                    ):
                         continue
                     cleaned_entry["item"] = item_trimmed
 
@@ -1006,7 +1013,7 @@ def _normalize_estate_response(
                             trimmed_value = entry_value.strip()
                             if (
                                 not trimmed_value
-                                or trimmed_value.lower() in placeholder_values
+                                or trimmed_value.lower() in ESTATE_PLACEHOLDER_VALUES
                             ):
                                 keys_to_prune.append(entry_key)
                             else:
@@ -1016,8 +1023,7 @@ def _normalize_estate_response(
                     for key_to_remove in keys_to_prune:
                         cleaned_entry.pop(key_to_remove, None)
 
-                    if len(cleaned_entry) <= 1:
-                        # Require at least one supporting field besides "item".
+                    if len(cleaned_entry) < ESTATE_MIN_FIELDS_PER_ENTRY:
                         continue
 
                     cleaned_entries.append(cleaned_entry)
