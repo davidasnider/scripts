@@ -295,7 +295,6 @@ def _format_active_files(active: list[ActiveFileStatus], limit: int = 3) -> str:
         details: list[str] = [status.stage]
         if status.current_task:
             details.append(status.current_task)
-
         chunk_status = _format_chunk_progress(status)
         if chunk_status != "—":
             details.append(chunk_status)
@@ -654,8 +653,6 @@ def _collect_progress_snapshot(
         queue_sizes=queue_sizes,
         worker_counts=worker_counts,
     )
-
-
 
 
 def _format_chunk_progress(status: ActiveFileStatus) -> str:
