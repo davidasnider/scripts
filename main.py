@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 import os
+import tempfile
 
 # Disable tokenizers parallelism to avoid warnings in threaded environment
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -143,6 +144,7 @@ in_progress_files: dict[str, ActiveFileStatus] = {}
 lock = threading.Lock()
 shutdown_event = threading.Event()
 _shutdown_signals_sent = threading.Event()
+manifest_write_lock = threading.Lock()
 
 # Active worker counts (updated when pipeline runs)
 _active_worker_counts = {
@@ -1257,9 +1259,31 @@ def _backup_manifest() -> None:
 def save_manifest(manifest: list[FileRecord]) -> None:
     """Save the manifest to JSON file."""
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with MANIFEST_PATH.open("w") as f:
-        data = [record.model_dump(mode="json") for record in manifest]
-        json.dump(data, f, indent=2)
+    data = [record.model_dump(mode="json") for record in manifest]
+
+    with manifest_write_lock:
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=MANIFEST_PATH.parent,
+                prefix=f"{MANIFEST_PATH.stem}-",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp_file:
+                temp_path = Path(tmp_file.name)
+                json.dump(data, tmp_file, indent=2)
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+            os.replace(temp_path, MANIFEST_PATH)
+            temp_path = None
+        finally:
+            if temp_path and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
 
 def extraction_worker(worker_id: int) -> None:
