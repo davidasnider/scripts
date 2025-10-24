@@ -240,6 +240,21 @@ def _update_active_file_status(
                 setattr(status, key, value)
 
 
+def _update_chunk_progress(
+    correlation_id: str | None, *, processed: int, total: int
+) -> None:
+    """Update the chunk progress for an active file, if present."""
+
+    if not correlation_id:
+        return
+    with lock:
+        status = in_progress_files.get(correlation_id)
+        if not status:
+            return
+        status.chunks_processed = processed
+        status.chunks_total = total
+
+
 def _increment_active_chunks_total(
     correlation_id: str | None, *, increment: int
 ) -> None:
@@ -1411,16 +1426,13 @@ def analysis_worker(
                         status.tasks_completed = completed
                         status.tasks_total = total
 
+            def _on_chunk_progress(processed: int, total: int) -> None:
+                """Update both detailed metrics and the active file display."""
+                _update_chunk_progress(
+                    correlation_id, processed=processed, total=total
+                )
             def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
-                if not chunk_progress.add(chunk_count=chunk_count, duration=duration):
-                    return
-                with lock:
-                    status = in_progress_files.get(correlation_id)
-                    if status:
-                        status.chunks_processed = chunk_progress.count
-                        status.chunks_total = max(
-                            status.chunks_total or 0, chunk_progress.count
-                        )
+                chunk_progress.add(chunk_count=chunk_count, duration=duration)
 
             worker_logger.debug(
                 "Worker %d analyzing content from %s [%s]",
@@ -1493,6 +1505,7 @@ def analysis_worker(
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
+                                    on_progress=_on_chunk_progress,
                                 )
                                 duration = time.time() - operation_start
                                 actual_chunks = password_result.get("_chunk_count")
@@ -1539,6 +1552,7 @@ def analysis_worker(
                                             source_name=source_name,
                                             should_abort=_check_for_shutdown,
                                             max_chunks=max_chunks,
+                                            on_progress=_on_chunk_progress,
                                         )
                                     )
                                     duration = time.time() - operation_start
@@ -1579,6 +1593,7 @@ def analysis_worker(
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
+                                    on_progress=_on_chunk_progress,
                                 )
                                 duration = time.time() - operation_start
                                 actual_chunks = text_analysis_result.get("_chunk_count")
@@ -1722,6 +1737,7 @@ def analysis_worker(
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
+                                    on_progress=_on_chunk_progress,
                                 )
                                 duration = time.time() - operation_start
                                 actual_chunks = financial_analysis.get("_chunk_count")
