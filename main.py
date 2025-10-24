@@ -533,8 +533,12 @@ def _get_chunk_metrics_snapshot(remaining_files: int) -> ChunkMetricsSnapshot:
     positive_avgs = [value for value in recent_avgs if value > 0]
     if positive_avgs:
         positive_avgs.sort()
-        index = max(0, math.ceil(0.75 * len(positive_avgs)) - 1)
-        timeout_p75 = positive_avgs[index]
+        percentile_index = math.ceil(0.75 * (len(positive_avgs) + 1)) - 1
+        percentile_index = min(
+            max(percentile_index, 0),
+            len(positive_avgs) - 1,
+        )
+        timeout_p75 = positive_avgs[percentile_index]
 
     return ChunkMetricsSnapshot(
         total_chunks=total_chunks,

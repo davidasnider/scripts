@@ -558,8 +558,10 @@ def _compute_dynamic_timeout(history: list[float]) -> tuple[float, float]:
         baseline = LLM_DEFAULT_TIMEOUT
     else:
         valid.sort()
-        index = max(0, math.ceil(0.75 * len(valid)) - 1)
-        baseline = valid[index] if valid[index] > 0 else LLM_DEFAULT_TIMEOUT
+        percentile_index = math.ceil(0.75 * (len(valid) + 1)) - 1
+        percentile_index = min(max(percentile_index, 0), len(valid) - 1)
+        baseline_candidate = valid[percentile_index]
+        baseline = baseline_candidate if baseline_candidate > 0 else LLM_DEFAULT_TIMEOUT
     timeout_limit = max(baseline * 5, LLM_DEFAULT_TIMEOUT)
     return baseline, timeout_limit
 
@@ -1169,7 +1171,7 @@ def _fallback_detect_secrets(chunk_text: str) -> dict[str, str]:
             try:
                 findings = plugin.analyze_line(line, line_number, filename="<chunk>")
             except Exception as exc:  # pragma: no cover - defensive
-                logger.debug(
+                logger.warning(
                     "detect-secrets plugin %s failed on line %d: %s",
                     plugin.__class__.__name__,
                     line_number,
@@ -1201,11 +1203,11 @@ def _fallback_detect_secrets(chunk_text: str) -> dict[str, str]:
                     .replace(" ", "_")
                     .lower()
                 )
-                label = f"{base_label}_{line_number}"
-                suffix = 2
+                suffix = 1
+                label = f"{base_label}_{line_number}_{suffix}"
                 while label in detected and detected[label] != secret_value:
-                    label = f"{base_label}_{line_number}_{suffix}"
                     suffix += 1
+                    label = f"{base_label}_{line_number}_{suffix}"
                 detected[label] = secret_value
 
     if detected:
