@@ -234,9 +234,16 @@ def _build_estate_chunk_prompt(
         "{\n"
         '  "Legal": [\n'
         "    {\n"
-        '      "item": "Will",\n'
-        '      "why_it_matters": "Instructions for asset distribution",\n'
-        '      "details": "Stored in safe deposit box #42 at First State Bank"\n'
+        '      "item": "Last will and testament",\n'
+        '      "why_it_matters": "Names executor and divides property",\n'
+        '      "details": "Stored in the safe at 123 Main St., combination 1965"\n'
+        "    }\n"
+        "  ],\n"
+        '  "Financial": [\n'
+        "    {\n"
+        '      "item": "Chase savings account",\n'
+        '      "why_it_matters": "Funds available for estate expenses",\n'
+        '      "details": "Account ending 1234, branch on 5th Ave"\n'
         "    }\n"
         "  ]\n"
         "}\n\n"
@@ -1226,56 +1233,64 @@ def _normalize_estate_response(
             continue
         cleaned_entries: list[dict[str, Any]] = []
         for item in value:
-            if isinstance(item, dict):
-                cleaned_entry: dict[str, Any] = {}
-                for entry_key, entry_value in item.items():
-                    if not isinstance(entry_key, str):
+            if isinstance(item, str):
+                logger.debug(
+                    "Skipping estate entry emitted as bare string; expected "
+                    "structured object."
+                )
+                continue
+            if not isinstance(item, dict):
+                logger.debug(
+                    "Skipping estate entry with unsupported type %s; expected dict.",
+                    type(item).__name__,
+                )
+                continue
+            cleaned_entry: dict[str, Any] = {}
+            for entry_key, entry_value in item.items():
+                if not isinstance(entry_key, str):
+                    continue
+                if isinstance(entry_value, str):
+                    stripped = entry_value.strip()
+                    if stripped:
+                        cleaned_entry[entry_key] = stripped
+                elif entry_value is not None:
+                    cleaned_entry[entry_key] = entry_value
+            if cleaned_entry:
+                item_value = cleaned_entry.get("item")
+                if not isinstance(item_value, str):
+                    continue
+                item_trimmed = item_value.strip()
+                if (
+                    not item_trimmed
+                    or item_trimmed.lower() in ESTATE_PLACEHOLDER_VALUES
+                ):
+                    continue
+                cleaned_entry["item"] = item_trimmed
+
+                # Remove placeholder text from other string fields.
+                keys_to_prune: list[str] = []
+                for entry_key, entry_value in cleaned_entry.items():
+                    if entry_key == "item":
                         continue
                     if isinstance(entry_value, str):
-                        stripped = entry_value.strip()
-                        if stripped:
-                            cleaned_entry[entry_key] = stripped
-                    elif entry_value is not None:
-                        cleaned_entry[entry_key] = entry_value
-                if cleaned_entry:
-                    item_value = cleaned_entry.get("item")
-                    if not isinstance(item_value, str):
-                        continue
-                    item_trimmed = item_value.strip()
-                    if (
-                        not item_trimmed
-                        or item_trimmed.lower() in ESTATE_PLACEHOLDER_VALUES
-                    ):
-                        continue
-                    cleaned_entry["item"] = item_trimmed
-
-                    # Remove placeholder text from other string fields.
-                    keys_to_prune: list[str] = []
-                    for entry_key, entry_value in list(cleaned_entry.items()):
-                        if entry_key == "item":
-                            continue
-                        if isinstance(entry_value, str):
-                            trimmed_value = entry_value.strip()
-                            if (
-                                not trimmed_value
-                                or trimmed_value.lower() in ESTATE_PLACEHOLDER_VALUES
-                            ):
-                                keys_to_prune.append(entry_key)
-                            else:
-                                cleaned_entry[entry_key] = trimmed_value
-                        elif entry_value is None:
+                        trimmed_value = entry_value.strip()
+                        if (
+                            not trimmed_value
+                            or trimmed_value.lower() in ESTATE_PLACEHOLDER_VALUES
+                        ):
                             keys_to_prune.append(entry_key)
-                    for key_to_remove in keys_to_prune:
-                        cleaned_entry.pop(key_to_remove, None)
+                        else:
+                            cleaned_entry[entry_key] = trimmed_value
+                    elif entry_value is None:
+                        keys_to_prune.append(entry_key)
+                for key_to_remove in keys_to_prune:
+                    cleaned_entry.pop(key_to_remove, None)
 
-                    # Enforce "item" plus at least one supporting field.
-                    if len(cleaned_entry) < ESTATE_MIN_FIELDS_PER_ENTRY:
-                        continue
+                # Enforce "item" plus at least one supporting field.
+                if len(cleaned_entry) < ESTATE_MIN_FIELDS_PER_ENTRY:
+                    continue
 
-                    cleaned_entries.append(cleaned_entry)
-            elif isinstance(item, str):
-                # Skip bare strings; estate entries must be structured objects.
-                continue
+                cleaned_entries.append(cleaned_entry)
         if cleaned_entries:
             normalized[key] = cleaned_entries
 
@@ -1417,11 +1432,6 @@ def analyze_estate_relevant_information(
             chunk_count,
             source_display_name,
             chunk_token_limit,
-        )
-        logger.info(
-            "Estate analysis processing %d chunk(s) for %s",
-            chunk_count,
-            source_display_name,
         )
 
     for index, chunk in enumerate(chunks, start=1):
