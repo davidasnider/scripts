@@ -1,5 +1,8 @@
 import json
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+
+import pytest
+from httpx import ConnectError
 
 from src.ai_analyzer import (
     analyze_financial_document,
@@ -8,7 +11,29 @@ from src.ai_analyzer import (
 )
 
 
-@patch("src.ai_analyzer.ollama.chat")
+# Common mock for a successful ollama chat response
+def mock_ollama_chat_response(content: dict):
+    return {"message": {"content": json.dumps(content)}}
+
+@patch("src.ai_analyzer._ollama_chat")
+def test_functions_handle_ollama_connection_error(mock_ollama_chat):
+    """Test that all three analysis functions return default values on connection error."""
+    mock_ollama_chat.side_effect = ConnectError("Failed to connect")
+
+    # Test analyze_text_content
+    text_result = analyze_text_content("test")
+    assert "Analysis unavailable" in text_result["summary"]
+
+    # Test detect_passwords
+    password_result = detect_passwords("test")
+    assert password_result["contains_password"] is False
+
+    # Test analyze_financial_document
+    financial_result = analyze_financial_document("test")
+    assert "Analysis unavailable" in financial_result["summary"]
+
+
+@patch("src.ai_analyzer._ollama_chat")
 def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
     """Verify that the AI analyzer prompt correctly instructs the model to ignore
     usernames and only identify real names. This test verifies the behavior through
@@ -51,10 +76,10 @@ def test_detect_passwords_returns_default_for_empty_text():
     }
 
 
-@patch("src.ai_analyzer.ollama.chat")
+@patch("src.ai_analyzer._ollama_chat")
 def test_detect_passwords_single_chunk(mock_ollama_chat):
     """Verify password detection parses single-chunk responses correctly."""
-    mock_ollama_chat.return_value = {
+    mock_response = {
         "message": {
             "content": json.dumps(
                 {
@@ -64,6 +89,8 @@ def test_detect_passwords_single_chunk(mock_ollama_chat):
             )
         }
     }
+    mock_ollama_chat.return_value = mock_response
+
 
     text = "Admin credentials:\npassword: s3cr3t!"
     result = detect_passwords(text, source_name="credentials.txt")
@@ -75,7 +102,7 @@ def test_detect_passwords_single_chunk(mock_ollama_chat):
 
 
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-one", "chunk-two"])
-@patch("src.ai_analyzer.ollama.chat")
+@patch("src.ai_analyzer._ollama_chat")
 def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_chunk):
     """Ensure multi-chunk responses merge password dictionaries safely."""
 
@@ -94,6 +121,7 @@ def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_
 
     mock_ollama_chat.side_effect = _chat_side_effect
 
+
     long_text = "A" * 4000  # Force multi-chunk path
     result = detect_passwords(long_text, source_name="long.txt")
 
@@ -108,17 +136,18 @@ def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_
 
 
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
-@patch("src.ai_analyzer.ollama.chat")
+@patch("src.ai_analyzer._ollama_chat")
 def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
     """Ensure multi-chunk text analysis honors the max_chunks limit."""
 
     # Responses for first two chunks plus combined summary call
     chunk_payload = json.dumps({"summary": "part", "mentioned_people": ["Alice"]})
     mock_chat.side_effect = [
-        {"message": {"content": chunk_payload}},
-        {"message": {"content": chunk_payload}},
+        mock_ollama_chat_response({"summary": "part", "mentioned_people": ["Alice"]}),
+        mock_ollama_chat_response({"summary": "part", "mentioned_people": ["Alice"]}),
         {"message": {"content": "Final summary"}},
     ]
+
 
     result = analyze_text_content("A" * 5000, source_name="doc.txt", max_chunks=2)
 
@@ -129,7 +158,7 @@ def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
 
 
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
-@patch("src.ai_analyzer.ollama.chat")
+@patch("src.ai_analyzer._ollama_chat")
 def test_detect_passwords_respects_max_chunks(mock_chat, _mock_chunk):
     """Password detection should only request the configured number of chunks."""
 
@@ -160,21 +189,19 @@ def test_detect_passwords_respects_max_chunks(mock_chat, _mock_chunk):
 
 
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
-@patch("src.ai_analyzer.ollama.chat")
+@patch("src.ai_analyzer._ollama_chat")
 def test_analyze_financial_document_respects_max_chunks(mock_chat, _mock_chunk):
     """Financial analysis should obey the chunk limit and combine summaries."""
 
-    chunk_payload = json.dumps(
-        {
-            "summary": "Segment summary",
-            "potential_red_flags": ["late filing"],
-            "incriminating_items": ["cash"],
-            "confidence_score": 80,
-        }
-    )
+    chunk_payload = {
+        "summary": "Segment summary",
+        "potential_red_flags": ["late filing"],
+        "incriminating_items": ["cash"],
+        "confidence_score": 80,
+    }
     mock_chat.side_effect = [
-        {"message": {"content": chunk_payload}},
-        {"message": {"content": chunk_payload}},
+        mock_ollama_chat_response(chunk_payload),
+        mock_ollama_chat_response(chunk_payload),
         {"message": {"content": "Combined summary"}},
     ]
 
