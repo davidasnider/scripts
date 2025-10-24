@@ -30,7 +30,6 @@ from xml.etree import ElementTree as ET
 
 import pandas as pd
 import typer
-from rich.align import Align
 from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
@@ -163,7 +162,6 @@ analysis_logger = logging.getLogger(f"{LOGGER_NAME}.analysis")
 database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
 
 LIVE_CONSOLE = Console()
-LOG_PANEL_RATIO = 0.5
 TOP_PANEL_ROWS = 31
 CHUNK_TOKEN_LIMIT = TEXT_ANALYZER_CHUNK_TOKENS
 SMALL_TEXT_BYTE_THRESHOLD = 3000
@@ -179,27 +177,6 @@ ACTIVE_STATUS_FIELDS = {
 }
 SHUTDOWN_JOIN_TIMEOUT = 2.0
 NORMAL_JOIN_TIMEOUT = 5.0
-
-
-def _calculate_log_panel_display_limit(
-    console: Console,
-    *,
-    ratio: float = LOG_PANEL_RATIO,
-) -> int:
-    """
-    Return log panel line budget based on the current terminal height.
-
-    Args:
-        console (Console): The Rich Console instance to query for terminal size.
-        ratio (float, optional): Fraction of terminal height for log panel.
-            Should be between 0.0 and 1.0. Defaults to LOG_PANEL_RATIO.
-
-    Returns:
-        int: Number of lines to display in the log panel.
-    """
-
-    terminal_height = max(console.size.height, 1)
-    return max(int(terminal_height * ratio) - 1, 1)
 
 
 def _join_threads_with_timeout(
@@ -901,16 +878,11 @@ def _render_progress_panel(snapshot: ProgressSnapshot) -> Panel:
 
 
 def _build_live_layout() -> Layout:
-    layout = Layout()
-    layout.split_column(
-        Layout(name="top", size=TOP_PANEL_ROWS),
-        Layout(name="bottom"),
-    )
+    layout = Layout(name="root")
+    layout.split_column(Layout(name="top", size=TOP_PANEL_ROWS))
     layout["top"].update(
         Panel("Initializing pipeline dashboard…", title="Pipeline Status")
     )
-    initial_limit = _calculate_log_panel_display_limit(LIVE_CONSOLE)
-    layout["bottom"].update(_render_logs_view([], total=0, display_limit=initial_limit))
     top_size = min(TOP_PANEL_ROWS, max(LIVE_CONSOLE.size.height - 1, 1))
     layout["top"].size = top_size
     return layout
@@ -923,94 +895,7 @@ def _update_progress_panel(layout: Layout, snapshot: ProgressSnapshot) -> None:
     pipeline_panel = _render_progress_panel(snapshot)
     layout["top"].update(Group(active_panel, pipeline_panel))
     top_size = min(TOP_PANEL_ROWS, max(LIVE_CONSOLE.size.height - 1, 1))
-    bottom_size = max(LIVE_CONSOLE.size.height - top_size, 0)
     layout["top"].size = top_size
-    if bottom_size > 0:
-        layout["bottom"].size = bottom_size
-
-
-def _render_logs_view(lines: list[str], *, total: int, display_limit: int) -> Group:
-    limit = max(display_limit, 1)
-    visible = lines[-limit:] if lines else []
-    display_count = len(visible)
-    if total > display_count and display_count > 0:
-        header_text = f"Logs (showing last {display_count} of {total})"
-    else:
-        header_text = "Logs"
-
-    header = Text(header_text, style="bold")
-    if visible:
-        body_text = Text("\n".join(visible), overflow="crop", no_wrap=False)
-    else:
-        body_text = Text("No log messages yet.")
-    aligned_body = Align(
-        body_text,
-        align="left",
-        vertical="bottom",
-        height=limit,
-    )
-    return Group(header, aligned_body)
-
-
-class LiveLogHandler(logging.Handler):
-    """Logging handler that streams records into the live Logs panel."""
-
-    def __init__(
-        self,
-        layout: Layout,
-        console: Console,
-        *,
-        panel_name: str = "bottom",
-        max_lines: int | None = None,
-        panel_ratio: float = LOG_PANEL_RATIO,
-    ) -> None:
-        super().__init__()
-        self.layout = layout
-        self.console = console
-        self.panel_name = panel_name
-        self._panel_ratio = panel_ratio
-        limit = max_lines if max_lines is not None and max_lines > 0 else None
-        self._lines: deque[str]
-        if limit is None:
-            self._lines = deque()
-        else:
-            self._lines = deque(maxlen=limit)
-        self._lock = threading.Lock()
-        self._display_limit = _calculate_log_panel_display_limit(
-            self.console, ratio=self._panel_ratio
-        )
-        self._last_console_height = self.console.size.height
-
-    def _refresh_display_limit_if_needed(self) -> None:
-        current_height = self.console.size.height
-        if current_height == self._last_console_height:
-            return
-        self._display_limit = _calculate_log_panel_display_limit(
-            self.console, ratio=self._panel_ratio
-        )
-        self._last_console_height = current_height
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            message = self.format(record)
-        except Exception:
-            message = record.getMessage()
-
-        with self._lock:
-            self._lines.append(message)
-            lines_snapshot = list(self._lines)
-
-        self._refresh_display_limit_if_needed()
-        visible_lines = lines_snapshot[-self._display_limit :]
-
-        self.layout[self.panel_name].update(
-            _render_logs_view(
-                visible_lines,
-                total=len(lines_snapshot),
-                display_limit=self._display_limit,
-            )
-        )
-
 
 def signal_handler(signum, frame):
     """Handle termination signals by initiating a coordinated shutdown."""
@@ -2597,21 +2482,6 @@ def main(
     )
     _update_progress_panel(layout, initial_snapshot)
 
-    root_logger = logging.getLogger()
-    log_handler = LiveLogHandler(layout, LIVE_CONSOLE)
-    log_handler.setLevel(logging.NOTSET)
-
-    existing_formatter = next(
-        (handler.formatter for handler in root_logger.handlers if handler.formatter),
-        None,
-    )
-
-    if existing_formatter is not None:
-        log_handler.setFormatter(existing_formatter)
-    else:
-        log_handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
-    root_logger.addHandler(log_handler)
-
     last_progress_time = start_time
     try:
 
@@ -2753,8 +2623,6 @@ def main(
             run_logger.info("Manifest saved successfully")
         except Exception as e:
             run_logger.error("Failed to save manifest: %s", e)
-        if log_handler in root_logger.handlers:
-            root_logger.removeHandler(log_handler)
 
     if shutdown_event.is_set():
         run_logger.info(
