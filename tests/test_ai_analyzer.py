@@ -1,6 +1,6 @@
 import json
 from unittest.mock import MagicMock, patch
-
+import pytest
 from httpx import ConnectError
 
 from src.ai_analyzer import (
