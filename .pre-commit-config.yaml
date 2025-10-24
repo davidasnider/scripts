@@ -31,7 +31,7 @@ repos:
       - id: pytest-cov
         name: pytest-cov
         entry: uv run pytest
-        language: python
+        language: system
         types: [python]
         pass_filenames: false
         args:

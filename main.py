@@ -900,6 +900,7 @@ def _update_progress_panel(layout: Layout, snapshot: ProgressSnapshot) -> None:
     layout["top"].update(Group(active_panel, pipeline_panel))
     layout["top"].size = _calculate_top_panel_size()
 
+
 def signal_handler(signum, frame):
     """Handle termination signals by initiating a coordinated shutdown."""
 
