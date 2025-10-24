@@ -825,7 +825,7 @@ def detect_passwords(
                     ),
                     should_abort=should_abort,
                     context=(
-                        "password detection single chunk for " f"{source_display_name}"
+                        f"password detection single chunk for {source_display_name}"
                     ),
                 )
                 return _normalize_result(raw_result)

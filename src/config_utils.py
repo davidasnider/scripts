@@ -80,5 +80,8 @@ def compute_chunk_size(
     if adjusted <= 0:
         adjusted = minimum_tokens
 
-    max_allowed = max(context_window - 1, minimum_tokens)
-    return min(max(adjusted, minimum_tokens), max_allowed)
+    hard_limit = max(context_window - 1, 1)
+    usable_limit = max(context_window - reserve_tokens, 1)
+    preferred_limit = max(usable_limit, minimum_tokens)
+    max_allowed = min(hard_limit, preferred_limit)
+    return max(1, min(adjusted, max_allowed))

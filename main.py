@@ -2268,8 +2268,14 @@ def main(
     candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
     if target_filename:
         filtered_manifest = filter_records_by_search_term(
-            full_manifest, target_filename
+            candidate_manifest, target_filename
         )
+        fallback_used = False
+        if not filtered_manifest:
+            filtered_manifest = filter_records_by_search_term(
+                full_manifest, target_filename
+            )
+            fallback_used = bool(filtered_manifest)
         if not filtered_manifest:
             message = (
                 f"No files matched the filter {target_filename!r}. Nothing to process."
@@ -2277,6 +2283,14 @@ def main(
             run_logger.warning(message)
             typer.echo(message)
             return 0
+
+        if fallback_used:
+            run_logger.info(
+                "Targeted filter %r matched only completed files; "
+                "reprocessing %d file(s).",
+                target_filename,
+                len(filtered_manifest),
+            )
 
         run_logger.info(
             "Targeted run enabled; reprocessing %d file(s) for %r.",
