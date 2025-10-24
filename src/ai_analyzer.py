@@ -61,7 +61,7 @@ STRICT_JSON_REMINDER = (
 )
 JSON_SYSTEM_MESSAGE = (
     "You are a JSON generation engine. You will be asked to extract information "
-    'from a user\'s query. Every reply MUST be a single valid JSON object that '
+    "from a user's query. Every reply MUST be a single valid JSON object that "
     "strictly follows the user's schema. Do not add explanations, code fences, "
     "or any text outside the JSON object. Use double quotes for all keys and "
     "string values and ensure the JSON is syntactically correct.\n\n"

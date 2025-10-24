@@ -1,6 +1,5 @@
 import json
-from unittest.mock import patch, MagicMock
-
+from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ConnectError
 
@@ -12,17 +11,18 @@ from src.ai_analyzer import (
 
 # A reusable mock for the ollama client to simulate connection errors
 MOCK_OLLAMA_CLIENT_WITH_ERROR = MagicMock()
-MOCK_OLLAMA_CLIENT_WITH_ERROR.chat.side_effect = ConnectError(
-    "Failed to connect"
-)
+MOCK_OLLAMA_CLIENT_WITH_ERROR.chat.side_effect = ConnectError("Failed to connect")
+
 
 # Common mock for a successful ollama chat response
 def mock_ollama_chat_response(content: dict):
     return {"message": {"content": json.dumps(content)}}
 
+
 @patch("src.ai_analyzer._ollama_chat")
 def test_functions_handle_ollama_connection_error(mock_ollama_chat):
-    """Test that all three analysis functions return default values on connection error."""
+    """Test that all three analysis functions return default values on
+    connection error."""
     mock_ollama_chat.side_effect = ConnectError("Failed to connect")
 
     # Test analyze_text_content
@@ -56,7 +56,6 @@ def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
         }
     }
     mock_ollama_chat.return_value = mock_response
-
 
     # Sample text containing a mix of real names and usernames
     text = (
@@ -97,7 +96,6 @@ def test_detect_passwords_single_chunk(mock_ollama_chat):
     }
     mock_ollama_chat.return_value = mock_response
 
-
     text = "Admin credentials:\npassword: s3cr3t!"
     result = detect_passwords(text, source_name="credentials.txt")
 
@@ -127,7 +125,6 @@ def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_
 
     mock_ollama_chat.side_effect = _chat_side_effect
 
-
     long_text = "A" * 4000  # Force multi-chunk path
     result = detect_passwords(long_text, source_name="long.txt")
 
@@ -147,13 +144,11 @@ def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
     """Ensure multi-chunk text analysis honors the max_chunks limit."""
 
     # Responses for first two chunks plus combined summary call
-    chunk_payload = json.dumps({"summary": "part", "mentioned_people": ["Alice"]})
     mock_chat.side_effect = [
         mock_ollama_chat_response({"summary": "part", "mentioned_people": ["Alice"]}),
         mock_ollama_chat_response({"summary": "part", "mentioned_people": ["Alice"]}),
         {"message": {"content": "Final summary"}},
     ]
-
 
     result = analyze_text_content("A" * 5000, source_name="doc.txt", max_chunks=2)
 

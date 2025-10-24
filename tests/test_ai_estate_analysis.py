@@ -32,9 +32,7 @@ def test_analyze_estate_single_chunk_extracts_information(
     }
     mock_ollama_chat.return_value = _build_response(mocked_payload)
 
-    result = analyze_estate_relevant_information(
-        sample_text, source_name="letter.txt"
-    )
+    result = analyze_estate_relevant_information(sample_text, source_name="letter.txt")
 
     assert result["has_estate_relevant_info"] is True
     assert "Legal" in result["estate_information"]
@@ -45,9 +43,7 @@ def test_analyze_estate_single_chunk_extracts_information(
 
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2"])
 @patch("src.ai_analyzer._ollama_chat")
-def test_analyze_estate_multi_chunk_merges_results(
-    mock_ollama_chat, _mock_chunk_text
-):
+def test_analyze_estate_multi_chunk_merges_results(mock_ollama_chat, _mock_chunk_text):
     long_text = "x" * 4005
     chunk_payloads = [
         {
@@ -95,9 +91,7 @@ def test_analyze_estate_returns_default_on_llm_failure(
     sample_text = "Funeral wishes are detailed in my notebook."
     mock_ollama_chat.side_effect = RuntimeError("LLM unavailable")
 
-    result = analyze_estate_relevant_information(
-        sample_text, source_name="notes.txt"
-    )
+    result = analyze_estate_relevant_information(sample_text, source_name="notes.txt")
 
     assert result["has_estate_relevant_info"] is False
     assert result["estate_information"] == {}
