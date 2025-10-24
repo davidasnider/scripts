@@ -800,14 +800,13 @@ def analyze_text_content(
         remaining_chunks = chunk_count - (i + 1)
         if on_progress:
             on_progress(i + 1, chunk_count)
-        else:
-            logger.info(
-                "Text analysis chunk %d/%d for %s (%d remaining)",
-                i + 1,
-                chunk_count,
-                source_display_name,
-                remaining_chunks,
-            )
+        logger.info(
+            "Text analysis chunk %d/%d for %s (%d remaining)",
+            i + 1,
+            chunk_count,
+            source_display_name,
+            remaining_chunks,
+        )
         prompt = _build_text_chunk_prompt(
             chunk=chunk,
             index=i + 1,
@@ -1043,14 +1042,13 @@ def detect_passwords(
         remaining_chunks = chunk_count - (i + 1)
         if on_progress:
             on_progress(i + 1, chunk_count)
-        else:
-            logger.info(
-                "Password detection chunk %d/%d for %s (%d remaining)",
-                i + 1,
-                chunk_count,
-                source_display_name,
-                remaining_chunks,
-            )
+        logger.info(
+            "Password detection chunk %d/%d for %s (%d remaining)",
+            i + 1,
+            chunk_count,
+            source_display_name,
+            remaining_chunks,
+        )
         prompt = _build_password_chunk_prompt(
             chunk=chunk,
             index=i + 1,
@@ -1459,14 +1457,13 @@ def analyze_estate_relevant_information(
         remaining = max(chunk_count - index, 0)
         if on_progress:
             on_progress(index, chunk_count)
-        else:
-            logger.info(
-                "Estate analysis chunk %d/%d for %s (%d remaining)",
-                index,
-                chunk_count,
-                source_display_name,
-                remaining,
-            )
+        logger.info(
+            "Estate analysis chunk %d/%d for %s (%d remaining)",
+            index,
+            chunk_count,
+            source_display_name,
+            remaining,
+        )
         prompt = _build_estate_chunk_prompt(
             chunk=chunk,
             index=index,
@@ -1674,14 +1671,13 @@ def analyze_financial_document(
         chunk_label = f"{chunk_index}/{chunk_count}"
         if on_progress:
             on_progress(chunk_index, chunk_count)
-        else:
-            logger.info(
-                "Financial analysis chunk %d/%d for %s (%d remaining)",
-                chunk_index,
-                chunk_count,
-                source_display_name,
-                remaining_chunks,
-            )
+        logger.info(
+            "Financial analysis chunk %d/%d for %s (%d remaining)",
+            chunk_index,
+            chunk_count,
+            source_display_name,
+            remaining_chunks,
+        )
         prompt = _build_financial_chunk_prompt(
             chunk=chunk,
             index=i + 1,
