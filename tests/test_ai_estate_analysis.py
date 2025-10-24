@@ -10,7 +10,8 @@ def _build_response(payload: dict) -> dict:
     return {"message": {"content": json.dumps(payload)}}
 
 
-def test_analyze_estate_single_chunk_extracts_information():
+@patch("src.ai_analyzer._ollama_chat")
+def test_analyze_estate_single_chunk_extracts_information(mock_chat):
     sample_text = (
         "My will is kept in the blue folder in the study desk. "
         "Contact Attorney Lisa Grant at 555-1234 for probate."
@@ -26,12 +27,10 @@ def test_analyze_estate_single_chunk_extracts_information():
         ]
     }
 
-    with patch(
-        "src.ai_analyzer.ollama.chat", return_value=_build_response(mocked_payload)
-    ) as mock_chat:
-        result = analyze_estate_relevant_information(
-            sample_text, source_name="letter.txt"
-        )
+    mock_chat.return_value = _build_response(mocked_payload)
+    result = analyze_estate_relevant_information(
+        sample_text, source_name="letter.txt"
+    )
 
     assert result["has_estate_relevant_info"] is True
     assert "Legal" in result["estate_information"]
@@ -40,7 +39,9 @@ def test_analyze_estate_single_chunk_extracts_information():
     mock_chat.assert_called_once()
 
 
-def test_analyze_estate_multi_chunk_merges_results():
+@patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2"])
+@patch("src.ai_analyzer._ollama_chat")
+def test_analyze_estate_multi_chunk_merges_results(mock_chat, _mock_chunk):
     long_text = "x" * 4005
     chunk_payloads = [
         {
@@ -66,16 +67,10 @@ def test_analyze_estate_multi_chunk_merges_results():
         },
     ]
 
-    with (
-        patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2"]),
-        patch(
-            "src.ai_analyzer.ollama.chat",
-            side_effect=[_build_response(payload) for payload in chunk_payloads],
-        ) as mock_chat,
-    ):
-        result = analyze_estate_relevant_information(
-            long_text, source_name="vault-notes.txt"
-        )
+    mock_chat.side_effect = [_build_response(payload) for payload in chunk_payloads]
+    result = analyze_estate_relevant_information(
+        long_text, source_name="vault-notes.txt"
+    )
 
     assert result["has_estate_relevant_info"] is True
     assert "Financial" in result["estate_information"]
@@ -86,15 +81,12 @@ def test_analyze_estate_multi_chunk_merges_results():
     assert mock_chat.call_count == 2
 
 
-def test_analyze_estate_returns_default_on_llm_failure():
+@patch("src.ai_analyzer._ollama_chat", side_effect=RuntimeError("LLM unavailable"))
+def test_analyze_estate_returns_default_on_llm_failure(_mock_chat):
     sample_text = "Funeral wishes are detailed in my notebook."
-
-    with patch(
-        "src.ai_analyzer.ollama.chat", side_effect=RuntimeError("LLM unavailable")
-    ):
-        result = analyze_estate_relevant_information(
-            sample_text, source_name="notes.txt"
-        )
+    result = analyze_estate_relevant_information(
+        sample_text, source_name="notes.txt"
+    )
 
     assert result["has_estate_relevant_info"] is False
     assert result["estate_information"] == {}

@@ -8,7 +8,7 @@ from src.ai_analyzer import (
 )
 
 
-@patch("src.ai_analyzer.ollama.chat")
+@patch("src.ai_analyzer._ollama_chat")
 def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
     """Verify that the AI analyzer prompt correctly instructs the model to ignore
     usernames and only identify real names. This test verifies the behavior through
@@ -51,8 +51,9 @@ def test_detect_passwords_returns_default_for_empty_text():
     }
 
 
-@patch("src.ai_analyzer.ollama.chat")
-def test_detect_passwords_single_chunk(mock_ollama_chat):
+@patch("src.ai_analyzer._fallback_detect_secrets", return_value={})
+@patch("src.ai_analyzer._ollama_chat")
+def test_detect_passwords_single_chunk(mock_ollama_chat, _mock_fallback):
     """Verify password detection parses single-chunk responses correctly."""
     mock_ollama_chat.return_value = {
         "message": {
@@ -74,9 +75,12 @@ def test_detect_passwords_single_chunk(mock_ollama_chat):
     mock_ollama_chat.assert_called_once()
 
 
+@patch("src.ai_analyzer._fallback_detect_secrets", return_value={})
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-one", "chunk-two"])
-@patch("src.ai_analyzer.ollama.chat")
-def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_chunk):
+@patch("src.ai_analyzer._ollama_chat")
+def test_detect_passwords_multi_chunk_deduplicates_keys(
+    mock_ollama_chat, _mock_chunk, _mock_fallback
+):
     """Ensure multi-chunk responses merge password dictionaries safely."""
 
     mock_responses = [
@@ -108,7 +112,7 @@ def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_
 
 
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
-@patch("src.ai_analyzer.ollama.chat")
+@patch("src.ai_analyzer._ollama_chat")
 def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
     """Ensure multi-chunk text analysis honors the max_chunks limit."""
 
@@ -128,9 +132,10 @@ def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
     assert mock_chat.call_count == 3
 
 
+@patch("src.ai_analyzer._fallback_detect_secrets", return_value={})
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
-@patch("src.ai_analyzer.ollama.chat")
-def test_detect_passwords_respects_max_chunks(mock_chat, _mock_chunk):
+@patch("src.ai_analyzer._ollama_chat")
+def test_detect_passwords_respects_max_chunks(mock_chat, _mock_chunk, _mock_fallback):
     """Password detection should only request the configured number of chunks."""
 
     responses = [
@@ -160,7 +165,7 @@ def test_detect_passwords_respects_max_chunks(mock_chat, _mock_chunk):
 
 
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
-@patch("src.ai_analyzer.ollama.chat")
+@patch("src.ai_analyzer._ollama_chat")
 def test_analyze_financial_document_respects_max_chunks(mock_chat, _mock_chunk):
     """Financial analysis should obey the chunk limit and combine summaries."""
 

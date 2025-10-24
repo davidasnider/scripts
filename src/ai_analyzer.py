@@ -122,25 +122,35 @@ def _build_text_chunk_prompt(*, chunk: str, index: int, chunk_count: int) -> str
 
 
 PASSWORD_DETECTOR_PROMPT_TEMPLATE = (
-    "You are a security auditor. Review the following text and determine "
-    "whether it contains any strings that appear to be passwords, API keys, "
-    "or other secret credentials.\n\n"
-    "Respond with a JSON object using these keys:\n"
-    '  - "contains_password": true if you see at least one likely password, '
-    "otherwise false.\n"
-    '  - "passwords": an object where each key is a short identifier '
-    '(for example, the field label or "password_1") and each value is the '
-    "exact password string taken from the text. Use an empty object when no "
-    "passwords are detected.\n\n"
-    "Example response:\n"
+    "You are a security auditor. Your task is to find passwords in the provided text. "
+    "Focus on identifying passwords that a human would use for personal accounts "
+    "like email, banking, or social media. Ignore randomly generated strings, API keys, "
+    "or cryptographic keys unless they are clearly labeled as a user password.\n\n"
+    "A typical password might contain a mix of letters, numbers, and symbols, "
+    "and be between 8 and 32 characters. Look for labels like 'password', 'pass', 'pword' "
+    "near potential candidates.\n\n"
+    "Respond with a JSON object with two keys:\n"
+    '  - "contains_password": A boolean that is true only if you find one or more likely passwords.\n'
+    '  - "passwords": An object where each key is a descriptive name (e.g., "email_password", "account_pass") '
+    "and the value is the password string itself. If no passwords are found, this should be an empty object.\n\n"
+    "Example of a good password to find:\n"
+    "  - 'My email password is: MyP@ssw0rd!23'\n\n"
+    "Example of what to ignore:\n"
+    "  - 'API Key: a1b2c3d4-e5f6-7890-a1b2-c3d4e5f67890'\n"
+    "  - '-----BEGIN RSA PRIVATE KEY-----'\n\n"
+    "Strictly adhere to the JSON format. Do not add any commentary. Here is an example of a valid response:\n"
     "{\n"
     '  "contains_password": true,\n'
     '  "passwords": {\n'
-    '    "email_account": "S3cretPass!"\n'
+    '    "email": "MyP@ssw0rd!23"\n'
     "  }\n"
     "}\n\n"
-    "Only consider information present in the text. Do not invent entries. "
-    "Respond with raw JSON only."
+    "If no passwords are found, respond with:\n"
+    "{\n"
+    '  "contains_password": false,\n'
+    '  "passwords": {}\n'
+    "}\n\n"
+    "Now, analyze the following text. Respond with raw JSON only."
 )
 
 
