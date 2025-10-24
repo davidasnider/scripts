@@ -297,17 +297,12 @@ def _format_active_files(active: list[ActiveFileStatus], limit: int = 3) -> str:
         if status.current_task:
             details.append(status.current_task)
 
-        chunks_processed = status.chunks_processed
-        chunks_total = status.chunks_total
-        if chunks_total and chunks_total > 0:
-            details.append(f"{chunks_processed}/{chunks_total}")
-        elif chunks_processed > 0:
-            details.append(str(chunks_processed))
-
-        tasks_completed = status.tasks_completed
-        tasks_total = status.tasks_total
-        if tasks_total > 0:
-            details.append(f"tasks {tasks_completed}/{tasks_total}")
+        chunk_status = _format_chunk_progress(status)
+        if chunk_status != "—":
+            details.append(chunk_status)
+        task_status = _format_task_progress(status)
+        if task_status != "—":
+            details.append(f"tasks {task_status}")
 
         detail_text = "; ".join(details)
         preview_parts.append(f"{status.file_name} ({detail_text})")
@@ -664,6 +659,28 @@ def _collect_progress_snapshot(
 
 
 
+def _format_chunk_progress(status: ActiveFileStatus) -> str:
+    """Format chunk progress for display."""
+
+    processed = status.chunks_processed
+    total = status.chunks_total
+    if total and total > 0:
+        return f"{processed}/{total}"
+    if processed > 0:
+        return str(processed)
+    return "—"
+
+
+def _format_task_progress(status: ActiveFileStatus) -> str:
+    """Format analysis task progress for display."""
+
+    total = status.tasks_total
+    completed = status.tasks_completed
+    if total > 0:
+        return f"{completed}/{total}"
+    return "—"
+
+
 def _render_active_files_panel(active_files: list[ActiveFileStatus]) -> Panel:
     """Render the active files section."""
 
@@ -682,22 +699,12 @@ def _render_active_files_panel(active_files: list[ActiveFileStatus]) -> Panel:
     if active_files:
         max_display = 5
         for status in active_files[:max_display]:
-            tasks_str = (
-                f"{status.tasks_completed}/{status.tasks_total}"
-                if status.tasks_total > 0
-                else "—"
-            )
-            chunks_str = (
-                f"{status.chunks_processed}/{status.chunks_total}"
-                if status.chunks_total and status.chunks_total > 0
-                else str(status.chunks_processed or "—")
-            )
             table.add_row(
                 status.file_name,
                 status.stage,
-                tasks_str,
+                _format_task_progress(status),
                 status.current_task or "—",
-                chunks_str,
+                _format_chunk_progress(status),
             )
         if len(active_files) > max_display:
             table.add_row(
