@@ -689,6 +689,7 @@ def analyze_text_content(
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
     max_chunks: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Analyze text content using an LLM to extract summary and mentioned people."""
     if not text.strip():
@@ -797,13 +798,16 @@ def analyze_text_content(
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
         remaining_chunks = chunk_count - (i + 1)
-        logger.info(
-            "Text analysis chunk %d/%d for %s (%d remaining)",
-            i + 1,
-            chunk_count,
-            source_display_name,
-            remaining_chunks,
-        )
+        if on_progress:
+            on_progress(i + 1, chunk_count)
+        else:
+            logger.info(
+                "Text analysis chunk %d/%d for %s (%d remaining)",
+                i + 1,
+                chunk_count,
+                source_display_name,
+                remaining_chunks,
+            )
         prompt = _build_text_chunk_prompt(
             chunk=chunk,
             index=i + 1,
@@ -915,6 +919,7 @@ def detect_passwords(
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
     max_chunks: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Detect potential passwords within text using an LLM."""
 
@@ -1036,13 +1041,16 @@ def detect_passwords(
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
         remaining_chunks = chunk_count - (i + 1)
-        logger.info(
-            "Password detection chunk %d/%d for %s (%d remaining)",
-            i + 1,
-            chunk_count,
-            source_display_name,
-            remaining_chunks,
-        )
+        if on_progress:
+            on_progress(i + 1, chunk_count)
+        else:
+            logger.info(
+                "Password detection chunk %d/%d for %s (%d remaining)",
+                i + 1,
+                chunk_count,
+                source_display_name,
+                remaining_chunks,
+            )
         prompt = _build_password_chunk_prompt(
             chunk=chunk,
             index=i + 1,
@@ -1333,6 +1341,7 @@ def analyze_estate_relevant_information(
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
     max_chunks: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Identify estate management details within text."""
 
@@ -1448,13 +1457,16 @@ def analyze_estate_relevant_information(
     for index, chunk in enumerate(chunks, start=1):
         _maybe_abort(should_abort)
         remaining = max(chunk_count - index, 0)
-        logger.info(
-            "Estate analysis chunk %d/%d for %s (%d remaining)",
-            index,
-            chunk_count,
-            source_display_name,
-            remaining,
-        )
+        if on_progress:
+            on_progress(index, chunk_count)
+        else:
+            logger.info(
+                "Estate analysis chunk %d/%d for %s (%d remaining)",
+                index,
+                chunk_count,
+                source_display_name,
+                remaining,
+            )
         prompt = _build_estate_chunk_prompt(
             chunk=chunk,
             index=index,
@@ -1533,6 +1545,7 @@ def analyze_financial_document(
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
     max_chunks: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Analyze financial document text using an LLM as a forensic accountant.
 
@@ -1659,13 +1672,16 @@ def analyze_financial_document(
         chunk_index = i + 1
         remaining_chunks = chunk_count - chunk_index
         chunk_label = f"{chunk_index}/{chunk_count}"
-        logger.info(
-            "Financial analysis chunk %d/%d for %s (%d remaining)",
-            chunk_index,
-            chunk_count,
-            source_display_name,
-            remaining_chunks,
-        )
+        if on_progress:
+            on_progress(chunk_index, chunk_count)
+        else:
+            logger.info(
+                "Financial analysis chunk %d/%d for %s (%d remaining)",
+                chunk_index,
+                chunk_count,
+                source_display_name,
+                remaining_chunks,
+            )
         prompt = _build_financial_chunk_prompt(
             chunk=chunk,
             index=i + 1,

@@ -240,6 +240,22 @@ def _update_active_file_status(
                 setattr(status, key, value)
 
 
+def _update_chunk_progress(
+    correlation_id: str | None, *, processed: int, total: int
+) -> None:
+    """Update the chunk progress for an active file, if present."""
+
+    if not correlation_id:
+        return
+    with lock:
+        status = in_progress_files.get(correlation_id)
+        if not status:
+            return
+        status.chunks_processed = processed
+        # Ensure total never decreases if a slightly smaller number is reported later.
+        status.chunks_total = max(status.chunks_total or 0, total)
+
+
 def _increment_active_chunks_total(
     correlation_id: str | None, *, increment: int
 ) -> None:
@@ -280,12 +296,19 @@ def _format_active_files(active: list[ActiveFileStatus], limit: int = 3) -> str:
         details: list[str] = [status.stage]
         if status.current_task:
             details.append(status.current_task)
-        chunk_status = _format_chunk_progress(status)
-        if chunk_status != "—":
-            details.append(chunk_status)
-        task_status = _format_task_progress(status)
-        if task_status != "—":
-            details.append(f"tasks {task_status}")
+
+        chunks_processed = status.chunks_processed
+        chunks_total = status.chunks_total
+        if chunks_total and chunks_total > 0:
+            details.append(f"{chunks_processed}/{chunks_total}")
+        elif chunks_processed > 0:
+            details.append(str(chunks_processed))
+
+        tasks_completed = status.tasks_completed
+        tasks_total = status.tasks_total
+        if tasks_total > 0:
+            details.append(f"tasks {tasks_completed}/{tasks_total}")
+
         detail_text = "; ".join(details)
         preview_parts.append(f"{status.file_name} ({detail_text})")
     if len(active) > limit:
@@ -639,26 +662,6 @@ def _collect_progress_snapshot(
     )
 
 
-def _format_chunk_progress(status: ActiveFileStatus) -> str:
-    """Format chunk progress for display."""
-
-    processed = status.chunks_processed
-    total = status.chunks_total
-    if total and total > 0:
-        return f"{processed}/{total}"
-    if processed > 0:
-        return str(processed)
-    return "—"
-
-
-def _format_task_progress(status: ActiveFileStatus) -> str:
-    """Format analysis task progress for display."""
-
-    total = status.tasks_total
-    completed = status.tasks_completed
-    if total > 0:
-        return f"{completed}/{total}"
-    return "—"
 
 
 def _render_active_files_panel(active_files: list[ActiveFileStatus]) -> Panel:
@@ -679,12 +682,22 @@ def _render_active_files_panel(active_files: list[ActiveFileStatus]) -> Panel:
     if active_files:
         max_display = 5
         for status in active_files[:max_display]:
+            tasks_str = (
+                f"{status.tasks_completed}/{status.tasks_total}"
+                if status.tasks_total > 0
+                else "—"
+            )
+            chunks_str = (
+                f"{status.chunks_processed}/{status.chunks_total}"
+                if status.chunks_total and status.chunks_total > 0
+                else str(status.chunks_processed or "—")
+            )
             table.add_row(
                 status.file_name,
                 status.stage,
-                _format_task_progress(status),
+                tasks_str,
                 status.current_task or "—",
-                _format_chunk_progress(status),
+                chunks_str,
             )
         if len(active_files) > max_display:
             table.add_row(
@@ -1410,6 +1423,12 @@ def analysis_worker(
                         status.tasks_completed = completed
                         status.tasks_total = total
 
+            def _on_chunk_progress(processed: int, total: int) -> None:
+                """Update both detailed metrics and the active file display."""
+                _update_chunk_progress(
+                    correlation_id, processed=processed, total=total
+                )
+
             def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
                 if not chunk_progress.add(chunk_count=chunk_count, duration=duration):
                     return
@@ -1492,6 +1511,7 @@ def analysis_worker(
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
+                                    on_progress=_on_chunk_progress,
                                 )
                                 duration = time.time() - operation_start
                                 actual_chunks = password_result.get("_chunk_count")
@@ -1538,6 +1558,7 @@ def analysis_worker(
                                             source_name=source_name,
                                             should_abort=_check_for_shutdown,
                                             max_chunks=max_chunks,
+                                            on_progress=_on_chunk_progress,
                                         )
                                     )
                                     duration = time.time() - operation_start
@@ -1578,6 +1599,7 @@ def analysis_worker(
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
+                                    on_progress=_on_chunk_progress,
                                 )
                                 duration = time.time() - operation_start
                                 actual_chunks = text_analysis_result.get("_chunk_count")
@@ -1721,6 +1743,7 @@ def analysis_worker(
                                     source_name=source_name,
                                     should_abort=_check_for_shutdown,
                                     max_chunks=max_chunks,
+                                    on_progress=_on_chunk_progress,
                                 )
                                 duration = time.time() - operation_start
                                 actual_chunks = financial_analysis.get("_chunk_count")
