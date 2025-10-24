@@ -41,6 +41,7 @@ from typing_extensions import Annotated
 
 from src.access_analysis import analyze_access_database
 from src.ai_analyzer import (
+    TEXT_ANALYZER_CHUNK_TOKENS,
     analyze_estate_relevant_information,
     analyze_financial_document,
     analyze_text_content,
@@ -162,7 +163,7 @@ database_logger = logging.getLogger(f"{LOGGER_NAME}.database")
 LIVE_CONSOLE = Console()
 LOG_PANEL_RATIO = 0.5
 TOP_PANEL_ROWS = 31
-CHUNK_TOKEN_LIMIT = 2048
+CHUNK_TOKEN_LIMIT = TEXT_ANALYZER_CHUNK_TOKENS
 SMALL_TEXT_BYTE_THRESHOLD = 3000
 MAX_BACKUP_SUFFIX_ATTEMPTS = 100
 ACTIVE_STATUS_FIELDS = {
@@ -1150,9 +1151,49 @@ def load_manifest() -> list[FileRecord]:
     """Load the manifest and parse it into a list of FileRecord objects."""
     if not MANIFEST_PATH.exists():
         return []
-    with MANIFEST_PATH.open() as f:
-        data = json.load(f)
+
+    def _load_from_path(path: Path) -> list[FileRecord]:
+        with path.open() as handle:
+            data = json.load(handle)
         return [FileRecord.model_validate(item) for item in data]
+
+    try:
+        return _load_from_path(MANIFEST_PATH)
+    except json.JSONDecodeError as exc:
+        pipeline_logger.error(
+            "Manifest %s is corrupted: %s",
+            MANIFEST_PATH,
+            exc,
+        )
+        backups: list[tuple[float, Path]] = []
+        if MANIFEST_BACKUP_DIR.exists():
+            for candidate in MANIFEST_BACKUP_DIR.glob("manifest-*.json.bak"):
+                try:
+                    backups.append((candidate.stat().st_mtime, candidate))
+                except OSError:
+                    continue
+            backups.sort(key=lambda item: item[0], reverse=True)
+
+        for _, backup_path in backups:
+            try:
+                records = _load_from_path(backup_path)
+                copy2(backup_path, MANIFEST_PATH)
+                pipeline_logger.warning("Restored manifest from backup %s", backup_path)
+                return records
+            except json.JSONDecodeError:
+                pipeline_logger.warning(
+                    "Skipping corrupted manifest backup %s", backup_path
+                )
+                continue
+            except Exception as backup_exc:  # pragma: no cover - rare filesystem issue
+                pipeline_logger.warning(
+                    "Unable to load manifest backup %s: %s", backup_path, backup_exc
+                )
+                continue
+
+        raise RuntimeError(
+            "Manifest file is corrupted and no valid backup was found."
+        ) from exc
 
 
 def _backup_manifest() -> None:
@@ -2106,9 +2147,11 @@ def main(
     debug: Annotated[bool, typer.Option(help="Enable debug logging.")] = False,
 ) -> int:
     """Run the main threaded pipeline."""
+    console_logging = target_filename != "" or debug
+
     configure_logging(
         level=logging.DEBUG if debug else logging.INFO,
-        console=False,
+        console=console_logging,
         force=True,
     )
 
@@ -2204,7 +2247,13 @@ def main(
     collection = initialize_db(str(DB_PATH))
     run_logger.debug("Database initialized")
 
-    full_manifest = load_manifest()
+    try:
+        full_manifest = load_manifest()
+    except RuntimeError as exc:
+        message = str(exc)
+        run_logger.error(message)
+        typer.echo(message)
+        return 1
     run_logger.info("Loaded %d files from manifest", len(full_manifest))
 
     reset_count = reset_outdated_analysis_tasks(full_manifest)
@@ -2216,44 +2265,43 @@ def main(
     current_manifest = full_manifest
     run_logger.debug("Manifest reference stored for shutdown handling")
 
-    if target_filename:
-        candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
-        run_logger.info(
-            "Targeted run enabled; evaluating %d incomplete file(s) for %r.",
-            len(candidate_manifest),
-            target_filename,
-        )
-    else:
-        candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
-        run_logger.info(
-            "Found %d unprocessed files.",
-            len(candidate_manifest),
-        )
-
-    processing_manifest = candidate_manifest
-
+    candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
     if target_filename:
         filtered_manifest = filter_records_by_search_term(
-            processing_manifest, target_filename
+            candidate_manifest, target_filename
         )
-
+        fallback_used = False
         if not filtered_manifest:
-            fallback_manifest = filter_records_by_search_term(
+            filtered_manifest = filter_records_by_search_term(
                 full_manifest, target_filename
             )
-            if fallback_manifest:
-                run_logger.info(
-                    "Target %r already complete; reprocessing %d file(s).",
-                    target_filename,
-                    len(fallback_manifest),
-                )
-                filtered_manifest = fallback_manifest
-            else:
-                run_logger.warning(
-                    "No files matched the filter %r. Nothing to process.",
-                    target_filename,
-                )
-                return 0
+            fallback_used = bool(filtered_manifest)
+        if not filtered_manifest:
+            message = (
+                f"No files matched the filter {target_filename!r}. Nothing to process."
+            )
+            run_logger.warning(message)
+            typer.echo(message)
+            return 0
+
+        if fallback_used:
+            run_logger.info(
+                "Targeted filter %r matched only completed files; "
+                "reprocessing %d file(s).",
+                target_filename,
+                len(filtered_manifest),
+            )
+
+        run_logger.info(
+            "Targeted run enabled; reprocessing %d file(s) for %r.",
+            len(filtered_manifest),
+            target_filename,
+        )
+        reprocess_message = (
+            f"Reprocessing {len(filtered_manifest)} file(s) matching "
+            f"{target_filename!r}."
+        )
+        typer.echo(reprocess_message)
 
         for record in filtered_manifest:
             reset_file_record_for_rescan(record)
@@ -2276,7 +2324,20 @@ def main(
             len(processing_manifest),
             target_filename,
         )
-    elif batch_size > 0:
+    else:
+        run_logger.info(
+            "Found %d unprocessed files.",
+            len(candidate_manifest),
+        )
+        processing_manifest = candidate_manifest
+
+    if not processing_manifest:
+        message = "No files selected for processing after filtering."
+        run_logger.info(message)
+        typer.echo(message)
+        return 0
+
+    if not target_filename and batch_size > 0:
         processing_manifest = candidate_manifest[:batch_size]
         run_logger.info(
             "Processing batch of %d file(s) from %d available.",
@@ -2436,6 +2497,14 @@ def main(
                 failed_files.add(correlation_id)
 
     run_logger.info("Queued %d pending files for processing", pending_files)
+    if pending_files == 0:
+        message = (
+            "No files were queued for processing. "
+            "Verify that the filter matches pending content or that the file type "
+            "is supported for the selected model."
+        )
+        run_logger.warning(message)
+        typer.echo(message)
 
     layout = _build_live_layout()
     start_time = time.time()

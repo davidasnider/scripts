@@ -14,9 +14,9 @@ import cv2
 import ollama
 import pandas as pd
 import streamlit as st
-import yaml
 from PIL import Image
 
+from src.config_utils import build_ollama_options, get_model_config, load_config
 from src.filters import apply_manifest_filters
 from src.logging_utils import configure_logging
 from src.schema import AnalysisName
@@ -37,15 +37,23 @@ st.title("🔎 Local AI Digital Archive")
 
 
 # Load config
-with open("config.yaml", "r", encoding="utf-8") as f:
-    config = yaml.safe_load(f)
+config = load_config()
+models_config = config.get("models", {})
+embedding_model_config = get_model_config(models_config, "embedding_model")
+text_model_config = get_model_config(models_config, "text_analyzer")
 
-EMBEDDING_MODEL = config["models"]["embedding_model"]
-LLM_MODEL = config["models"]["text_analyzer"]
+EMBEDDING_MODEL = embedding_model_config["name"]
+EMBEDDING_CONTEXT_WINDOW = embedding_model_config.get("context_window")
+EMBEDDING_OPTIONS = build_ollama_options(embedding_model_config)
+LLM_MODEL = text_model_config["name"]
+LLM_CONTEXT_WINDOW = text_model_config.get("context_window")
+LLM_OPTIONS = build_ollama_options(text_model_config)
 logger.debug(
-    "Loaded configuration (embedding_model=%s, llm_model=%s)",
+    "Loaded config (embed=%s ctx=%s, llm=%s ctx=%s)",
     EMBEDDING_MODEL,
+    EMBEDDING_CONTEXT_WINDOW,
     LLM_MODEL,
+    LLM_CONTEXT_WINDOW,
 )
 
 # Initialize session state
@@ -1425,9 +1433,10 @@ def query_knowledge_base(query_text: str, filters: dict) -> list[dict]:
         logger.info("Querying knowledge base (filters_applied=%s)", bool(filters))
         logger.debug("Query preview: %s", preview)
         # Generate embedding for the query
-        query_embedding = ollama.embeddings(model=EMBEDDING_MODEL, prompt=query_text)[
-            "embedding"
-        ]
+        embedding_kwargs = {"model": EMBEDDING_MODEL, "prompt": query_text}
+        if EMBEDDING_OPTIONS:
+            embedding_kwargs["options"] = dict(EMBEDDING_OPTIONS)
+        query_embedding = ollama.embeddings(**embedding_kwargs)["embedding"]
 
         # Query the collection - limit to 3 most relevant results to reduce context
         if filters:
@@ -1545,9 +1554,14 @@ def generate_response(
         logger.debug("Prompt length for response: %d", prompt_length)
 
         # Call Ollama with streaming
-        response = ollama.chat(
-            model=LLM_MODEL, messages=[{"role": "user", "content": prompt}], stream=True
-        )
+        chat_kwargs = {
+            "model": LLM_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+        }
+        if LLM_OPTIONS:
+            chat_kwargs["options"] = dict(LLM_OPTIONS)
+        response = ollama.chat(**chat_kwargs)
 
         logger.info("LLM streaming response started")
         return response

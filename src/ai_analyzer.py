@@ -9,28 +9,134 @@ from pathlib import Path
 from typing import Any, Callable
 
 import ollama
-import yaml
 from PIL import Image, UnidentifiedImageError
 
-from src.text_utils import chunk_text
+from src.config_utils import (
+    build_ollama_options,
+    compute_chunk_size,
+    get_model_config,
+    load_config,
+)
+from src.text_utils import chunk_text, count_tokens
 
 logger = logging.getLogger(__name__)
 
 # Load config
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+config = load_config()
+models_config = config.get("models", {})
+text_analyzer_config = get_model_config(models_config, "text_analyzer")
+code_analyzer_config = get_model_config(models_config, "code_analyzer")
+image_describer_config = get_model_config(models_config, "image_describer")
 
-TEXT_ANALYZER_MODEL = config["models"]["text_analyzer"]
-CODE_ANALYZER_MODEL = config["models"]["code_analyzer"]
-IMAGE_DESCRIBER_MODEL = config["models"]["image_describer"]
-# Use TEXT_ANALYZER_MODEL as default if no password detector model in config.
-PASSWORD_DETECTOR_MODEL = config["models"].get("password_detector", TEXT_ANALYZER_MODEL)
+TEXT_ANALYZER_MODEL = text_analyzer_config["name"]
+TEXT_ANALYZER_CONTEXT_WINDOW = text_analyzer_config.get("context_window")
+TEXT_ANALYZER_OPTIONS = build_ollama_options(text_analyzer_config)
+CODE_ANALYZER_MODEL = code_analyzer_config["name"]
+CODE_ANALYZER_CONTEXT_WINDOW = code_analyzer_config.get("context_window")
+CODE_ANALYZER_OPTIONS = build_ollama_options(code_analyzer_config)
+IMAGE_DESCRIBER_MODEL = image_describer_config["name"]
+IMAGE_DESCRIBER_CONTEXT_WINDOW = image_describer_config.get("context_window")
+IMAGE_DESCRIBER_OPTIONS = build_ollama_options(image_describer_config)
 
-DEFAULT_PASSWORD_RESULT = {"contains_password": False, "passwords": {}}
-DEFAULT_ESTATE_RESULT = {
-    "has_estate_relevant_info": False,
-    "estate_information": {},
-}
+password_detector_entry = models_config.get("password_detector")
+if password_detector_entry is None:
+    password_detector_config = text_analyzer_config
+else:
+    password_detector_config = get_model_config(models_config, "password_detector")
+
+PASSWORD_DETECTOR_MODEL = password_detector_config["name"]
+PASSWORD_DETECTOR_CONTEXT_WINDOW = password_detector_config.get("context_window")
+PASSWORD_DETECTOR_OPTIONS = build_ollama_options(password_detector_config)
+PROMPT_RESERVE_SAFETY_TOKENS = 128
+JSON_RESPONSE_FORMAT = "json"
+JSON_OUTPUT_OPTIONS = {"temperature": 0}
+STRICT_JSON_REMINDER = (
+    "REMINDER: Reply with strictly valid JSON. Use double quotes for all keys and "
+    "string values, include commas between fields, and do not add commentary."
+)
+JSON_SYSTEM_MESSAGE = (
+    "You are a JSON generation engine. Every reply MUST be a single valid JSON "
+    "object that strictly follows the caller's schema. Do not add explanations, "
+    "code fences, or any text outside the JSON object. Use double quotes for all "
+    "keys and string values and ensure the JSON is syntactically correct."
+)
+TOKEN_MARGIN_FACTOR = 2.0
+
+
+def _build_text_single_prompt(text: str) -> str:
+    return (
+        "You are a document analyst. Analyze the following text and provide a "
+        "JSON response with exactly two keys:\n\n"
+        '- "summary": a concise paragraph summarizing the main points of the '
+        "text.\n"
+        '- "mentioned_people": a list of names of people mentioned in the text. '
+        "These should be actual names, like 'John Smith' or 'Maria Garcia', "
+        "not usernames like 'user123'.\n\n"
+        "Example response:\n"
+        "{\n"
+        '  "summary": "Concise paragraph here.",\n'
+        '  "mentioned_people": ["Alice Johnson", "Robert Smith"]\n'
+        "}\n\n"
+        f"Text: {text}\n\n"
+        "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
+        "backticks. Return only the raw JSON object."
+    )
+
+
+def _build_text_chunk_prompt(*, chunk: str, index: int, chunk_count: int) -> str:
+    return (
+        f"You are a document analyst. Analyze chunk {index}/{chunk_count} of the "
+        "following text and provide a JSON response with exactly two keys:\n\n"
+        '- "summary": a concise paragraph summarizing the main points of this '
+        "chunk.\n"
+        '- "mentioned_people": a list of names of people mentioned in this '
+        "chunk. These should be actual names, like 'John Smith' or "
+        "'Maria Garcia', not usernames like 'user123'.\n\n"
+        "Example response:\n"
+        "{\n"
+        '  "summary": "Concise paragraph for this chunk.",\n'
+        '  "mentioned_people": ["Alice Johnson"]\n'
+        "}\n\n"
+        f"Text chunk: {chunk}\n\n"
+        "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
+        "backticks. Return only the raw JSON object."
+    )
+
+
+PASSWORD_DETECTOR_PROMPT_TEMPLATE = (
+    "You are a security auditor. Review the following text and determine "
+    "whether it contains any strings that appear to be passwords, API keys, "
+    "or other secret credentials.\n\n"
+    "Respond with a JSON object using these keys:\n"
+    '  - "contains_password": true if you see at least one likely password, '
+    "otherwise false.\n"
+    '  - "passwords": an object where each key is a short identifier '
+    '(for example, the field label or "password_1") and each value is the '
+    "exact password string taken from the text. Use an empty object when no "
+    "passwords are detected.\n\n"
+    "Example response:\n"
+    "{\n"
+    '  "contains_password": true,\n'
+    '  "passwords": {\n'
+    '    "email_account": "S3cretPass!"\n'
+    "  }\n"
+    "}\n\n"
+    "Only consider information present in the text. Do not invent entries. "
+    "Respond with raw JSON only."
+)
+
+
+def _build_password_single_prompt(text: str) -> str:
+    return f"{PASSWORD_DETECTOR_PROMPT_TEMPLATE}\n\nText:\n{text}"
+
+
+def _build_password_chunk_prompt(*, chunk: str, index: int, chunk_count: int) -> str:
+    return (
+        f"{PASSWORD_DETECTOR_PROMPT_TEMPLATE}\n\n"
+        f"This is chunk {index} of {chunk_count}:\n{chunk}"
+    )
+
+
 ESTATE_CATEGORY_KEYS = [
     "Legal",
     "Financial",
@@ -39,6 +145,231 @@ ESTATE_CATEGORY_KEYS = [
     "Medical",
     "Personal",
 ]
+
+
+ESTATE_ANALYSIS_INSTRUCTIONS = (
+    "You are an assistant helping loved ones settle a deceased person's affairs. "
+    "Review the supplied text and capture only information that would help an "
+    "executor or family member locate important assets, instructions, or "
+    "accounts.\n\n"
+    "Return a JSON object. Use only these top-level keys when relevant: "
+    f"{', '.join(ESTATE_CATEGORY_KEYS)}.\n"
+    "Each present key must map to an array of objects. For each item include:\n"
+    '  - "item": a concise label for the information (e.g., "Living Will", '
+    '"Chase savings account").\n'
+    '  - "why_it_matters": a short phrase on why the detail helps wrap up '
+    "affairs.\n"
+    '  - "details": the critical facts pulled from the text such as account '
+    "numbers, custodian names, login hints, storage locations, or instructions.\n"
+    'Add optional keys like "location", "contact", or "reference" when the '
+    "text supplies them. Do not fabricate information and omit categories that "
+    "have no findings. If nothing is relevant return an empty JSON object {}.\n"
+    "Respond only with raw JSON (no code fences)."
+)
+
+
+def _build_estate_single_prompt(text: str) -> str:
+    return (
+        f"{ESTATE_ANALYSIS_INSTRUCTIONS}\n\n"
+        "Example response:\n"
+        "{\n"
+        '  "Financial": [\n'
+        "    {\n"
+        '      "item": "Checking account",\n'
+        '      "why_it_matters": "Funds available for estate expenses",\n'
+        '      "details": "Bank of Springfield, account ending 1234"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        f"Text:\n{text}"
+    )
+
+
+def _build_estate_chunk_prompt(
+    *, chunk: str, index: int, chunk_count: int, source_name: str
+) -> str:
+    return (
+        f"{ESTATE_ANALYSIS_INSTRUCTIONS}\n\n"
+        "Example response:\n"
+        "{\n"
+        '  "Legal": [\n'
+        "    {\n"
+        '      "item": "Will",\n'
+        '      "why_it_matters": "Instructions for asset distribution",\n'
+        '      "details": "Stored in safe deposit box #42 at First State Bank"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        f"This is chunk {index} of {chunk_count} from {source_name}:\n{chunk}"
+    )
+
+
+FINANCIAL_ANALYSIS_PROMPT_TEMPLATE = (
+    "You are a meticulous forensic accountant. Analyze the following "
+    "financial document text and provide a JSON response with exactly "
+    "four keys:\n\n"
+    '- "summary": a concise paragraph summarizing the document.\n'
+    '- "potential_red_flags": a list of potential red flags or irregularities.\n'
+    '- "incriminating_items": a list of items that could be incriminating.\n'
+    '- "confidence_score": a numerical score from 0 to 100 indicating '
+    "confidence in the analysis.\n\n"
+    "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
+    "backticks. Return only the raw JSON object."
+)
+
+
+def _build_financial_single_prompt(text: str) -> str:
+    return (
+        f"{FINANCIAL_ANALYSIS_PROMPT_TEMPLATE}\n\n"
+        "Example response:\n"
+        "{\n"
+        '  "summary": "Overall summary of the document.",\n'
+        '  "potential_red_flags": ["Late payment noted"],\n'
+        '  "incriminating_items": ["Unreported cash deposit"],\n'
+        '  "confidence_score": 78\n'
+        "}\n\n"
+        f"Text:\n{text}"
+    )
+
+
+def _build_financial_chunk_prompt(*, chunk: str, index: int, chunk_count: int) -> str:
+    return (
+        f"You are a meticulous forensic accountant. "
+        f"Analyze chunk {index}/{chunk_count} of the following financial document "
+        "text and provide a JSON response with exactly four keys:\n\n"
+        '- "summary": a concise paragraph summarizing this chunk.\n'
+        '- "potential_red_flags": a list of potential red flags or irregularities '
+        "in this chunk.\n"
+        '- "incriminating_items": a list of items that could be incriminating in '
+        "this chunk.\n"
+        '- "confidence_score": a numerical score from 0 to 100 indicating '
+        "confidence in the analysis of this chunk.\n\n"
+        "Example response:\n"
+        "{\n"
+        '  "summary": "Chunk-specific summary.",\n'
+        '  "potential_red_flags": [],\n'
+        '  "incriminating_items": [],\n'
+        '  "confidence_score": 60\n'
+        "}\n\n"
+        f"Text chunk: {chunk}\n\n"
+        "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
+        "backticks. Return only the raw JSON object."
+    )
+
+
+def _prepare_chunks(
+    text: str,
+    *,
+    initial_limit: int,
+    context_window: int | None,
+    prompt_factory: Callable[[str, int, int], str],
+    minimum_limit: int = 128,
+) -> tuple[list[str], int]:
+    """Chunk text while ensuring prompts fit within the model context window."""
+
+    limit = max(int(initial_limit / TOKEN_MARGIN_FACTOR), minimum_limit)
+
+    while True:
+        chunks = chunk_text(text, max_tokens=limit)
+        if not chunks:
+            return [], limit
+
+        if context_window is None:
+            return chunks, limit
+
+        chunk_count = len(chunks)
+        fits = True
+        for idx, chunk in enumerate(chunks, start=1):
+            prompt = prompt_factory(chunk, idx, chunk_count)
+            prompt_tokens = count_tokens(prompt)
+            adjusted_tokens = int(prompt_tokens * TOKEN_MARGIN_FACTOR)
+            if prompt_tokens > context_window:
+                fits = False
+                break
+            if adjusted_tokens > context_window:
+                fits = False
+                break
+
+        if fits:
+            return chunks, limit
+
+        new_limit = max(limit // 2, minimum_limit)
+        logger.debug(
+            "Prompt exceeded context window (limit=%d, new_limit=%d, context=%s)",
+            limit,
+            new_limit,
+            context_window,
+        )
+        if new_limit == limit:
+            if limit == minimum_limit:
+                return chunks, limit
+            limit = minimum_limit
+        else:
+            limit = new_limit
+
+
+_TEXT_CHUNK_PROMPT_BASE_TOKENS = count_tokens(
+    _build_text_chunk_prompt(chunk="", index=1, chunk_count=1)
+)
+_ESTATE_CHUNK_PROMPT_BASE_TOKENS = count_tokens(
+    _build_estate_chunk_prompt(
+        chunk="",
+        index=1,
+        chunk_count=1,
+        source_name="example.txt",
+    )
+)
+TEXT_ANALYZER_PROMPT_RESERVE = (
+    max(_TEXT_CHUNK_PROMPT_BASE_TOKENS, _ESTATE_CHUNK_PROMPT_BASE_TOKENS)
+    + PROMPT_RESERVE_SAFETY_TOKENS
+)
+TEXT_ANALYZER_CHUNK_TOKENS = compute_chunk_size(
+    TEXT_ANALYZER_CONTEXT_WINDOW,
+    reserve_tokens=TEXT_ANALYZER_PROMPT_RESERVE,
+)
+
+_PASSWORD_CHUNK_PROMPT_BASE_TOKENS = count_tokens(
+    _build_password_chunk_prompt(chunk="", index=1, chunk_count=1)
+)
+PASSWORD_DETECTOR_PROMPT_RESERVE = (
+    _PASSWORD_CHUNK_PROMPT_BASE_TOKENS + PROMPT_RESERVE_SAFETY_TOKENS
+)
+PASSWORD_DETECTOR_CHUNK_TOKENS = compute_chunk_size(
+    PASSWORD_DETECTOR_CONTEXT_WINDOW,
+    reserve_tokens=PASSWORD_DETECTOR_PROMPT_RESERVE,
+)
+
+_FINANCIAL_CHUNK_PROMPT_BASE_TOKENS = count_tokens(
+    _build_financial_chunk_prompt(chunk="", index=1, chunk_count=1)
+)
+CODE_ANALYZER_PROMPT_RESERVE = (
+    _FINANCIAL_CHUNK_PROMPT_BASE_TOKENS + PROMPT_RESERVE_SAFETY_TOKENS
+)
+CODE_ANALYZER_CHUNK_TOKENS = compute_chunk_size(
+    CODE_ANALYZER_CONTEXT_WINDOW,
+    reserve_tokens=CODE_ANALYZER_PROMPT_RESERVE,
+)
+logger.debug(
+    "Model configuration: text=%s ctx=%s chunk=%s; "
+    "code=%s ctx=%s chunk=%s; image=%s ctx=%s; password=%s ctx=%s chunk=%s",
+    TEXT_ANALYZER_MODEL,
+    TEXT_ANALYZER_CONTEXT_WINDOW,
+    TEXT_ANALYZER_CHUNK_TOKENS,
+    CODE_ANALYZER_MODEL,
+    CODE_ANALYZER_CONTEXT_WINDOW,
+    CODE_ANALYZER_CHUNK_TOKENS,
+    IMAGE_DESCRIBER_MODEL,
+    IMAGE_DESCRIBER_CONTEXT_WINDOW,
+    PASSWORD_DETECTOR_MODEL,
+    PASSWORD_DETECTOR_CONTEXT_WINDOW,
+    PASSWORD_DETECTOR_CHUNK_TOKENS,
+)
+
+DEFAULT_PASSWORD_RESULT = {"contains_password": False, "passwords": {}}
+DEFAULT_ESTATE_RESULT = {
+    "has_estate_relevant_info": False,
+    "estate_information": {},
+}
 
 
 def _clean_json_response(response_text: str) -> str:
@@ -53,6 +384,69 @@ def _clean_json_response(response_text: str) -> str:
         response_text = response_text[:-3]
 
     return response_text.strip()
+
+
+def _extract_json_segment(text: str) -> str | None:
+    """Attempt to extract the first valid JSON object or array from text."""
+
+    opening_chars = {"{": "}", "[": "]"}
+    start_index = None
+    start_char = None
+
+    for candidate, closing in opening_chars.items():
+        idx = text.find(candidate)
+        if idx != -1 and (start_index is None or idx < start_index):
+            start_index = idx
+            start_char = candidate
+
+    if start_index is None or start_char is None:
+        return None
+
+    stack: list[str] = []
+    in_string = False
+    escape = False
+
+    for position in range(start_index, len(text)):
+        char = text[position]
+
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+
+        if char in opening_chars:
+            stack.append(opening_chars[char])
+        elif char in opening_chars.values():
+            if not stack:
+                return None
+            expected = stack.pop()
+            if char != expected:
+                continue
+            if not stack:
+                return text[start_index : position + 1]
+
+    return None
+
+
+def _parse_json_payload(payload: str) -> Any:
+    cleaned = _clean_json_response(payload)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        candidate = _extract_json_segment(cleaned)
+        if candidate and candidate != cleaned:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                logger.debug("Failed to parse extracted JSON segment: %s", candidate)
+        raise
 
 
 def _resolve_source_name(source_name: str | None) -> str:
@@ -72,6 +466,83 @@ AbortCallback = Callable[[], None]
 def _maybe_abort(callback: AbortCallback | None) -> None:
     if callback is not None:
         callback()
+
+
+def _ollama_chat(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    options: dict[str, Any] | None = None,
+    response_format: str | None = None,
+) -> dict[str, Any]:
+    """Invoke Ollama chat with optional configuration."""
+    request: dict[str, Any] = {"model": model, "messages": messages}
+    if options:
+        request["options"] = dict(options)
+    if response_format:
+        request["format"] = response_format
+    return ollama.chat(**request)
+
+
+def _combine_options(*option_dicts: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge multiple Ollama option dictionaries."""
+    merged: dict[str, Any] = {}
+    for opts in option_dicts:
+        if not opts:
+            continue
+        merged.update(opts)
+    return merged
+
+
+def _request_json_response(
+    *,
+    model: str,
+    prompt: str,
+    options: dict[str, Any] | None,
+    should_abort: AbortCallback | None,
+    context: str,
+    max_attempts: int = 2,
+) -> Any:
+    """Send a chat request expecting JSON and retry with stricter instructions."""
+
+    base_prompt = prompt
+    prompt_to_send = prompt
+
+    for attempt in range(1, max_attempts + 1):
+        _maybe_abort(should_abort)
+        response = _ollama_chat(
+            model,
+            [
+                {"role": "system", "content": JSON_SYSTEM_MESSAGE},
+                {"role": "user", "content": prompt_to_send},
+            ],
+            options=options,
+            response_format=JSON_RESPONSE_FORMAT,
+        )
+        content = response["message"]["content"]
+
+        try:
+            return _parse_json_payload(content)
+        except json.JSONDecodeError as exc:
+            logger.debug(
+                "Model response failed JSON decode for %s (attempt %d/%d): %s",
+                context,
+                attempt,
+                max_attempts,
+                content,
+            )
+            if attempt >= max_attempts:
+                raise
+            logger.warning(
+                "%s JSON decode failed (attempt %d/%d): %s; "
+                "retrying with strict instructions",
+                context,
+                attempt,
+                max_attempts,
+                exc,
+            )
+            prompt_to_send = f"{base_prompt}\n\n{STRICT_JSON_REMINDER}"
+            continue
 
 
 def _limit_chunk_list(
@@ -109,46 +580,71 @@ def analyze_text_content(
         "Starting text content analysis, text length: %d bytes",
         text_bytes,
     )
+    chunk_token_limit = TEXT_ANALYZER_CHUNK_TOKENS
     if text_bytes <= 3000:
         _maybe_abort(should_abort)
         logger.info("Text analysis processing single chunk for %s", source_display_name)
         # Single chunk processing
-        prompt = (
-            "You are a document analyst. Analyze the following text and provide a "
-            "JSON response with exactly two keys:\n\n"
-            '- "summary": a concise paragraph summarizing the main points of the '
-            "text.\n"
-            '- "mentioned_people": a list of names of people mentioned in the text. '
-            "These should be actual names, like 'John Smith' or 'Maria Garcia', "
-            "not usernames like 'user123'.\n\n"
-            f"Text: {text}\n\n"
-            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-            "backticks. Return only the raw JSON object."
-        )
+        prompt = _build_text_single_prompt(text)
 
-        try:
+        prompt_token_estimate = int(count_tokens(prompt) * TOKEN_MARGIN_FACTOR)
+        if (
+            TEXT_ANALYZER_CONTEXT_WINDOW
+            and prompt_token_estimate > TEXT_ANALYZER_CONTEXT_WINDOW
+        ):
             logger.debug(
-                "Sending Ollama text analysis request (single chunk), "
-                "prompt length: %d",
-                len(prompt),
+                "Single chunk prompt exceeds context for %s "
+                "(estimated tokens=%d, context=%s); switching to chunked mode",
+                source_display_name,
+                prompt_token_estimate,
+                TEXT_ANALYZER_CONTEXT_WINDOW,
             )
-            _maybe_abort(should_abort)
-            response = ollama.chat(
-                model=TEXT_ANALYZER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+            chunk_token_limit = max(
+                int(TEXT_ANALYZER_CHUNK_TOKENS / TOKEN_MARGIN_FACTOR), 128
             )
-            logger.debug("Received Ollama response for text analysis")
-            json_str = response["message"]["content"]
-            return json.loads(_clean_json_response(json_str))
-        except Exception as e:
-            logger.warning("Failed to analyze text content with Ollama: %s", e)
-            return {
-                "summary": "Analysis unavailable - Ollama not accessible",
-                "mentioned_people": [],
-            }
+        else:
+            try:
+                logger.debug(
+                    "Sending Ollama text analysis request (single chunk), "
+                    "prompt length: %d",
+                    len(prompt),
+                )
+                result = _request_json_response(
+                    model=TEXT_ANALYZER_MODEL,
+                    prompt=prompt,
+                    options=_combine_options(
+                        TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS
+                    ),
+                    should_abort=should_abort,
+                    context=f"text analysis single chunk for {source_display_name}",
+                )
+                return result
+            except json.JSONDecodeError as decode_error:
+                logger.warning(
+                    "Single-chunk text analysis JSON decode failed for %s: %s; "
+                    "retrying with chunks",
+                    source_display_name,
+                    decode_error,
+                )
+                chunk_token_limit = max(
+                    int(TEXT_ANALYZER_CHUNK_TOKENS / TOKEN_MARGIN_FACTOR), 128
+                )
+            except Exception as e:
+                logger.warning("Failed to analyze text content with Ollama: %s", e)
+                return {
+                    "summary": "Analysis unavailable - Ollama not accessible",
+                    "mentioned_people": [],
+                }
 
     # Multi-chunk processing
-    chunks = chunk_text(text, max_tokens=2048)
+    chunks, chunk_token_limit = _prepare_chunks(
+        text,
+        initial_limit=chunk_token_limit,
+        context_window=TEXT_ANALYZER_CONTEXT_WINDOW,
+        prompt_factory=lambda chunk, idx, total: _build_text_chunk_prompt(
+            chunk=chunk, index=idx, chunk_count=total
+        ),
+    )
     chunks = _limit_chunk_list(
         chunks,
         max_chunks,
@@ -156,6 +652,12 @@ def analyze_text_content(
         source_name=source_display_name,
     )
     chunk_count = len(chunks)
+    logger.info(
+        "Text analysis processing %d chunk(s) for %s (chunk_token_limit=%d)",
+        chunk_count,
+        source_display_name,
+        chunk_token_limit,
+    )
     logger.info(
         "Text analysis processing %d chunk(s) for %s",
         chunk_count,
@@ -174,17 +676,10 @@ def analyze_text_content(
             source_display_name,
             remaining_chunks,
         )
-        prompt = (
-            f"You are a document analyst. Analyze chunk {i+1}/{chunk_count} of the "
-            "following text and provide a JSON response with exactly two keys:\n\n"
-            '- "summary": a concise paragraph summarizing the main points of this '
-            "chunk.\n"
-            '- "mentioned_people": a list of names of people mentioned in this '
-            "chunk. These should be actual names, like 'John Smith' or "
-            "'Maria Garcia', not usernames like 'user123'.\n\n"
-            f"Text chunk: {chunk}\n\n"
-            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-            "backticks. Return only the raw JSON object."
+        prompt = _build_text_chunk_prompt(
+            chunk=chunk,
+            index=i + 1,
+            chunk_count=chunk_count,
         )
 
         try:
@@ -195,21 +690,24 @@ def analyze_text_content(
                 source_display_name,
                 len(prompt),
             )
-            _maybe_abort(should_abort)
-            response = ollama.chat(
+            chunk_result = _request_json_response(
                 model=TEXT_ANALYZER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                prompt=prompt,
+                options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
+                should_abort=should_abort,
+                context=(f"text chunk {i + 1}/{chunk_count} for {source_display_name}"),
             )
-            logger.debug(
-                "Received Ollama response for text chunk %d/%d for %s",
+            all_summaries.append(chunk_result.get("summary", ""))
+            all_people.update(chunk_result.get("mentioned_people", []))
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "Text analysis chunk %d/%d JSON decode failed for %s after retries: %s",
                 i + 1,
                 chunk_count,
                 source_display_name,
+                exc,
             )
-            json_str = response["message"]["content"]
-            chunk_result = json.loads(_clean_json_response(json_str))
-            all_summaries.append(chunk_result.get("summary", ""))
-            all_people.update(chunk_result.get("mentioned_people", []))
+            continue
         except Exception as e:
             logger.warning(
                 "Failed to analyze text chunk %d for %s with Ollama: %s",
@@ -242,9 +740,10 @@ def analyze_text_content(
                 len(combined_summary_prompt),
             )
             _maybe_abort(should_abort)
-            response = ollama.chat(
-                model=TEXT_ANALYZER_MODEL,
-                messages=[{"role": "user", "content": combined_summary_prompt}],
+            response = _ollama_chat(
+                TEXT_ANALYZER_MODEL,
+                [{"role": "user", "content": combined_summary_prompt}],
+                options=TEXT_ANALYZER_OPTIONS,
             )
             logger.debug("Received Ollama response for summary combination")
             final_summary = response["message"]["content"]
@@ -298,46 +797,63 @@ def detect_passwords(
             "passwords": passwords,
         }
 
-    prompt_template = (
-        "You are a security auditor. Review the following text and determine "
-        "whether it contains any strings that appear to be passwords, API keys, "
-        "or other secret credentials.\n\n"
-        "Respond with a JSON object using these keys:\n"
-        '  - "contains_password": true if you see at least one likely password, '
-        "otherwise false.\n"
-        '  - "passwords": an object where each key is a short identifier '
-        '(for example, the field label or "password_1") and each value is the '
-        "exact password string taken from the text. Use an empty object when no "
-        "passwords are detected.\n\n"
-        "Only consider information present in the text. Do not invent entries. "
-        "Respond with raw JSON only."
-    )
-
     if text_bytes <= 3000:
-        prompt = f"{prompt_template}\n\nText:\n{text}"
-        try:
-            _maybe_abort(should_abort)
+        prompt = _build_password_single_prompt(text)
+        prompt_token_estimate = int(count_tokens(prompt) * TOKEN_MARGIN_FACTOR)
+        if (
+            PASSWORD_DETECTOR_CONTEXT_WINDOW
+            and prompt_token_estimate > PASSWORD_DETECTOR_CONTEXT_WINDOW
+        ):
             logger.debug(
-                "Sending Ollama password detection request (single chunk) for %s",
+                "Single chunk password prompt exceeds context for %s "
+                "(estimated tokens=%d, context=%s); switching to chunked mode",
                 source_display_name,
+                prompt_token_estimate,
+                PASSWORD_DETECTOR_CONTEXT_WINDOW,
             )
-            response = ollama.chat(
-                model=PASSWORD_DETECTOR_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            logger.debug("Received Ollama response for password detection")
-            json_str = response["message"]["content"]
-            raw_result = json.loads(_clean_json_response(json_str))
-            return _normalize_result(raw_result)
-        except Exception as e:
-            logger.warning(
-                "Failed to detect passwords in %s with Ollama: %s",
-                source_display_name,
-                e,
-            )
-            return DEFAULT_PASSWORD_RESULT
+        else:
+            try:
+                logger.debug(
+                    "Sending Ollama password detection request (single chunk) for %s",
+                    source_display_name,
+                )
+                raw_result = _request_json_response(
+                    model=PASSWORD_DETECTOR_MODEL,
+                    prompt=prompt,
+                    options=_combine_options(
+                        PASSWORD_DETECTOR_OPTIONS, JSON_OUTPUT_OPTIONS
+                    ),
+                    should_abort=should_abort,
+                    context=(
+                        f"password detection single chunk for {source_display_name}"
+                    ),
+                )
+                return _normalize_result(raw_result)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    (
+                        "Password detection JSON decode failed for %s: %s; "
+                        "switching to chunks"
+                    ),
+                    source_display_name,
+                    exc,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to detect passwords in %s with Ollama: %s",
+                    source_display_name,
+                    e,
+                )
+                return DEFAULT_PASSWORD_RESULT
 
-    chunks = chunk_text(text, max_tokens=2048)
+    chunks, _ = _prepare_chunks(
+        text,
+        initial_limit=PASSWORD_DETECTOR_CHUNK_TOKENS,
+        context_window=PASSWORD_DETECTOR_CONTEXT_WINDOW,
+        prompt_factory=lambda chunk, idx, total: _build_password_chunk_prompt(
+            chunk=chunk, index=idx, chunk_count=total
+        ),
+    )
     chunks = _limit_chunk_list(
         chunks,
         max_chunks,
@@ -367,21 +883,42 @@ def detect_passwords(
             source_display_name,
             remaining_chunks,
         )
-        prompt = (
-            f"{prompt_template}\n\n" f"This is chunk {i+1} of {chunk_count}:\n{chunk}"
+        prompt = _build_password_chunk_prompt(
+            chunk=chunk,
+            index=i + 1,
+            chunk_count=chunk_count,
         )
         try:
-            response = ollama.chat(
+            raw_result = _request_json_response(
                 model=PASSWORD_DETECTOR_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                prompt=prompt,
+                options=_combine_options(
+                    PASSWORD_DETECTOR_OPTIONS, JSON_OUTPUT_OPTIONS
+                ),
+                should_abort=should_abort,
+                context=(
+                    f"password detection chunk {i + 1}/{chunk_count} for "
+                    f"{source_display_name}"
+                ),
             )
-            json_str = response["message"]["content"]
-            chunk_result = _normalize_result(json.loads(_clean_json_response(json_str)))
+            chunk_result = _normalize_result(raw_result)
             if chunk_result["contains_password"]:
                 any_passwords = True
                 for key, value in chunk_result["passwords"].items():
                     unique_key = _deduplicate_key(key, value, detected_passwords)
                     detected_passwords[unique_key] = value
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                (
+                    "Password detection chunk %d/%d JSON decode failed for %s "
+                    "after retries: %s"
+                ),
+                i + 1,
+                chunk_count,
+                source_display_name,
+                exc,
+            )
+            continue
         except Exception as e:
             logger.warning(
                 "Failed to detect passwords for chunk %d/%d of %s: %s",
@@ -470,60 +1007,78 @@ def analyze_estate_relevant_information(
         source_display_name,
     )
 
-    instructions = (
-        "You are an assistant helping loved ones settle a deceased person's affairs. "
-        "Review the supplied text and capture only information that would help an "
-        "executor or family member locate important assets, instructions, or "
-        "accounts.\n\n"
-        "Return a JSON object. Use only these top-level keys when relevant: "
-        f"{', '.join(ESTATE_CATEGORY_KEYS)}.\n"
-        "Each present key must map to an array of objects. For each item include:\n"
-        '  - "item": a concise label for the information (e.g., "Living Will", '
-        '"Chase savings account").\n'
-        '  - "why_it_matters": a short phrase on why the detail helps wrap up '
-        "affairs.\n"
-        '  - "details": the critical facts pulled from the text such as account '
-        "numbers, "
-        "custodian names, login hints, storage locations, or instructions.\n"
-        'Add optional keys like "location", "contact", or "reference" when the '
-        "text supplies them. Do not fabricate information and omit categories "
-        "that have "
-        "no findings. If nothing is relevant return an empty JSON object {}.\n"
-        "Respond only with raw JSON (no code fences)."
-    )
-
-    def _call_model(payload: str) -> dict[str, list[dict[str, Any]]]:
-        _maybe_abort(should_abort)
-        response = ollama.chat(
+    def _call_model(
+        payload: str,
+        *,
+        context: str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        parsed = _request_json_response(
             model=TEXT_ANALYZER_MODEL,
-            messages=[{"role": "user", "content": payload}],
+            prompt=payload,
+            options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
+            should_abort=should_abort,
+            context=context,
         )
-        json_str = response["message"]["content"]
-        parsed = json.loads(_clean_json_response(json_str))
         return _normalize_estate_response(parsed)
 
     if text_bytes <= 3000:
-        prompt = f"{instructions}\n\nText:\n{text}"
-        try:
+        prompt = _build_estate_single_prompt(text)
+        prompt_token_estimate = int(count_tokens(prompt) * TOKEN_MARGIN_FACTOR)
+        if (
+            TEXT_ANALYZER_CONTEXT_WINDOW
+            and prompt_token_estimate > TEXT_ANALYZER_CONTEXT_WINDOW
+        ):
             logger.debug(
-                "Sending estate analysis request (single chunk) for %s",
+                "Single chunk estate prompt exceeds context for %s "
+                "(estimated tokens=%d, context=%s); switching to chunked mode",
                 source_display_name,
+                prompt_token_estimate,
+                TEXT_ANALYZER_CONTEXT_WINDOW,
             )
-            normalized = _call_model(prompt)
-            has_info = bool(normalized)
-            return {
-                "has_estate_relevant_info": has_info,
-                "estate_information": normalized,
-            }
-        except Exception as e:
-            logger.warning(
-                "Estate analysis failed for %s with Ollama: %s",
-                source_display_name,
-                e,
-            )
-            return DEFAULT_ESTATE_RESULT
+        else:
+            try:
+                logger.debug(
+                    "Sending estate analysis request (single chunk) for %s",
+                    source_display_name,
+                )
+                normalized = _call_model(
+                    prompt,
+                    context=f"estate analysis single chunk for {source_display_name}",
+                )
+                has_info = bool(normalized)
+                return {
+                    "has_estate_relevant_info": has_info,
+                    "estate_information": normalized,
+                }
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    (
+                        "Estate analysis JSON decode failed for %s: %s; "
+                        "retrying with chunked analysis"
+                    ),
+                    source_display_name,
+                    exc,
+                )
+                # Fall through to chunked processing
+            except Exception as e:
+                logger.warning(
+                    "Estate analysis failed for %s with Ollama: %s",
+                    source_display_name,
+                    e,
+                )
+                return DEFAULT_ESTATE_RESULT
 
-    chunks = chunk_text(text, max_tokens=2048)
+    chunks, _ = _prepare_chunks(
+        text,
+        initial_limit=TEXT_ANALYZER_CHUNK_TOKENS,
+        context_window=TEXT_ANALYZER_CONTEXT_WINDOW,
+        prompt_factory=lambda chunk, idx, total: _build_estate_chunk_prompt(
+            chunk=chunk,
+            index=idx,
+            chunk_count=total,
+            source_name=source_display_name,
+        ),
+    )
     chunks = _limit_chunk_list(
         chunks,
         max_chunks,
@@ -535,21 +1090,35 @@ def analyze_estate_relevant_information(
 
     for index, chunk in enumerate(chunks, start=1):
         _maybe_abort(should_abort)
-        prompt = (
-            f"{instructions}\n\n"
-            f"This is chunk {index} of {chunk_count} from "
-            f"{source_display_name}:\n{chunk}"
+        prompt = _build_estate_chunk_prompt(
+            chunk=chunk,
+            index=index,
+            chunk_count=chunk_count,
+            source_name=source_display_name,
         )
+        chunk_label = f"{index}/{chunk_count}"
         try:
             logger.debug(
-                "Sending estate analysis request for chunk %d/%d of %s",
-                index,
-                chunk_count,
+                "Sending estate analysis request for chunk %s of %s",
+                chunk_label,
                 source_display_name,
             )
-            normalized = _call_model(prompt)
+            normalized = _call_model(
+                prompt,
+                context="estate analysis chunk {} for {}".format(
+                    chunk_label, source_display_name
+                ),
+            )
             if normalized:
                 chunk_results.append(normalized)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "Estate analysis chunk %s JSON decode failed for %s after retries: %s",
+                chunk_label,
+                source_display_name,
+                exc,
+            )
+            continue
         except Exception as e:
             logger.warning(
                 "Estate analysis failed for chunk %d/%d of %s: %s",
@@ -606,47 +1175,69 @@ def analyze_financial_document(
             "Financial analysis processing single chunk for %s", source_display_name
         )
         # Single chunk processing
-        prompt = (
-            "You are a meticulous forensic accountant. Analyze the following "
-            "financial document text and provide a JSON response with exactly "
-            "four keys:\n\n"
-            '- "summary": a concise paragraph summarizing the document.\n'
-            '- "potential_red_flags": a list of potential red flags or '
-            "irregularities.\n"
-            '- "incriminating_items": a list of items that could be incriminating.\n'
-            '- "confidence_score": a numerical score from 0 to 100 indicating '
-            "confidence in the analysis.\n\n"
-            f"Text: {text}\n\n"
-            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-            "backticks. Return only the raw JSON object."
-        )
-
-        try:
+        prompt = _build_financial_single_prompt(text)
+        prompt_token_estimate = int(count_tokens(prompt) * TOKEN_MARGIN_FACTOR)
+        if (
+            CODE_ANALYZER_CONTEXT_WINDOW
+            and prompt_token_estimate > CODE_ANALYZER_CONTEXT_WINDOW
+        ):
             logger.debug(
-                "Sending Ollama financial analysis request (single chunk), "
-                "prompt length: %d",
-                len(prompt),
+                "Single chunk financial prompt exceeds context for %s "
+                "(estimated tokens=%d, context=%s); switching to chunked mode",
+                source_display_name,
+                prompt_token_estimate,
+                CODE_ANALYZER_CONTEXT_WINDOW,
             )
-            _maybe_abort(should_abort)
-            response = ollama.chat(
-                model=CODE_ANALYZER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                options={"raw": True},
-            )
-            logger.debug("Received Ollama response for financial analysis")
-            json_str = response["message"]["content"]
-            return json.loads(_clean_json_response(json_str))
-        except Exception as e:
-            logger.warning("Failed to analyze financial document with Ollama: %s", e)
-            return {
-                "summary": "Analysis unavailable - Ollama not accessible",
-                "potential_red_flags": [],
-                "incriminating_items": [],
-                "confidence_score": 0,
-            }
+        else:
+            try:
+                logger.debug(
+                    "Sending Ollama financial analysis request (single chunk), "
+                    "prompt length: %d",
+                    len(prompt),
+                )
+                result = _request_json_response(
+                    model=CODE_ANALYZER_MODEL,
+                    prompt=prompt,
+                    options=_combine_options(
+                        CODE_ANALYZER_OPTIONS, {"raw": True}, JSON_OUTPUT_OPTIONS
+                    ),
+                    should_abort=should_abort,
+                    context=(
+                        f"financial analysis single chunk for {source_display_name}"
+                    ),
+                )
+                return result
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    (
+                        "Financial analysis JSON decode failed for %s: %s; "
+                        "switching to chunks"
+                    ),
+                    source_display_name,
+                    exc,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to analyze financial document with Ollama: %s", e
+                )
+                return {
+                    "summary": "Analysis unavailable - Ollama not accessible",
+                    "potential_red_flags": [],
+                    "incriminating_items": [],
+                    "confidence_score": 0,
+                }
 
     # Multi-chunk processing
-    chunks = chunk_text(text, max_tokens=2048)
+    chunks, _ = _prepare_chunks(
+        text,
+        initial_limit=CODE_ANALYZER_CHUNK_TOKENS,
+        context_window=CODE_ANALYZER_CONTEXT_WINDOW,
+        prompt_factory=lambda chunk, idx, total: _build_financial_chunk_prompt(
+            chunk=chunk,
+            index=idx,
+            chunk_count=total,
+        ),
+    )
     chunks = _limit_chunk_list(
         chunks,
         max_chunks,
@@ -666,59 +1257,57 @@ def analyze_financial_document(
 
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
-        remaining_chunks = chunk_count - (i + 1)
+        chunk_index = i + 1
+        remaining_chunks = chunk_count - chunk_index
+        chunk_label = f"{chunk_index}/{chunk_count}"
         logger.info(
             "Financial analysis chunk %d/%d for %s (%d remaining)",
-            i + 1,
+            chunk_index,
             chunk_count,
             source_display_name,
             remaining_chunks,
         )
-        prompt = (
-            "You are a meticulous forensic accountant. "
-            f"Analyze chunk {i+1}/{chunk_count} of the following financial document "
-            "text and provide a JSON response "
-            "with exactly four keys:\n\n"
-            '- "summary": a concise paragraph summarizing this chunk.\n'
-            '- "potential_red_flags": a list of potential red flags or irregularities '
-            "in this chunk.\n"
-            '- "incriminating_items": a list of items that could be incriminating in '
-            "this chunk.\n"
-            '- "confidence_score": a numerical score from 0 to 100 indicating '
-            "confidence in the analysis of this chunk.\n\n"
-            f"Text chunk: {chunk}\n\n"
-            "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-            "backticks. Return only the raw JSON object."
+        prompt = _build_financial_chunk_prompt(
+            chunk=chunk,
+            index=i + 1,
+            chunk_count=chunk_count,
         )
 
         try:
             logger.debug(
-                "Sending Ollama request for financial chunk %d/%d for %s, "
-                "prompt length: %d",
-                i + 1,
-                chunk_count,
+                "Sending financial chunk %s request for %s (prompt len=%d)",
+                chunk_label,
                 source_display_name,
                 len(prompt),
             )
-            _maybe_abort(should_abort)
-            response = ollama.chat(
+            chunk_result = _request_json_response(
                 model=CODE_ANALYZER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                options={"raw": True},
+                prompt=prompt,
+                options=_combine_options(
+                    CODE_ANALYZER_OPTIONS, {"raw": True}, JSON_OUTPUT_OPTIONS
+                ),
+                should_abort=should_abort,
+                context=(
+                    f"financial analysis chunk {chunk_label} for "
+                    f"{source_display_name}"
+                ),
             )
-            logger.debug(
-                "Received Ollama response for financial chunk %d/%d for %s",
-                i + 1,
-                chunk_count,
-                source_display_name,
-            )
-            json_str = response["message"]["content"]
-            chunk_result = json.loads(_clean_json_response(json_str))
             all_summaries.append(chunk_result.get("summary", ""))
             all_red_flags.update(chunk_result.get("potential_red_flags", []))
             all_incriminating.update(chunk_result.get("incriminating_items", []))
             if isinstance(chunk_result.get("confidence_score"), (int, float)):
                 confidence_scores.append(chunk_result["confidence_score"])
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                (
+                    "Financial analysis chunk %s JSON decode failed for %s "
+                    "after retries: %s"
+                ),
+                chunk_label,
+                source_display_name,
+                exc,
+            )
+            continue
         except Exception as e:
             logger.warning(
                 "Failed to analyze financial chunk %d for %s with Ollama: %s",
@@ -752,10 +1341,10 @@ def analyze_financial_document(
                 len(combined_summary_prompt),
             )
             _maybe_abort(should_abort)
-            response = ollama.chat(
-                model=CODE_ANALYZER_MODEL,
-                messages=[{"role": "user", "content": combined_summary_prompt}],
-                options={"raw": True},
+            response = _ollama_chat(
+                CODE_ANALYZER_MODEL,
+                [{"role": "user", "content": combined_summary_prompt}],
+                options=_combine_options(CODE_ANALYZER_OPTIONS, {"raw": True}),
             )
             logger.debug("Received Ollama response for financial summary combination")
             final_summary = response["message"]["content"]
@@ -826,15 +1415,16 @@ def describe_image(
             len(image_b64),
         )
         _maybe_abort(should_abort)
-        response = ollama.chat(
-            model=IMAGE_DESCRIBER_MODEL,
-            messages=[
+        response = _ollama_chat(
+            IMAGE_DESCRIBER_MODEL,
+            [
                 {
                     "role": "user",
                     "content": "Describe this image in detail.",
                     "images": [image_b64],
                 }
             ],
+            options=IMAGE_DESCRIBER_OPTIONS,
         )
         logger.debug("Received Ollama response for image description")
         logger.debug("Completed image description")
@@ -892,9 +1482,10 @@ def summarize_video_frames(
             len(prompt),
         )
         _maybe_abort(should_abort)
-        response = ollama.chat(
-            model=TEXT_ANALYZER_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+        response = _ollama_chat(
+            TEXT_ANALYZER_MODEL,
+            [{"role": "user", "content": prompt}],
+            options=TEXT_ANALYZER_OPTIONS,
         )
         logger.debug("Received Ollama response for video summarization")
         logger.debug("Completed video frame summarization")

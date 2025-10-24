@@ -1,6 +1,16 @@
 models:
-  nsfw_detector: "AdamCodd/vit-base-nsfw-detector"
-  text_analyzer: "llama3:70b-instruct"
-  code_analyzer: "deepseek-coder-v2:latest"
-  image_describer: "llava:7b"
-  embedding_model: "nomic-embed-text"
+  nsfw_detector:
+    name: "AdamCodd/vit-base-nsfw-detector"
+    context_window: null
+  text_analyzer:
+    name: "phi3"
+    context_window: 8192
+  code_analyzer:
+    name: "phi3"
+    context_window: 8192 
+  image_describer:
+    name: "llava:7b"
+    context_window: 4096
+  embedding_model:
+    name: "nomic-embed-text"
+    context_window: 2048
