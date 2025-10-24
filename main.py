@@ -1444,6 +1444,40 @@ def analysis_worker(
                 estate_analysis_result: dict[str, Any] | None = None
                 source_name = file_record.file_name or Path(file_record.file_path).name
 
+                # Pre-calculate summary if any dependent tasks are pending.
+                summary_dependent_tasks = {
+                    AnalysisName.TEXT_ANALYSIS,
+                    AnalysisName.PEOPLE_ANALYSIS,
+                    AnalysisName.ESTATE_ANALYSIS,
+                }
+                needs_summary = any(
+                    task.name in summary_dependent_tasks
+                    and task.status == AnalysisStatus.PENDING
+                    for task in file_record.analysis_tasks
+                )
+
+                if needs_summary and has_text_content(file_record):
+                    _check_for_shutdown()
+                    chunk_estimate = _estimate_chunk_count(
+                        file_record.extracted_text, max_chunks=max_chunks
+                    )
+                    _increment_active_chunks_total(
+                        correlation_id, increment=chunk_estimate
+                    )
+                    operation_start = time.time()
+                    text_analysis_result = analyze_text_content(
+                        file_record.extracted_text,
+                        source_name=source_name,
+                        should_abort=_check_for_shutdown,
+                        max_chunks=max_chunks,
+                    )
+                    duration = time.time() - operation_start
+                    actual_chunks = text_analysis_result.get("_chunk_count")
+                    _track_chunk_metrics(
+                        duration,
+                        _resolve_chunk_metric(actual_chunks, chunk_estimate),
+                    )
+
                 for task in file_record.analysis_tasks:
                     _check_for_shutdown()
                     if task.status != AnalysisStatus.PENDING:
@@ -1521,9 +1555,15 @@ def analysis_worker(
                                 task.status = AnalysisStatus.COMPLETE
                                 _refresh_task_progress()
                                 continue
+
                             if task.name == AnalysisName.ESTATE_ANALYSIS:
                                 if estate_analysis_result is None:
                                     _check_for_shutdown()
+                                    summary = (
+                                        text_analysis_result.get("summary")
+                                        if text_analysis_result
+                                        else file_record.summary
+                                    )
                                     chunk_estimate = _estimate_chunk_count(
                                         file_record.extracted_text,
                                         max_chunks=max_chunks,
@@ -1535,6 +1575,7 @@ def analysis_worker(
                                     estate_analysis_result = (
                                         analyze_estate_relevant_information(
                                             file_record.extracted_text,
+                                            summary=summary,
                                             source_name=source_name,
                                             should_abort=_check_for_shutdown,
                                             max_chunks=max_chunks,
@@ -1563,38 +1604,16 @@ def analysis_worker(
                                 _refresh_task_progress()
                                 continue
 
-                            if text_analysis_result is None:
-                                _check_for_shutdown()
-                                chunk_estimate = _estimate_chunk_count(
-                                    file_record.extracted_text,
-                                    max_chunks=max_chunks,
-                                )
-                                _increment_active_chunks_total(
-                                    correlation_id, increment=chunk_estimate
-                                )
-                                operation_start = time.time()
-                                text_analysis_result = analyze_text_content(
-                                    file_record.extracted_text,
-                                    source_name=source_name,
-                                    should_abort=_check_for_shutdown,
-                                    max_chunks=max_chunks,
-                                )
-                                duration = time.time() - operation_start
-                                actual_chunks = text_analysis_result.get("_chunk_count")
-                                _track_chunk_metrics(
-                                    duration,
-                                    _resolve_chunk_metric(
-                                        actual_chunks, chunk_estimate
-                                    ),
-                                )
                             if task.name == AnalysisName.TEXT_ANALYSIS:
-                                file_record.summary = text_analysis_result.get(
-                                    "summary"
-                                )
+                                if text_analysis_result:
+                                    file_record.summary = text_analysis_result.get(
+                                        "summary"
+                                    )
                             elif task.name == AnalysisName.PEOPLE_ANALYSIS:
-                                file_record.mentioned_people = text_analysis_result.get(
-                                    "mentioned_people", []
-                                )
+                                if text_analysis_result:
+                                    file_record.mentioned_people = (
+                                        text_analysis_result.get("mentioned_people", [])
+                                    )
                             task.status = AnalysisStatus.COMPLETE
                             _refresh_task_progress()
                             continue

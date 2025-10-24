@@ -1327,14 +1327,82 @@ def _merge_estate_results(
     return merged
 
 
+def _is_summary_estate_related(
+    summary: str,
+    *,
+    source_name: str,
+    should_abort: AbortCallback | None,
+) -> bool:
+    """Check if a document summary is relevant to estate planning."""
+    if not summary.strip():
+        return False
+
+    prompt = (
+        "You are an expert estate planning assistant. Your task is to determine if a "
+        "document is relevant to settling a person's estate based on its summary.\n\n"
+        "Consider summaries relevant if they mention wills, trusts, property, "
+        "financial accounts, insurance, debts, medical directives, or digital assets. "
+        "Ignore summaries about general topics, technical manuals, personal stories, "
+        "or hobbies unless they are explicitly tied to an asset or legal directive.\n\n"
+        'Respond with a single JSON object containing one key, "is_relevant", '
+        "which is `true` if the summary is relevant and `false` otherwise.\n\n"
+        "Example 1:\n"
+        'Summary: "This document is a last will and testament, outlining the '
+        'distribution of assets."\n'
+        'Your response: {"is_relevant": true}\n\n'
+        "Example 2:\n"
+        'Summary: "A technical manual for the T-800 series phone, covering '
+        'setup and troubleshooting."\n'
+        'Your response: {"is_relevant": false}\n\n'
+        f"Document Summary:\n{summary}"
+    )
+
+    try:
+        response = _request_json_response(
+            model=TEXT_ANALYZER_MODEL,
+            prompt=prompt,
+            options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
+            should_abort=should_abort,
+            context=f"estate relevance check for {source_name}",
+        )
+        if isinstance(response, dict) and isinstance(response.get("is_relevant"), bool):
+            return response["is_relevant"]
+        logger.warning(
+            "Estate relevance check for %s returned unexpected payload: %s",
+            source_name,
+            response,
+        )
+        return False
+    except Exception as e:
+        logger.error("Estate relevance check for %s failed: %s", source_name, e)
+        return False
+
+
 def analyze_estate_relevant_information(
     text: str,
     *,
+    summary: str | None = None,
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
     max_chunks: int | None = None,
 ) -> dict[str, Any]:
     """Identify estate management details within text."""
+
+    source_display_name = _resolve_source_name(source_name)
+
+    # First, check if the summary indicates relevance.
+    if summary:
+        is_relevant = _is_summary_estate_related(
+            summary,
+            source_name=source_display_name,
+            should_abort=should_abort,
+        )
+        if not is_relevant:
+            logger.info(
+                "Skipping estate analysis for %s based on non-relevant summary.",
+                source_display_name,
+            )
+            return {**DEFAULT_ESTATE_RESULT, "_chunk_count": 0}
 
     if not text.strip():
         return {
@@ -1343,7 +1411,6 @@ def analyze_estate_relevant_information(
         }
 
     text_bytes = len(text.encode("utf-8"))
-    source_display_name = _resolve_source_name(source_name)
     logger.debug(
         "Starting estate analysis, text length: %d bytes for %s",
         text_bytes,
