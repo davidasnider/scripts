@@ -252,8 +252,7 @@ def _update_chunk_progress(
         if not status:
             return
         status.chunks_processed = processed
-        # Ensure total never decreases if a slightly smaller number is reported later.
-        status.chunks_total = max(status.chunks_total or 0, total)
+        status.chunks_total = total
 
 
 def _increment_active_chunks_total(
@@ -1437,15 +1436,7 @@ def analysis_worker(
                 )
 
             def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
-                if not chunk_progress.add(chunk_count=chunk_count, duration=duration):
-                    return
-                with lock:
-                    status = in_progress_files.get(correlation_id)
-                    if status:
-                        status.chunks_processed = chunk_progress.count
-                        status.chunks_total = max(
-                            status.chunks_total or 0, chunk_progress.count
-                        )
+                chunk_progress.add(chunk_count=chunk_count, duration=duration)
 
             worker_logger.debug(
                 "Worker %d analyzing content from %s [%s]",
