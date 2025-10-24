@@ -146,6 +146,14 @@ shutdown_event = threading.Event()
 _shutdown_signals_sent = threading.Event()
 manifest_write_lock = threading.Lock()
 
+CHUNK_PROGRESS_LOG_PATTERN = re.compile(
+    (
+        r"^(?P<task>.+?) chunk (?P<current>\d+)/(?P<total>\d+) for "
+        r"(?P<file>.+?) \((?P<remaining>\d+) remaining\)$"
+    ),
+    re.IGNORECASE,
+)
+
 # Active worker counts (updated when pipeline runs)
 _active_worker_counts = {
     "extraction": NUM_EXTRACTION_WORKERS,
@@ -276,6 +284,56 @@ def _increment_active_chunks_total(
             return
         current_total = status.chunks_total or 0
         status.chunks_total = current_total + increment
+
+
+def _format_task_label(label: str) -> str:
+    """Normalize task labels emitted in log lines."""
+
+    cleaned = " ".join(label.strip().split())
+    return cleaned.title() if cleaned else ""
+
+
+def _apply_chunk_progress_from_log(message: str) -> bool:
+    """Update active file chunk progress based on a chunk progress log line."""
+
+    text = message.strip()
+    if not text:
+        return False
+
+    match = CHUNK_PROGRESS_LOG_PATTERN.match(text)
+    if not match:
+        return False
+
+    try:
+        current = int(match.group("current"))
+        total = int(match.group("total"))
+    except (TypeError, ValueError):
+        return False
+
+    if total <= 0:
+        return False
+
+    file_name = (match.group("file") or "").strip()
+    task_label = (match.group("task") or "").strip()
+    if not file_name or not task_label:
+        return False
+
+    normalized_task = _format_task_label(task_label)
+    clamped_current = max(0, min(current, total))
+    updated = False
+
+    with lock:
+        for status in in_progress_files.values():
+            if status.file_name.lower() != file_name.lower():
+                continue
+            status.stage = "Analyzing"
+            if normalized_task:
+                status.current_task = normalized_task
+            status.chunks_total = total
+            status.chunks_processed = clamped_current
+            updated = True
+
+    return updated
 
 
 @dataclass
@@ -991,10 +1049,17 @@ class LiveLogHandler(logging.Handler):
         self._last_console_height = current_height
 
     def emit(self, record: logging.LogRecord) -> None:
+        raw_message = record.getMessage()
+        if raw_message:
+            try:
+                _apply_chunk_progress_from_log(raw_message)
+            except Exception:  # pragma: no cover - defensive; avoid logging loops
+                pass
+
         try:
             message = self.format(record)
         except Exception:
-            message = record.getMessage()
+            message = raw_message or ""
 
         with self._lock:
             self._lines.append(message)
