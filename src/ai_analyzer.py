@@ -1006,7 +1006,7 @@ def _normalize_estate_response(
 
                     # Remove placeholder text from other string fields.
                     keys_to_prune: list[str] = []
-                    for entry_key, entry_value in cleaned_entry.items():
+                    for entry_key, entry_value in list(cleaned_entry.items()):
                         if entry_key == "item":
                             continue
                         if isinstance(entry_value, str):
@@ -1023,6 +1023,7 @@ def _normalize_estate_response(
                     for key_to_remove in keys_to_prune:
                         cleaned_entry.pop(key_to_remove, None)
 
+                    # Enforce "item" plus at least one supporting field.
                     if len(cleaned_entry) < ESTATE_MIN_FIELDS_PER_ENTRY:
                         continue
 
