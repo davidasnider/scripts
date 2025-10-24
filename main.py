@@ -877,14 +877,18 @@ def _render_progress_panel(snapshot: ProgressSnapshot) -> Panel:
     return Panel(body, title="Pipeline Status", border_style="blue")
 
 
+def _calculate_top_panel_size() -> int:
+    """Calculate the optimal size for the top panel based on console height."""
+    return min(TOP_PANEL_ROWS, max(LIVE_CONSOLE.size.height - 1, 1))
+
+
 def _build_live_layout() -> Layout:
     layout = Layout(name="root")
     layout.split_column(Layout(name="top", size=TOP_PANEL_ROWS))
     layout["top"].update(
         Panel("Initializing pipeline dashboard…", title="Pipeline Status")
     )
-    top_size = min(TOP_PANEL_ROWS, max(LIVE_CONSOLE.size.height - 1, 1))
-    layout["top"].size = top_size
+    layout["top"].size = _calculate_top_panel_size()
     return layout
 
 
@@ -894,8 +898,7 @@ def _update_progress_panel(layout: Layout, snapshot: ProgressSnapshot) -> None:
     active_panel = _render_active_files_panel(snapshot.active_files)
     pipeline_panel = _render_progress_panel(snapshot)
     layout["top"].update(Group(active_panel, pipeline_panel))
-    top_size = min(TOP_PANEL_ROWS, max(LIVE_CONSOLE.size.height - 1, 1))
-    layout["top"].size = top_size
+    layout["top"].size = _calculate_top_panel_size()
 
 def signal_handler(signum, frame):
     """Handle termination signals by initiating a coordinated shutdown."""
