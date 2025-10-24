@@ -1105,8 +1105,8 @@ def analyze_estate_relevant_information(
             )
             normalized = _call_model(
                 prompt,
-                context=(
-                    f"estate analysis chunk {chunk_label} for " f"{source_display_name}"
+                context="estate analysis chunk {} for {}".format(
+                    chunk_label, source_display_name
                 ),
             )
             if normalized:
@@ -1312,7 +1312,6 @@ def analyze_financial_document(
             logger.warning(
                 "Failed to analyze financial chunk %d for %s with Ollama: %s",
                 i + 1,
-                chunk_count,
                 source_display_name,
                 e,
             )

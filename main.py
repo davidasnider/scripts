@@ -2283,13 +2283,11 @@ def main(
             len(filtered_manifest),
             target_filename,
         )
-        typer.echo(
-            "Reprocessing %d file(s) matching %r."
-            % (
-                len(filtered_manifest),
-                target_filename,
-            )
+        reprocess_message = (
+            f"Reprocessing {len(filtered_manifest)} file(s) matching "
+            f"{target_filename!r}."
         )
+        typer.echo(reprocess_message)
 
         for record in filtered_manifest:
             reset_file_record_for_rescan(record)

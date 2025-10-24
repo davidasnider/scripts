@@ -4,10 +4,10 @@ models:
     context_window: null
   text_analyzer:
     name: "phi3"
-    context_window: 4096
+    context_window: 131072
   code_analyzer:
     name: "phi3"
-    context_window: 4096
+    context_window: 131072 
   image_describer:
     name: "llava:7b"
     context_window: 4096
