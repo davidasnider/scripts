@@ -57,15 +57,12 @@ def query(
     else:
         # Use list comprehension with filter logic for better performance
         def matches_criteria(record: FileRecord) -> bool:
-            if no_summary and record.summary is None:
-                return True
-            if is_nsfw and (record.is_nsfw is True):
-                return True
-            # If multiple filters are specified, require all to match
-            if no_summary and is_nsfw:
-                return record.summary is None and (record.is_nsfw is True)
-            # If no filters match, exclude the record
-            return False
+            # Check each filter condition
+            no_summary_match = not no_summary or record.summary is None
+            is_nsfw_match = not is_nsfw or (record.is_nsfw is True)
+
+            # All active filters must match (AND logic)
+            return no_summary_match and is_nsfw_match
 
         filtered_records = [record for record in records if matches_criteria(record)]
 
