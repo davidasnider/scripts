@@ -4,7 +4,7 @@ This directory serves as the entry point for the command-line interface (CLI) of
 
 ## `__main__.py`
 
-The `__main__.py` module is responsible for defining and handling the CLI commands. It uses the `argparse` library to create a user-friendly interface for interacting with the application from the command line.
+The `__main__.py` module is responsible for defining and handling the CLI commands. It uses the `typer` library to create a user-friendly interface for interacting with the application from the command line.
 
 ### Commands
 
