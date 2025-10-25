@@ -192,8 +192,10 @@ ESTATE_ANALYSIS_INSTRUCTIONS = (
     "Ignore personal narratives, biographies, hobbies, memberships, awards, "
     "and generic life history unless the text clearly ties them to a legal, "
     "financial, or administrative obligation. Do not infer assets—cite only "
-    "information that is stated or quoted from the text. Never copy the "
-    "example output or invent placeholders.\n\n"
+    "information that is stated or quoted from the text.\n\n"
+    "CRITICAL REMINDER: The JSON examples are for structure only. Do NOT include "
+    "data from the examples in your response. Your response must only contain "
+    "information from the provided text.\n\n"
     "Return a JSON object. Use only these top-level keys when relevant: "
     f"{', '.join(ESTATE_CATEGORY_KEYS)}.\n"
     "Each present key must map to an array of objects. For every entry include:\n"
@@ -1333,15 +1335,100 @@ def _merge_estate_results(
     return merged
 
 
+def _is_document_estate_related(
+    summary: str,
+    *,
+    source_name: str | None = None,
+    should_abort: AbortCallback | None = None,
+) -> bool:
+    """Use an LLM to determine if a document summary is estate-related."""
+    if not summary or not summary.strip():
+        return False
+
+    source_display_name = _resolve_source_name(source_name)
+    prompt = (
+        "You are a document triaging assistant. Based on the following summary, "
+        "determine if the document is likely to contain information relevant to "
+        "settling a person's estate, such as wills, trusts, financial accounts, "
+        "insurance policies, property deeds, or digital assets.\n\n"
+        "Respond with a JSON object containing a single key, "
+        '"is_estate_related", set to either true or false.\n\n'
+        "Example of a relevant summary: 'The document is a last will and "
+        "testament, outlining asset distribution and executor details.'\n"
+        "Your response for the above summary would be:\n"
+        '{\n  "is_estate_related": true\n}\n\n'
+        "Example of an irrelevant summary: 'A technical manual for a smartphone, "
+        "covering setup, features, and troubleshooting.'\n"
+        "Your response for the above summary would be:\n"
+        '{\n  "is_estate_related": false\n}\n\n'
+        f"Document Summary:\n{summary}\n\n"
+        "Respond only with raw JSON."
+    )
+
+    context = f"estate relevance check for {source_display_name}"
+    logger.debug("Checking estate relevance for %s", source_display_name)
+
+    try:
+        result = _request_json_response(
+            model=TEXT_ANALYZER_MODEL,
+            prompt=prompt,
+            options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
+            should_abort=should_abort,
+            context=context,
+        )
+        if isinstance(result, dict):
+            is_related = result.get("is_estate_related")
+            if isinstance(is_related, bool):
+                logger.info(
+                    "Estate relevance for %s: %s", source_display_name, is_related
+                )
+                return is_related
+        logger.warning(
+            "Estate relevance check for %s returned unexpected payload: %s",
+            source_display_name,
+            result,
+        )
+        return False
+    except (json.JSONDecodeError, LLMTimeoutError) as exc:
+        logger.warning(
+            "Estate relevance check for %s failed, defaulting to false: %s",
+            source_display_name,
+            exc,
+        )
+        return False
+    except Exception as exc:
+        logger.error(
+            "An unexpected error occurred during estate relevance check for %s: %s",
+            source_display_name,
+            exc,
+        )
+        return False
+
+
 def analyze_estate_relevant_information(
     text: str,
     *,
+    summary: str | None = None,
     source_name: str | None = None,
     should_abort: AbortCallback | None = None,
     max_chunks: int | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Identify estate management details within text."""
+
+    source_display_name = _resolve_source_name(source_name)
+    if summary:
+        is_relevant = _is_document_estate_related(
+            summary,
+            source_name=source_name,
+            should_abort=should_abort,
+        )
+        if not is_relevant:
+            logger.debug(
+                "Skipping estate analysis for %s based on summary.",
+                source_display_name,
+            )
+            return {**DEFAULT_ESTATE_RESULT, "_chunk_count": 0}
 
     if not text.strip():
         return {
