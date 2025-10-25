@@ -122,25 +122,28 @@ def _build_text_chunk_prompt(*, chunk: str, index: int, chunk_count: int) -> str
 
 
 PASSWORD_DETECTOR_PROMPT_TEMPLATE = (
-    "You are a security auditor. Review the following text and determine "
-    "whether it contains any strings that appear to be passwords, API keys, "
-    "or other secret credentials.\n\n"
-    "Respond with a JSON object using these keys:\n"
-    '  - "contains_password": true if you see at least one likely password, '
-    "otherwise false.\n"
-    '  - "passwords": an object where each key is a short identifier '
-    '(for example, the field label or "password_1") and each value is the '
-    "exact password string taken from the text. Use an empty object when no "
-    "passwords are detected.\n\n"
+    "You are a security auditor. Your task is to find any string that "
+    "functions as a password, secret, token, or key for authentication or "
+    "access.\n"
+    "Base your decision on contextual keywords like 'password', 'secret', "
+    "'token', 'key', 'login', or 'authentication'. Credentials can be simple "
+    "strings or complex machine-generated ones. "
+    "Ignore strings that are clearly not credentials, like product IDs or "
+    "transaction numbers.\n\n"
+    "Respond with a JSON object with a 'passwords' field, which is a list of "
+    "objects. Each object must have 'context' and 'password' string keys.\n\n"
     "Example response:\n"
     "{\n"
-    '  "contains_password": true,\n'
-    '  "passwords": {\n'
-    '    "email_account": "S3cretPass!"\n'
-    "  }\n"
+    '  "passwords": [\n'
+    "    {\n"
+    '      "context": "Login credential for example.com",\n'
+    '      "password": "user_password123"\n'
+    "    }\n"
+    "  ]\n"
     "}\n\n"
-    "Only consider information present in the text. Do not invent entries. "
-    "Respond with raw JSON only."
+    "If no credentials are found, return a JSON object with an empty "
+    "'passwords' list: {\"passwords\": []}.\n"
+    "Respond with raw JSON only. Do not add explanations or code fences."
 )
 
 
@@ -426,7 +429,7 @@ logger.debug(
 
 DEFAULT_PASSWORD_RESULT = {
     "contains_password": False,
-    "passwords": {},
+    "passwords": [],
     "_chunk_count": 0,
 }
 DEFAULT_ESTATE_RESULT = {
@@ -935,20 +938,22 @@ def detect_passwords(
     )
 
     def _normalize_result(raw_result: dict[str, Any]) -> dict[str, Any]:
-        contains_password = bool(raw_result.get("contains_password"))
-        passwords_raw = raw_result.get("passwords") or {}
-        if not isinstance(passwords_raw, dict):
-            passwords: dict[str, str] = {}
+        passwords_raw = raw_result.get("passwords")
+        if not isinstance(passwords_raw, list):
+            passwords = []
         else:
-            passwords = {
-                str(key): str(value)
-                for key, value in passwords_raw.items()
-                if isinstance(key, str) and isinstance(value, str)
-            }
-        if contains_password and not passwords:
-            contains_password = False
+            passwords = [
+                item
+                for item in passwords_raw
+                if isinstance(item, dict)
+                and isinstance(item.get("context"), str)
+                and isinstance(item.get("password"), str)
+                and item["context"].strip()
+                and item["password"].strip()
+            ]
+
         return {
-            "contains_password": contains_password,
+            "contains_password": bool(passwords),
             "passwords": passwords,
         }
 
@@ -1018,7 +1023,7 @@ def detect_passwords(
         source_name=source_display_name,
     )
     chunk_count = len(chunks)
-    detected_passwords: dict[str, str] = {}
+    detected_passwords: list[dict[str, str]] = []
     any_passwords = False
     json_failure_streak = 0
     chunk_durations: list[float] = []
@@ -1029,15 +1034,6 @@ def detect_passwords(
             chunk_count,
             source_display_name,
         )
-
-    def _deduplicate_key(key: str, value: str, existing: dict[str, str]) -> str:
-        """Generate unique key for password to avoid collisions."""
-        unique_key = key
-        suffix = 1
-        while unique_key in existing and existing[unique_key] != value:
-            suffix += 1
-            unique_key = f"{key}_{suffix}"
-        return unique_key
 
     for i, chunk in enumerate(chunks):
         _maybe_abort(should_abort)
@@ -1071,9 +1067,10 @@ def detect_passwords(
             fallback_passwords = _fallback_detect_secrets(chunk)
             if fallback_passwords:
                 any_passwords = True
-                for key, value in fallback_passwords.items():
-                    unique_key = _deduplicate_key(key, value, detected_passwords)
-                    detected_passwords[unique_key] = value
+                for _, value in fallback_passwords.items():
+                    detected_passwords.append(
+                        {"context": "Inferred from content", "password": value}
+                    )
             continue
 
         start_time = time.monotonic()
@@ -1094,9 +1091,7 @@ def detect_passwords(
             chunk_result = _normalize_result(raw_result)
             if chunk_result["contains_password"]:
                 any_passwords = True
-                for key, value in chunk_result["passwords"].items():
-                    unique_key = _deduplicate_key(key, value, detected_passwords)
-                    detected_passwords[unique_key] = value
+                detected_passwords.extend(chunk_result["passwords"])
             json_failure_streak = 0
             duration = time.monotonic() - start_time
             chunk_durations.append(duration)
@@ -1114,9 +1109,10 @@ def detect_passwords(
             fallback_passwords = _fallback_detect_secrets(chunk)
             if fallback_passwords:
                 any_passwords = True
-                for key, value in fallback_passwords.items():
-                    unique_key = _deduplicate_key(key, value, detected_passwords)
-                    detected_passwords[unique_key] = value
+                for _, value in fallback_passwords.items():
+                    detected_passwords.append(
+                        {"context": "Inferred from content", "password": value}
+                    )
             continue
         except json.JSONDecodeError as exc:
             duration = time.monotonic() - start_time
@@ -1135,9 +1131,10 @@ def detect_passwords(
             fallback_passwords = _fallback_detect_secrets(chunk)
             if fallback_passwords:
                 any_passwords = True
-                for key, value in fallback_passwords.items():
-                    unique_key = _deduplicate_key(key, value, detected_passwords)
-                    detected_passwords[unique_key] = value
+                for _, value in fallback_passwords.items():
+                    detected_passwords.append(
+                        {"context": "Inferred from content", "password": value}
+                    )
             continue
         except Exception as e:
             duration = time.monotonic() - start_time
@@ -1153,9 +1150,10 @@ def detect_passwords(
             fallback_passwords = _fallback_detect_secrets(chunk)
             if fallback_passwords:
                 any_passwords = True
-                for key, value in fallback_passwords.items():
-                    unique_key = _deduplicate_key(key, value, detected_passwords)
-                    detected_passwords[unique_key] = value
+                for _, value in fallback_passwords.items():
+                    detected_passwords.append(
+                        {"context": "Inferred from content", "password": value}
+                    )
             continue
 
     return {

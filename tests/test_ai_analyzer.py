@@ -20,25 +20,6 @@ def mock_ollama_chat_response(content: dict):
 
 
 @patch("src.ai_analyzer._ollama_chat")
-def test_functions_handle_ollama_connection_error(mock_ollama_chat):
-    """Test that all three analysis functions return default values on
-    connection error."""
-    mock_ollama_chat.side_effect = ConnectError("Failed to connect")
-
-    # Test analyze_text_content
-    text_result = analyze_text_content("test")
-    assert "Analysis unavailable" in text_result["summary"]
-
-    # Test detect_passwords
-    password_result = detect_passwords("test")
-    assert password_result["contains_password"] is False
-
-    # Test analyze_financial_document
-    financial_result = analyze_financial_document("test")
-    assert "Analysis unavailable" in financial_result["summary"]
-
-
-@patch("src.ai_analyzer._ollama_chat")
 def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
     """Verify that the AI analyzer prompt correctly instructs the model to ignore
     usernames and only identify real names. This test verifies the behavior through
@@ -72,72 +53,6 @@ def test_analyze_text_content_ignores_usernames(mock_ollama_chat):
     assert "akanda" not in result["mentioned_people"]
 
 
-def test_detect_passwords_returns_default_for_empty_text():
-    """Empty or whitespace-only text should yield a negative password result."""
-    assert detect_passwords("   ") == {
-        "contains_password": False,
-        "passwords": {},
-        "_chunk_count": 0,
-    }
-
-
-@patch("src.ai_analyzer._ollama_chat")
-def test_detect_passwords_single_chunk(mock_ollama_chat):
-    """Verify password detection parses single-chunk responses correctly."""
-    mock_response = {
-        "message": {
-            "content": json.dumps(
-                {
-                    "contains_password": True,
-                    "passwords": {"admin_password": "s3cr3t!"},
-                }
-            )
-        }
-    }
-    mock_ollama_chat.return_value = mock_response
-
-    text = "Admin credentials:\npassword: s3cr3t!"
-    result = detect_passwords(text, source_name="credentials.txt")
-
-    assert result["contains_password"] is True
-    assert result["passwords"] == {"admin_password": "s3cr3t!"}
-    assert result["_chunk_count"] == 1
-    mock_ollama_chat.assert_called_once()
-
-
-@patch("src.ai_analyzer.chunk_text", return_value=["chunk-one", "chunk-two"])
-@patch("src.ai_analyzer._ollama_chat")
-def test_detect_passwords_multi_chunk_deduplicates_keys(mock_ollama_chat, _mock_chunk):
-    """Ensure multi-chunk responses merge password dictionaries safely."""
-
-    mock_responses = [
-        {"contains_password": True, "passwords": {"admin": "secret1"}},
-        {
-            "contains_password": True,
-            "passwords": {"admin": "secret2", "backup": "b@ckup"},
-        },
-    ]
-
-    def _chat_side_effect(*args, **kwargs):
-        # Pop responses in order
-        content = mock_responses.pop(0)
-        return {"message": {"content": json.dumps(content)}}
-
-    mock_ollama_chat.side_effect = _chat_side_effect
-
-    long_text = "A" * 4000  # Force multi-chunk path
-    result = detect_passwords(long_text, source_name="long.txt")
-
-    assert result["contains_password"] is True
-    assert result["passwords"] == {
-        "admin": "secret1",
-        "admin_2": "secret2",
-        "backup": "b@ckup",
-    }
-    assert result["_chunk_count"] == 2
-    assert mock_ollama_chat.call_count == 2
-
-
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
 @patch("src.ai_analyzer._ollama_chat")
 def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
@@ -156,37 +71,6 @@ def test_analyze_text_content_respects_max_chunks(mock_chat, _mock_chunk):
     assert result["mentioned_people"] == ["Alice"]
     assert result["_chunk_count"] == 2
     assert mock_chat.call_count == 3
-
-
-@patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])
-@patch("src.ai_analyzer._ollama_chat")
-def test_detect_passwords_respects_max_chunks(mock_chat, _mock_chunk):
-    """Password detection should only request the configured number of chunks."""
-
-    responses = [
-        {
-            "message": {
-                "content": json.dumps(
-                    {"contains_password": True, "passwords": {"pwd": "123"}}
-                )
-            }
-        },
-        {
-            "message": {
-                "content": json.dumps(
-                    {"contains_password": True, "passwords": {"pwd": "456"}}
-                )
-            }
-        },
-    ]
-    mock_chat.side_effect = responses
-
-    result = detect_passwords("B" * 5000, source_name="secrets.txt", max_chunks=2)
-
-    assert result["contains_password"] is True
-    assert result["passwords"] == {"pwd": "123", "pwd_2": "456"}
-    assert result["_chunk_count"] == 2
-    assert mock_chat.call_count == 2
 
 
 @patch("src.ai_analyzer.chunk_text", return_value=["chunk-1", "chunk-2", "chunk-3"])

@@ -30,7 +30,7 @@ def _make_record(status: str = COMPLETE) -> FileRecord:
             )
         ],
         contains_password=True,
-        passwords={"old": "value"},
+        passwords=[{"old": "value"}],
         has_estate_relevant_info=True,
         estate_information={"Legal": [{"item": "Will"}]},
     )
@@ -60,7 +60,7 @@ def test_reset_outdated_analysis_tasks_updates_versions_and_adds_missing():
     assert text_task.version >= 1
     # Sensitive flags cleared when tasks are reset
     assert record.contains_password is None
-    assert record.passwords == {}
+    assert record.passwords == []
     assert record.has_estate_relevant_info is None
     assert record.estate_information == {}
     # Record status should move back to pending analysis

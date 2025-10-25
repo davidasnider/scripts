@@ -44,7 +44,7 @@ VIDEO_SUMMARY_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 FINANCIAL_ANALYSIS_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 NSFW_CLASSIFICATION_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
 ACCESS_DB_ANALYSIS_VERSION = DEFAULT_ANALYSIS_TASK_VERSION
-PASSWORD_DETECTION_VERSION = 3
+PASSWORD_DETECTION_VERSION = 4
 ESTATE_ANALYSIS_VERSION = 2
 
 ANALYSIS_TASK_VERSIONS: dict[AnalysisName, int] = {
@@ -91,7 +91,7 @@ class FileRecord(BaseModel):
     incriminating_items: list[str] = Field(default_factory=list)
     confidence_score: int | None = None
     contains_password: bool | None = None
-    passwords: dict[str, str] = Field(default_factory=dict)
+    passwords: list[dict[str, str]] = Field(default_factory=list)
     has_estate_relevant_info: bool | None = None
     estate_information: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 

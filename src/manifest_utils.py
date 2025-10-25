@@ -44,7 +44,7 @@ def reset_outdated_analysis_tasks(manifest: list[FileRecord]) -> int:
 
                 if required_task.name is AnalysisName.PASSWORD_DETECTION:
                     file_record.contains_password = None
-                    file_record.passwords = {}
+                    file_record.passwords = []
                 elif required_task.name is AnalysisName.ESTATE_ANALYSIS:
                     file_record.has_estate_relevant_info = None
                     file_record.estate_information = {}
@@ -73,7 +73,7 @@ def reset_outdated_analysis_tasks(manifest: list[FileRecord]) -> int:
                 task.error_message = None
                 if task.name is AnalysisName.PASSWORD_DETECTION:
                     file_record.contains_password = None
-                    file_record.passwords = {}
+                    file_record.passwords = []
                 elif task.name is AnalysisName.ESTATE_ANALYSIS:
                     file_record.has_estate_relevant_info = None
                     file_record.estate_information = {}
@@ -103,7 +103,7 @@ def reset_file_record_for_rescan(file_record: FileRecord) -> None:
     file_record.incriminating_items = []
     file_record.confidence_score = None
     file_record.contains_password = None
-    file_record.passwords = {}
+    file_record.passwords = []
     file_record.has_estate_relevant_info = None
     file_record.estate_information = {}
 

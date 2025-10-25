@@ -212,13 +212,13 @@ def test_reset_outdated_analysis_tasks_updates_failed_records():
         assert task.error_message is None
     assert record.status == PENDING_ANALYSIS
     assert record.contains_password is None
-    assert record.passwords == {}
+    assert record.passwords == []
 
 
 def test_reset_outdated_analysis_tasks_resets_password_fields():
     record = _build_file_record(task_name=AnalysisName.PASSWORD_DETECTION)
     record.contains_password = True
-    record.passwords = {"admin": "secret"}
+    record.passwords = [{"admin": "secret"}]
     manifest = [record]
 
     reset_count = reset_outdated_analysis_tasks(manifest)
@@ -233,7 +233,7 @@ def test_reset_outdated_analysis_tasks_resets_password_fields():
     } == set(task_lookup)
     assert task_lookup[AnalysisName.PASSWORD_DETECTION].status == AnalysisStatus.PENDING
     assert record.contains_password is None
-    assert record.passwords == {}
+    assert record.passwords == []
 
 
 def test_reset_file_record_for_rescan_clears_previous_analysis():
