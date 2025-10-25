@@ -49,6 +49,7 @@ from src.ai_analyzer import (
     detect_passwords,
     summarize_video_frames,
 )
+from src.backup_manager import BackupManager
 from src.content_extractor import (
     extract_content_from_docx,
     extract_content_from_image,
@@ -1428,9 +1429,8 @@ def analysis_worker(
 
             def _on_chunk_progress(processed: int, total: int) -> None:
                 """Update both detailed metrics and the active file display."""
-                _update_chunk_progress(
-                    correlation_id, processed=processed, total=total
-                )
+                _update_chunk_progress(correlation_id, processed=processed, total=total)
+
             def _track_chunk_metrics(duration: float, chunk_count: int) -> None:
                 chunk_progress.add(chunk_count=chunk_count, duration=duration)
 
@@ -2131,6 +2131,9 @@ def main(
     """Run the main threaded pipeline."""
     console_logging = target_filename != "" or debug
 
+    backup_manager = BackupManager(write_lock=manifest_write_lock)
+    backup_manager.start()
+
     configure_logging(
         level=logging.DEBUG if debug else logging.INFO,
         console=console_logging,
@@ -2638,6 +2641,7 @@ def main(
     finally:
         # Ensure manifest is saved even if there's an unexpected exception
         run_logger.info("Ensuring manifest is saved...")
+        backup_manager.stop()
         try:
             save_manifest(full_manifest)
             run_logger.info("Manifest saved successfully")
