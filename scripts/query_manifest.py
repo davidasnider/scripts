@@ -51,17 +51,22 @@ def query(
 
     records = [FileRecord(**record) for record in manifest_data]
 
-    filtered_records = records
 
-    if no_summary:
-        filtered_records = [
-            record for record in filtered_records if record.summary is None
-        ]
+    # Early return if no filters are active
+    if not (no_summary or is_nsfw):
+        filtered_records = records
+    else:
+        # Single-pass filtering using list comprehension
+        def matches_criteria(record: FileRecord) -> bool:
+            # Check each filter condition
+            passes_summary_filter = not no_summary or record.summary is None
+            passes_nsfw_filter = not is_nsfw or (record.is_nsfw is True)
 
-    if is_nsfw:
-        filtered_records = [
-            record for record in filtered_records if record.is_nsfw is True
-        ]
+            # All active filters must match (AND logic)
+            return passes_summary_filter and passes_nsfw_filter
+
+        filtered_records = [record for record in records if matches_criteria(record)]
+
 
     # Convert Pydantic models to a list of dicts for JSON serialization
     output_data: list[dict[str, Any]] = [
