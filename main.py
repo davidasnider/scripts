@@ -1583,8 +1583,20 @@ def analysis_worker(
                                 continue
                             if task.name == AnalysisName.ESTATE_ANALYSIS:
                                 if estate_analysis_result is None:
-                                    ensure_text_analysis_ran()
-                                    summary = text_analysis_result.get("summary")
+                                    try:
+                                        ensure_text_analysis_ran()
+                                        if text_analysis_result is None:
+                                            raise ValueError("text_analysis_result is None after ensure_text_analysis_ran()")
+                                        summary = text_analysis_result.get("summary")
+                                    except Exception as e:
+                                        worker_logger.error(
+                                            "Failed to run text analysis for estate analysis on %s: %s",
+                                            file_record.file_path,
+                                            str(e),
+                                        )
+                                        task.status = AnalysisStatus.FAILED
+                                        _refresh_task_progress()
+                                        continue
 
                                     _check_for_shutdown()
                                     chunk_estimate = _estimate_chunk_count(
