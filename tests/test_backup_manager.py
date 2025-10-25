@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -50,8 +51,6 @@ def create_backup(
     # Set the modification time to the timestamp
     mod_time = time.mktime(timestamp.timetuple())
     backup_path.touch()
-    import os
-
     os.utime(backup_path, (mod_time, mod_time))
 
     return backup_path

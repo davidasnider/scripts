@@ -2132,9 +2132,6 @@ def main(
     """Run the main threaded pipeline."""
     console_logging = target_filename != "" or debug
 
-    backup_manager = BackupManager()
-    backup_manager.start()
-
     configure_logging(
         level=logging.DEBUG if debug else logging.INFO,
         console=console_logging,

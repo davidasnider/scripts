@@ -144,9 +144,9 @@ class BackupManager:
                 monthly_kept.add(month)
 
         # Final check against MAX_BACKUPS. If we still have too many, remove the oldest.
-        if len(to_keep) > MAX_BACKUPS:
+        if len(to_keep) > self.max_backups:
             to_keep = sorted(to_keep, key=lambda p: p.stat().st_mtime, reverse=True)
-            to_keep = to_keep[:MAX_BACKUPS]
+            to_keep = to_keep[: self.max_backups]
 
         backups_to_remove = set(all_backups) - set(to_keep)
 
