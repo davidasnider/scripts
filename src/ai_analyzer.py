@@ -14,6 +14,12 @@ from typing import Any, Callable, TypedDict
 
 
 class DetectedPassword(TypedDict):
+    """Represents a detected credential found in text, including its context and the actual password value.
+
+    Fields:
+        context (str): The surrounding text or context in which the password was detected.
+        password (str): The actual password or credential value that was found.
+    """
     context: str
     password: str
 
