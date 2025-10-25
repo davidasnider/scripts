@@ -25,7 +25,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from shutil import copy2
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 from xml.etree import ElementTree as ET
 
 import pandas as pd
@@ -1376,7 +1376,10 @@ def extraction_worker(worker_id: int) -> None:
 
 
 def analysis_worker(
-    worker_id: int, model: AnalysisModel, max_chunks: int | None = None
+    worker_id: int,
+    model: AnalysisModel,
+    max_chunks: int | None = None,
+    task_filter: AnalysisName | None = None,
 ) -> None:
     """Worker thread for AI analysis."""
     worker_logger = analysis_logger.getChild(f"worker-{worker_id}")
@@ -1462,6 +1465,8 @@ def analysis_worker(
                     if task.status != AnalysisStatus.PENDING:
                         continue
                     if model != AnalysisModel.ALL and task.name.value != model.value:
+                        continue
+                    if task_filter and task.name != task_filter:
                         continue
 
                     task_label = task.name.value.replace("_", " ").title()
@@ -1910,7 +1915,9 @@ def analysis_worker(
     worker_logger.debug("Analysis worker %d stopped", worker_id)
 
 
-def database_worker(worker_id: int, collection: Any) -> None:
+def database_worker(
+    worker_id: int, collection: Any, task_filter: AnalysisName | None = None
+) -> None:
     """Worker thread for database operations."""
     worker_logger = database_logger.getChild(f"worker-{worker_id}")
     worker_logger.debug("Database worker %d started", worker_id)
@@ -1986,7 +1993,10 @@ def database_worker(worker_id: int, collection: Any) -> None:
                         failed_details or "One or more analysis tasks failed",
                     )
                 else:
-                    file_record.status = COMPLETE
+                    if task_filter:
+                        file_record.status = PENDING_ANALYSIS
+                    else:
+                        file_record.status = COMPLETE
 
                 with lock:
                     target_set.add(correlation_id)
@@ -2076,6 +2086,12 @@ def main(
     model: Annotated[
         AnalysisModel, typer.Option(help="The model to use for analysis.")
     ] = AnalysisModel.ALL,
+    task: Annotated[
+        Optional[AnalysisName],
+        typer.Option(
+            help="Run only a single analysis task type.", rich_help_panel="Filtering"
+        ),
+    ] = None,
     batch_size: Annotated[
         int,
         typer.Option(
@@ -2396,7 +2412,7 @@ def main(
     for i in range(analysis_workers):
         thread = threading.Thread(
             target=analysis_worker,
-            args=(i, model, max_chunk_limit),
+            args=(i, model, max_chunk_limit, task),
             name=f"AnalysisWorker-{i}",
         )
         thread.start()
@@ -2405,7 +2421,9 @@ def main(
 
     for i in range(database_workers):
         thread = threading.Thread(
-            target=database_worker, args=(i, collection), name=f"DatabaseWorker-{i}"
+            target=database_worker,
+            args=(i, collection, task),
+            name=f"DatabaseWorker-{i}",
         )
         thread.start()
         threads.append(thread)
