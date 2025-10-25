@@ -1338,14 +1338,13 @@ def _merge_estate_results(
 def _is_document_estate_related(
     summary: str,
     *,
-    source_name: str | None = None,
+    source_display_name: str,
     should_abort: AbortCallback | None = None,
 ) -> bool:
     """Use an LLM to determine if a document summary is estate-related."""
     if not summary or not summary.strip():
         return False
 
-    source_display_name = _resolve_source_name(source_name)
     prompt = (
         "You are a document triaging assistant. Based on the following summary, "
         "determine if the document is likely to contain information relevant to "
@@ -1420,7 +1419,7 @@ def analyze_estate_relevant_information(
     if summary:
         is_relevant = _is_document_estate_related(
             summary,
-            source_name=source_name,
+            source_display_name=source_display_name,
             should_abort=should_abort,
         )
         if not is_relevant:
