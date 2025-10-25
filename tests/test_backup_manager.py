@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,6 +29,7 @@ def backup_manager_fixture(tmp_path: Path) -> tuple[BackupManager, Path, Path]:
         manifest_path=manifest_path,
         backup_dir=backup_dir,
         interval_hours=1,
+        write_lock=threading.Lock(),
     )
 
     return manager, manifest_path, backup_dir
@@ -76,9 +78,7 @@ def test_backup_validation(backup_manager_fixture: tuple[BackupManager, Path, Pa
     create_backup(backup_dir, now - timedelta(hours=1))
     zero_byte_backup = create_backup(backup_dir, now - timedelta(hours=2), content={})
     zero_byte_backup.write_text("")
-    corrupted_backup = create_backup(
-        backup_dir, now - timedelta(hours=3), content={}
-    )
+    corrupted_backup = create_backup(backup_dir, now - timedelta(hours=3), content={})
     corrupted_backup.write_text("{not valid json}")
 
     valid_backups = manager._get_valid_backups()
@@ -124,6 +124,4 @@ def test_tiered_pruning(backup_manager_fixture: tuple[BackupManager, Path, Path]
         reverse=True,
     )
     assert len(remaining_backups) <= manager.max_backups
-    assert (
-        len(remaining_backups) == 11
-    )  # 3 recent + 2 daily + 2 weekly + 4 monthly
+    assert len(remaining_backups) == 11  # 3 recent + 2 daily + 2 weekly + 4 monthly

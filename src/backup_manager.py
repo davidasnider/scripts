@@ -25,12 +25,14 @@ class BackupManager:
         manifest_path: Path = MANIFEST_PATH,
         backup_dir: Path = MANIFEST_BACKUP_DIR,
         interval_hours: int = BACKUP_INTERVAL_HOURS,
+        write_lock: threading.Lock | None = None,
     ):
         """Initializes the BackupManager."""
         self.manifest_path = manifest_path
         self.backup_dir = backup_dir
         self.interval_seconds = interval_hours * 3600
         self.max_backups = MAX_BACKUPS
+        self.write_lock = write_lock
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
@@ -80,7 +82,11 @@ class BackupManager:
         backup_path = self.backup_dir / f"manifest-{timestamp}.json.bak"
 
         try:
-            copy2(self.manifest_path, backup_path)
+            if self.write_lock:
+                with self.write_lock:
+                    copy2(self.manifest_path, backup_path)
+            else:
+                copy2(self.manifest_path, backup_path)
             logger.info(f"Created manifest backup at {backup_path}")
         except Exception as e:
             logger.error(f"Failed to create manifest backup: {e}")
@@ -106,12 +112,10 @@ class BackupManager:
 
         daily_kept = {datetime.fromtimestamp(p.stat().st_mtime).date() for p in to_keep}
         weekly_kept = {
-            datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%W")
-            for p in to_keep
+            datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%W") for p in to_keep
         }
         monthly_kept = {
-            datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m")
-            for p in to_keep
+            datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m") for p in to_keep
         }
 
         for backup in backups_to_consider:
