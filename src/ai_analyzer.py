@@ -132,6 +132,9 @@ PASSWORD_DETECTOR_PROMPT_TEMPLATE = (
     "transaction numbers.\n\n"
     "Respond with a JSON object with a 'passwords' field, which is a list of "
     "objects. Each object must have 'context' and 'password' string keys.\n\n"
+    "CRITICAL REMINDER: The JSON example is for structure only. Do NOT include "
+    "the example data in your response. Your response must only contain "
+    "information from the provided text.\n\n"
     "Example response:\n"
     "{\n"
     '  "passwords": [\n'
