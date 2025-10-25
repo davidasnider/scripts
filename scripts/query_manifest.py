@@ -51,6 +51,7 @@ def query(
 
     records = [FileRecord(**record) for record in manifest_data]
 
+
     # Early return if no filters are active
     if not (no_summary or is_nsfw):
         filtered_records = records
@@ -65,6 +66,7 @@ def query(
             return passes_summary_filter and passes_nsfw_filter
 
         filtered_records = [record for record in records if matches_criteria(record)]
+
 
     # Convert Pydantic models to a list of dicts for JSON serialization
     output_data: list[dict[str, Any]] = [
