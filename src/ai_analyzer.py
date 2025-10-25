@@ -10,19 +10,7 @@ import math
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, TypedDict
-
-
-class DetectedPassword(TypedDict):
-    """Represents a detected credential found in text, including its context and the actual password value.
-
-    Fields:
-        context (str): The surrounding text or context in which the password was detected.
-        password (str): The actual password or credential value that was found.
-    """
-    context: str
-    password: str
-
+from typing import Any, Callable
 
 import httpx
 import ollama
@@ -952,7 +940,7 @@ def detect_passwords(
     def _normalize_result(raw_result: dict[str, Any]) -> dict[str, Any]:
         passwords_raw = raw_result.get("passwords")
         if not isinstance(passwords_raw, list):
-            passwords: list[DetectedPassword] = []
+            passwords = []
         else:
             passwords = [
                 item
@@ -1035,7 +1023,7 @@ def detect_passwords(
         source_name=source_display_name,
     )
     chunk_count = len(chunks)
-    detected_passwords: list[DetectedPassword] = []
+    detected_passwords: list[dict[str, str]] = []
     any_passwords = False
     json_failure_streak = 0
     chunk_durations: list[float] = []

@@ -95,6 +95,18 @@ class FileRecord(BaseModel):
     has_estate_relevant_info: bool | None = None
     estate_information: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
+    @field_validator("passwords", mode="before")
+    @classmethod
+    def _coerce_passwords_to_list(cls, value: Any) -> list[dict[str, str]]:
+        if isinstance(value, dict):
+            return [
+                {"context": str(key), "password": str(password)}
+                for key, password in value.items()
+            ]
+        if isinstance(value, list):
+            return value
+        return []
+
     @field_validator("summary", mode="before")
     @classmethod
     def _ensure_summary_str(cls, value: Any) -> str | None:
