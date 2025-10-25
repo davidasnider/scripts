@@ -10,13 +10,7 @@ import math
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, TypedDict
-
-
-class DetectedPassword(TypedDict):
-    """A detected credential found in text, with its context and value."""
-    context: str  # The surrounding text or context in which the password was detected.
-    password: str  # The actual password or credential value that was found.
+from typing import Any, Callable
 
 import httpx
 import ollama
@@ -923,17 +917,6 @@ def analyze_text_content(
     }
 
 
-def _is_valid_password_entry(item: Any) -> bool:
-    """Validate a single password entry."""
-    return (
-        isinstance(item, dict)
-        and isinstance(item.get("context"), str)
-        and isinstance(item.get("password"), str)
-        and item["context"].strip()
-        and item["password"].strip()
-    )
-
-
 def detect_passwords(
     text: str,
     *,
@@ -957,9 +940,17 @@ def detect_passwords(
     def _normalize_result(raw_result: dict[str, Any]) -> dict[str, Any]:
         passwords_raw = raw_result.get("passwords")
         if not isinstance(passwords_raw, list):
-            passwords: list[DetectedPassword] = []
+            passwords = []
         else:
-            passwords = [item for item in passwords_raw if _is_valid_password_entry(item)]
+            passwords = [
+                item
+                for item in passwords_raw
+                if isinstance(item, dict)
+                and isinstance(item.get("context"), str)
+                and isinstance(item.get("password"), str)
+                and item["context"].strip()
+                and item["password"].strip()
+            ]
 
         return {
             "contains_password": bool(passwords),
@@ -1032,7 +1023,7 @@ def detect_passwords(
         source_name=source_display_name,
     )
     chunk_count = len(chunks)
-    detected_passwords: list[DetectedPassword] = []
+    detected_passwords: list[dict[str, str]] = []
     any_passwords = False
     json_failure_streak = 0
     chunk_durations: list[float] = []
