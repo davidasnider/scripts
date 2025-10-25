@@ -1473,6 +1473,34 @@ def analysis_worker(
                 estate_analysis_result: dict[str, Any] | None = None
                 source_name = file_record.file_name or Path(file_record.file_path).name
 
+                def ensure_text_analysis_ran() -> None:
+                    nonlocal text_analysis_result
+                    if text_analysis_result is not None:
+                        return
+
+                    _check_for_shutdown()
+                    chunk_estimate = _estimate_chunk_count(
+                        file_record.extracted_text,
+                        max_chunks=max_chunks,
+                    )
+                    _increment_active_chunks_total(
+                        correlation_id, increment=chunk_estimate
+                    )
+                    operation_start = time.time()
+                    text_analysis_result = analyze_text_content(
+                        file_record.extracted_text,
+                        source_name=source_name,
+                        should_abort=_check_for_shutdown,
+                        max_chunks=max_chunks,
+                        on_progress=_on_chunk_progress,
+                    )
+                    duration = time.time() - operation_start
+                    actual_chunks = text_analysis_result.get("_chunk_count")
+                    _track_chunk_metrics(
+                        duration,
+                        _resolve_chunk_metric(actual_chunks, chunk_estimate),
+                    )
+
                 for task in file_record.analysis_tasks:
                     _check_for_shutdown()
                     if task.status != AnalysisStatus.PENDING:
@@ -1555,6 +1583,21 @@ def analysis_worker(
                                 continue
                             if task.name == AnalysisName.ESTATE_ANALYSIS:
                                 if estate_analysis_result is None:
+                                    try:
+                                        ensure_text_analysis_ran()
+                                        if text_analysis_result is None:
+                                            raise ValueError("text_analysis_result is None after ensure_text_analysis_ran()")
+                                        summary = text_analysis_result.get("summary")
+                                    except Exception as e:
+                                        worker_logger.error(
+                                            "Failed to run text analysis for estate analysis on %s: %s",
+                                            file_record.file_path,
+                                            str(e),
+                                        )
+                                        task.status = AnalysisStatus.FAILED
+                                        _refresh_task_progress()
+                                        continue
+
                                     _check_for_shutdown()
                                     chunk_estimate = _estimate_chunk_count(
                                         file_record.extracted_text,
@@ -1567,6 +1610,7 @@ def analysis_worker(
                                     estate_analysis_result = (
                                         analyze_estate_relevant_information(
                                             file_record.extracted_text,
+                                            summary=summary,
                                             source_name=source_name,
                                             should_abort=_check_for_shutdown,
                                             max_chunks=max_chunks,
