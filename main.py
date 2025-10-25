@@ -1523,7 +1523,7 @@ def analysis_worker(
                             if not has_text_content(file_record):
                                 if task.name == AnalysisName.PASSWORD_DETECTION:
                                     file_record.contains_password = False
-                                    file_record.passwords = {}
+                                    file_record.passwords = []
                                 elif task.name == AnalysisName.ESTATE_ANALYSIS:
                                     file_record.has_estate_relevant_info = False
                                     file_record.estate_information = {}
@@ -1565,7 +1565,7 @@ def analysis_worker(
                                     "contains_password"
                                 )
                                 file_record.passwords = password_result.get(
-                                    "passwords", {}
+                                    "passwords", []
                                 )
                                 if file_record.contains_password:
                                     worker_logger.info(
