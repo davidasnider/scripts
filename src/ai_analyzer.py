@@ -1350,6 +1350,9 @@ def _is_document_estate_related(
         "determine if the document is likely to contain information relevant to "
         "settling a person's estate, such as wills, trusts, financial accounts, "
         "insurance policies, property deeds, or digital assets.\n\n"
+        "CRITICAL REMINDER: The JSON examples are for structure only. Do NOT include "
+        "data from the examples in your response. Your response must only contain "
+        "information from the provided text.\n\n"
         "Respond with a JSON object containing a single key, "
         '"is_estate_related", set to either true or false.\n\n'
         "Example of a relevant summary: 'The document is a last will and "
