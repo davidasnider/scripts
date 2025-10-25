@@ -13,6 +13,7 @@ MANIFEST_PATH = Path("data/manifest.json")
 MANIFEST_BACKUP_DIR = MANIFEST_PATH.parent / "manifest_backups"
 BACKUP_INTERVAL_HOURS = 3
 MAX_BACKUPS = 15
+TEST_INTERVAL_HOURS = 0.001  # Approx. 3.6 seconds, for testing
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,9 @@ if __name__ == "__main__":
     )
 
     # Example usage
-    backup_manager = BackupManager(interval_hours=0.001)  # backup every ~3.6s
+    backup_manager = BackupManager(
+        interval_hours=TEST_INTERVAL_HOURS
+    )  # backup every ~3.6s
     backup_manager.start()
 
     try:
