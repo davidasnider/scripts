@@ -10,7 +10,13 @@ import math
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
+
+
+class DetectedPassword(TypedDict):
+    context: str
+    password: str
+
 
 import httpx
 import ollama
@@ -940,7 +946,7 @@ def detect_passwords(
     def _normalize_result(raw_result: dict[str, Any]) -> dict[str, Any]:
         passwords_raw = raw_result.get("passwords")
         if not isinstance(passwords_raw, list):
-            passwords = []
+            passwords: list[DetectedPassword] = []
         else:
             passwords = [
                 item
@@ -1023,7 +1029,7 @@ def detect_passwords(
         source_name=source_display_name,
     )
     chunk_count = len(chunks)
-    detected_passwords: list[dict[str, str]] = []
+    detected_passwords: list[DetectedPassword] = []
     any_passwords = False
     json_failure_streak = 0
     chunk_durations: list[float] = []
