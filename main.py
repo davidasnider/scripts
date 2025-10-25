@@ -49,6 +49,7 @@ from src.ai_analyzer import (
     detect_passwords,
     summarize_video_frames,
 )
+from src.backup_manager import BackupManager
 from src.content_extractor import (
     extract_content_from_docx,
     extract_content_from_image,
@@ -2131,6 +2132,9 @@ def main(
     """Run the main threaded pipeline."""
     console_logging = target_filename != "" or debug
 
+    backup_manager = BackupManager()
+    backup_manager.start()
+
     configure_logging(
         level=logging.DEBUG if debug else logging.INFO,
         console=console_logging,
@@ -2638,6 +2642,7 @@ def main(
     finally:
         # Ensure manifest is saved even if there's an unexpected exception
         run_logger.info("Ensuring manifest is saved...")
+        backup_manager.stop()
         try:
             save_manifest(full_manifest)
             run_logger.info("Manifest saved successfully")
