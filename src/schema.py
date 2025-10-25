@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Status constants from main.py
 PENDING_EXTRACTION = "pending_extraction"
@@ -93,3 +94,16 @@ class FileRecord(BaseModel):
     passwords: dict[str, str] = Field(default_factory=dict)
     has_estate_relevant_info: bool | None = None
     estate_information: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _ensure_summary_str(cls, value: Any) -> str | None:
+        # Coerce structured summaries from legacy manifests into JSON strings.
+        if value is None or isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list)):
+            try:
+                return json.dumps(value, sort_keys=True)
+            except (TypeError, ValueError):
+                return str(value)
+        return str(value)
