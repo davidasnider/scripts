@@ -14,7 +14,7 @@ from rich.console import Console
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.schema import FileRecord
+from src.schema import FileRecord  # noqa: E402
 
 app = typer.Typer()
 console = Console()
@@ -50,17 +50,24 @@ def query(
         raise typer.Exit(code=1)
 
     records = [FileRecord(**record) for record in manifest_data]
-    filtered_records: list[FileRecord] = []
 
-    for record in records:
-        match = True
-        if no_summary and record.summary is not None:
-            match = False
-        if is_nsfw and not record.is_nsfw:
-            match = False
+    # Early return if no filters are active
+    if not (no_summary or is_nsfw):
+        filtered_records = records
+    else:
+        # Use list comprehension with filter logic for better performance
+        def matches_criteria(record: FileRecord) -> bool:
+            if no_summary and record.summary is None:
+                return True
+            if is_nsfw and (record.is_nsfw is True):
+                return True
+            # If multiple filters are specified, require all to match
+            if no_summary and is_nsfw:
+                return record.summary is None and (record.is_nsfw is True)
+            # If no filters match, exclude the record
+            return False
 
-        if match:
-            filtered_records.append(record)
+        filtered_records = [record for record in records if matches_criteria(record)]
 
     # Convert Pydantic models to a list of dicts for JSON serialization
     output_data: list[dict[str, Any]] = [
