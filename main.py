@@ -1375,6 +1375,15 @@ def extraction_worker(worker_id: int) -> None:
     worker_logger.debug("Extraction worker %d stopped", worker_id)
 
 
+def _get_tasks_for_model(
+    tasks: list[AnalysisTask], model: AnalysisModel
+) -> list[AnalysisTask]:
+    """Filter tasks based on the selected analysis model."""
+    if model != AnalysisModel.ALL:
+        return [t for t in tasks if t.name.value == model.value]
+    return tasks
+
+
 def analysis_worker(
     worker_id: int, model: AnalysisModel, max_chunks: int | None = None
 ) -> None:
@@ -1400,10 +1409,11 @@ def analysis_worker(
             correlation_id = work_item.correlation_id
 
             display_name = file_record.file_name or Path(file_record.file_path).name
-            total_tasks = len(file_record.analysis_tasks)
+            tasks_for_model = _get_tasks_for_model(file_record.analysis_tasks, model)
+            total_tasks = len(tasks_for_model)
             completed_tasks = sum(
                 1
-                for task in file_record.analysis_tasks
+                for task in tasks_for_model
                 if task.status == AnalysisStatus.COMPLETE
             )
             with lock:
@@ -1415,12 +1425,15 @@ def analysis_worker(
                 )
 
             def _refresh_task_progress() -> None:
+                tasks_for_model = _get_tasks_for_model(
+                    file_record.analysis_tasks, model
+                )
                 completed = sum(
                     1
-                    for task in file_record.analysis_tasks
+                    for task in tasks_for_model
                     if task.status == AnalysisStatus.COMPLETE
                 )
-                total = len(file_record.analysis_tasks)
+                total = len(tasks_for_model)
                 with lock:
                     status = in_progress_files.get(correlation_id)
                     if status:
