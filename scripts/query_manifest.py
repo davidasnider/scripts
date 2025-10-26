@@ -9,6 +9,7 @@ from typing import Any
 
 import typer
 from rich.console import Console
+from rich.progress import track
 
 # Add project root to path to allow importing from src
 project_root = Path(__file__).parent.parent
@@ -52,7 +53,10 @@ def query(
         console.print(f"[bold red]Error reading manifest file: {e}[/bold red]")
         raise typer.Exit(code=1)
 
-    records = [FileRecord(**record) for record in manifest_data]
+    records = [
+        FileRecord(**record)
+        for record in track(manifest_data, description="Loading records...")
+    ]
 
     # Early return if no filters are active
     if not (no_summary or is_nsfw or no_text):
@@ -68,11 +72,16 @@ def query(
             # All active filters must match (AND logic)
             return passes_summary_filter and passes_nsfw_filter and passes_text_filter
 
-        filtered_records = [record for record in records if matches_criteria(record)]
+        filtered_records = [
+            record
+            for record in track(records, description="Filtering records...")
+            if matches_criteria(record)
+        ]
 
     # Convert Pydantic models to a list of dicts for JSON serialization
     output_data: list[dict[str, Any]] = [
-        record.model_dump() for record in filtered_records
+        record.model_dump()
+        for record in track(filtered_records, description="Formatting output...")
     ]
 
     console.print(json.dumps(output_data, indent=2))
