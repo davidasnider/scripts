@@ -259,7 +259,7 @@ def format_bytes(size: int | float | None) -> str:
 
 def extract_selected_rows(table_state: Any) -> list[int]:
     """Normalize Streamlit table selection data into a list of row indices."""
-    if not table_state:
+    if table_state is None:
         return []
 
     # The selection is typically in a dictionary under the 'selection' key from either
@@ -273,7 +273,14 @@ def extract_selected_rows(table_state: Any) -> list[int]:
     if not isinstance(rows, list):
         return []
 
-    return [int(idx) for idx in rows if idx is not None]
+    result = []
+    for idx in rows:
+        if idx is not None:
+            try:
+                result.append(int(idx))
+            except (ValueError, TypeError):
+                continue
+    return result
 
 
 def render_related_file_table(
