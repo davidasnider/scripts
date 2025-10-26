@@ -101,25 +101,8 @@ def generate_stats(
             if record.is_nsfw:
                 completed_stats["nsfw_files"] += 1
 
-            if record.summary:
-                completed_stats["files_with_summaries"] += 1
-            else:
-                completed_stats["files_without_summaries"] += 1
-
-            if record.has_financial_red_flags:
-                completed_stats["files_with_financial_red_flags"] += 1
-
-            if record.contains_password:
-                completed_stats["files_with_passwords"] += 1
-
-            if record.has_estate_relevant_info:
-                completed_stats["files_with_estate_relevant_info"] += 1
-
-    # Calculate images_without_text from the aggregated data
-    completed_stats = stats["completed_files_stats"]
-    for mime_type, mime_stats in completed_stats["files_by_mime_type"].items():
-        if mime_type.startswith("image/"):
-            completed_stats["images_without_text"] += mime_stats["without_text"]
+            if mime_type.startswith("image/") and not record.extracted_text:
+                completed_stats["images_without_text"] += 1
 
     # --- Statistics Output ---
     console.print("[bold]File Statistics[/bold]")
