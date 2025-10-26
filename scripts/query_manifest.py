@@ -55,7 +55,9 @@ def query(
 
     records = [
         FileRecord(**record)
-        for record in track(manifest_data, description="Loading records...", total=len(manifest_data))
+        for record in track(
+            manifest_data, description="Loading records...", total=len(manifest_data)
+        )
     ]
 
     # Early return if no filters are active
@@ -80,7 +82,8 @@ def query(
 
     # Print summary of filtering results
     console.print(
-        f"[green]Filtered {len(filtered_records)} of {len(records)} records matched criteria.[/green]"
+        f"[green]Filtered {len(filtered_records)} of {len(records)} "
+        "records matched criteria.[/green]"
     )
 
     # Convert Pydantic models to a list of dicts for JSON serialization
