@@ -42,8 +42,11 @@ def generate_stats(
     try:
         with manifest_path.open("r") as f:
             manifest_data = json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
-        console.print(f"[bold red]Error reading manifest file: {e}[/bold red]")
+    except IOError as e:
+        console.print(f"[bold red]Failed to read manifest file: {e}[/bold red]")
+        raise typer.Exit(code=1)
+    except json.JSONDecodeError as e:
+        console.print(f"[bold red]Invalid JSON format in manifest file: {e}[/bold red]")
         raise typer.Exit(code=1)
 
     records = [
@@ -62,9 +65,7 @@ def generate_stats(
         "files_by_status": defaultdict(int),
         "completed_files_stats": {
             "total": 0,
-            "files_by_mime_type": defaultdict(
-                lambda: {"with_text": 0, "without_text": 0, "total": 0}
-            ),
+            "files_by_mime_type": {},
             "nsfw_files": 0,
             "images_without_text": 0,
             "files_with_summaries": 0,
@@ -83,6 +84,13 @@ def generate_stats(
             completed_stats["total"] += 1
 
             mime_type = record.mime_type
+            if mime_type not in completed_stats["files_by_mime_type"]:
+                completed_stats["files_by_mime_type"][mime_type] = {
+                    "with_text": 0,
+                    "without_text": 0,
+                    "total": 0,
+                }
+
             mime_stats = completed_stats["files_by_mime_type"][mime_type]
             mime_stats["total"] += 1
             if record.extracted_text:
@@ -92,9 +100,6 @@ def generate_stats(
 
             if record.is_nsfw:
                 completed_stats["nsfw_files"] += 1
-
-            if mime_type.startswith("image/") and not record.extracted_text:
-                completed_stats["images_without_text"] += 1
 
             if record.summary:
                 completed_stats["files_with_summaries"] += 1
@@ -109,6 +114,12 @@ def generate_stats(
 
             if record.has_estate_relevant_info:
                 completed_stats["files_with_estate_relevant_info"] += 1
+
+    # Calculate images_without_text from the aggregated data
+    completed_stats = stats["completed_files_stats"]
+    for mime_type, mime_stats in completed_stats["files_by_mime_type"].items():
+        if mime_type.startswith("image/"):
+            completed_stats["images_without_text"] += mime_stats["without_text"]
 
     # --- Statistics Output ---
     console.print("[bold]File Statistics[/bold]")
