@@ -19,6 +19,7 @@ from src.schema import FileRecord  # noqa: E402
 
 app = typer.Typer()
 console = Console()
+error_console = Console(stderr=True)
 
 
 @app.command()
@@ -42,6 +43,9 @@ def query(
     no_text: bool = typer.Option(
         False, "--no-text", help="Find files with no extracted text."
     ),
+    completed_analysis: bool = typer.Option(
+        False, "--completed-analysis", help="Find files with completed analysis."
+    ),
 ):
     """
     Query the manifest for files based on specific criteria.
@@ -56,12 +60,15 @@ def query(
     records = [
         FileRecord(**record)
         for record in track(
-            manifest_data, description="Loading records...", total=len(manifest_data)
+            manifest_data,
+            description="Loading records...",
+            total=len(manifest_data),
+            console=error_console,
         )
     ]
 
     # Early return if no filters are active
-    if not (no_summary or is_nsfw or no_text):
+    if not (no_summary or is_nsfw or no_text or completed_analysis):
         filtered_records = records
     else:
         # Single-pass filtering using list comprehension
@@ -70,18 +77,28 @@ def query(
             passes_summary_filter = not no_summary or record.summary is None
             passes_nsfw_filter = not is_nsfw or (record.is_nsfw is True)
             passes_text_filter = not no_text or not record.extracted_text
+            passes_completed_analysis_filter = (
+                not completed_analysis or record.status == "complete"
+            )
 
             # All active filters must match (AND logic)
-            return passes_summary_filter and passes_nsfw_filter and passes_text_filter
+            return (
+                passes_summary_filter
+                and passes_nsfw_filter
+                and passes_text_filter
+                and passes_completed_analysis_filter
+            )
 
         filtered_records = [
             record
-            for record in track(records, description="Filtering records...")
+            for record in track(
+                records, description="Filtering records...", console=error_console
+            )
             if matches_criteria(record)
         ]
 
     # Print summary of filtering results
-    console.print(
+    error_console.print(
         f"[green]Filtered {len(filtered_records)} of {len(records)} "
         "records matched criteria.[/green]"
     )
@@ -89,10 +106,15 @@ def query(
     # Convert Pydantic models to a list of dicts for JSON serialization
     output_data: list[dict[str, Any]] = [
         record.model_dump()
-        for record in track(filtered_records, description="Formatting output...")
+        for record in track(
+            filtered_records, description="Formatting output...", console=error_console
+        )
     ]
 
-    console.print(json.dumps(output_data, indent=2))
+    with error_console.status("[bold green]Serializing to JSON..."):
+        json_output = json.dumps(output_data, indent=2)
+
+    console.print(json_output)
 
 
 if __name__ == "__main__":
