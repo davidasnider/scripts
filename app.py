@@ -262,38 +262,28 @@ def extract_selected_rows(table_state: Any) -> list[int]:
     if table_state is None:
         return []
 
-    if hasattr(table_state, "selection"):
-        rows = table_state.selection.get("rows", [])
-    elif isinstance(table_state, str):
-        try:
-            parsed_state = json.loads(table_state)
-        except json.JSONDecodeError:
-            return []
-        rows = parsed_state.get("selection", {}).get("rows", [])
-    elif isinstance(table_state, dict):
-        rows = table_state.get("selection", {}).get("rows", [])
-    else:
+    # The selection is typically in a dictionary under the 'selection' key, either from
+    # the widget state in session state or the returned value of the widget. If
+    # 'table_state' lacks a 'selection' attribute (i.e., is already a dictionary), we
+    # fall back to using 'table_state' itself. This handles both object-with-selection
+    # and plain-dict cases.
+    selection = getattr(table_state, "selection", table_state)
+
+    if not isinstance(selection, dict):
         return []
 
-    if isinstance(rows, dict):
-        rows = list(rows.keys())
-
-    if isinstance(rows, (list, tuple, set)):
-        return [int(idx) for idx in rows]
-
-    # Handle other iterable views (e.g., dict_values) that are not list/tuple/set
-    try:
-        if rows is not None and not isinstance(rows, (str, bytes)):
-            rows_iter = list(rows)  # type: ignore[arg-type]
-            if rows_iter:
-                return [int(idx) for idx in rows_iter]
-    except TypeError:
-        pass
-
-    if rows is None:
+    rows = selection.get("rows", [])
+    if not isinstance(rows, list):
         return []
 
-    return [int(rows)]
+    result = []
+    for idx in rows:
+        if idx is not None:
+            try:
+                result.append(int(idx))
+            except (ValueError, TypeError):
+                continue
+    return result
 
 
 def render_related_file_table(
@@ -1350,16 +1340,14 @@ def build_chroma_filter(filter_state: dict) -> dict:
     return result
 
 
-def get_database_stats(filters: dict = None) -> dict:
+def get_database_stats(where_filters: dict | None = None) -> dict:
     """Get statistics about the database contents."""
     try:
-        logger.info("Fetching database stats (filters_applied=%s)", bool(filters))
-        if filters:
-            # Get filtered results for counting
-            results = collection.get(where=filters, include=["metadatas"])
-        else:
-            # Get all results for counting
-            results = collection.get(include=["metadatas"])
+        logger.info("Fetching database stats (filters_applied=%s)", bool(where_filters))
+        get_kwargs = {"include": ["metadatas"]}
+        if where_filters:
+            get_kwargs["where"] = where_filters
+        results = collection.get(**get_kwargs)
 
         total_count = len(results["metadatas"])
 
@@ -1426,11 +1414,11 @@ def get_database_stats(filters: dict = None) -> dict:
         return {"total_count": 0, "file_types": {}, "file_list": []}
 
 
-def query_knowledge_base(query_text: str, filters: dict) -> list[dict]:
+def query_knowledge_base(query_text: str, where_filters: dict) -> list[dict]:
     """Query the ChromaDB collection for relevant documents."""
     try:
         preview = query_text[:80] + ("…" if len(query_text) > 80 else "")
-        logger.info("Querying knowledge base (filters_applied=%s)", bool(filters))
+        logger.info("Querying knowledge base (filters_applied=%s)", bool(where_filters))
         logger.debug("Query preview: %s", preview)
         # Generate embedding for the query
         embedding_kwargs = {"model": EMBEDDING_MODEL, "prompt": query_text}
@@ -1439,19 +1427,14 @@ def query_knowledge_base(query_text: str, filters: dict) -> list[dict]:
         query_embedding = ollama.embeddings(**embedding_kwargs)["embedding"]
 
         # Query the collection - limit to 3 most relevant results to reduce context
-        if filters:
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                where=filters,
-                n_results=3,
-                include=["documents", "metadatas", "distances"],
-            )
-        else:
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=3,
-                include=["documents", "metadatas", "distances"],
-            )
+        query_kwargs = {
+            "query_embeddings": [query_embedding],
+            "n_results": 3,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where_filters:
+            query_kwargs["where"] = where_filters
+        results = collection.query(**query_kwargs)
 
         # Format results
         sources = []
