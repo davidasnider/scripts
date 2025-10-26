@@ -259,41 +259,21 @@ def format_bytes(size: int | float | None) -> str:
 
 def extract_selected_rows(table_state: Any) -> list[int]:
     """Normalize Streamlit table selection data into a list of row indices."""
-    if table_state is None:
+    if not table_state:
         return []
 
-    if hasattr(table_state, "selection"):
-        rows = table_state.selection.get("rows", [])
-    elif isinstance(table_state, str):
-        try:
-            parsed_state = json.loads(table_state)
-        except json.JSONDecodeError:
-            return []
-        rows = parsed_state.get("selection", {}).get("rows", [])
-    elif isinstance(table_state, dict):
-        rows = table_state.get("selection", {}).get("rows", [])
-    else:
+    # The selection is typically in a dictionary under the 'selection' key from either
+    # the widget state in session state or the returned value of the widget.
+    selection = getattr(table_state, "selection", table_state)
+
+    if not isinstance(selection, dict):
         return []
 
-    if isinstance(rows, dict):
-        rows = list(rows.keys())
-
-    if isinstance(rows, (list, tuple, set)):
-        return [int(idx) for idx in rows]
-
-    # Handle other iterable views (e.g., dict_values) that are not list/tuple/set
-    try:
-        if rows is not None and not isinstance(rows, (str, bytes)):
-            rows_iter = list(rows)  # type: ignore[arg-type]
-            if rows_iter:
-                return [int(idx) for idx in rows_iter]
-    except TypeError:
-        pass
-
-    if rows is None:
+    rows = selection.get("rows", [])
+    if not isinstance(rows, list):
         return []
 
-    return [int(rows)]
+    return [int(idx) for idx in rows if idx is not None]
 
 
 def render_related_file_table(
@@ -1350,16 +1330,14 @@ def build_chroma_filter(filter_state: dict) -> dict:
     return result
 
 
-def get_database_stats(filters: dict = None) -> dict:
+def get_database_stats(filters: dict | None = None) -> dict:
     """Get statistics about the database contents."""
     try:
         logger.info("Fetching database stats (filters_applied=%s)", bool(filters))
+        get_kwargs = {"include": ["metadatas"]}
         if filters:
-            # Get filtered results for counting
-            results = collection.get(where=filters, include=["metadatas"])
-        else:
-            # Get all results for counting
-            results = collection.get(include=["metadatas"])
+            get_kwargs["where"] = filters
+        results = collection.get(**get_kwargs)
 
         total_count = len(results["metadatas"])
 
@@ -1439,19 +1417,14 @@ def query_knowledge_base(query_text: str, filters: dict) -> list[dict]:
         query_embedding = ollama.embeddings(**embedding_kwargs)["embedding"]
 
         # Query the collection - limit to 3 most relevant results to reduce context
+        query_kwargs = {
+            "query_embeddings": [query_embedding],
+            "n_results": 3,
+            "include": ["documents", "metadatas", "distances"],
+        }
         if filters:
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                where=filters,
-                n_results=3,
-                include=["documents", "metadatas", "distances"],
-            )
-        else:
-            results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=3,
-                include=["documents", "metadatas", "distances"],
-            )
+            query_kwargs["where"] = filters
+        results = collection.query(**query_kwargs)
 
         # Format results
         sources = []
