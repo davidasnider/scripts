@@ -121,20 +121,11 @@ class TestContentExtractor(unittest.TestCase):
         mock_excel_file.sheet_names = ["Sheet1"]
 
         mock_df = pd.DataFrame({"col1": [1, 2], "col2": ["a", "b"]})
+        mock_excel_file.parse.return_value = mock_df
 
-        mock_pd = MagicMock()
-        mock_pd.ExcelFile.return_value = mock_excel_file
-        mock_pd.read_excel.return_value = mock_df
-
-        with (
-            patch(
-                "src.content_extractor.pd.ExcelFile",
-                return_value=mock_excel_file,
-            ),
-            patch(
-                "src.content_extractor.pd.read_excel",
-                return_value=mock_df,
-            ),
+        with patch(
+            "src.content_extractor.pd.ExcelFile",
+            return_value=mock_excel_file,
         ):
             text = extract_content_from_xlsx("dummy.xlsx")
 

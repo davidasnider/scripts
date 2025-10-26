@@ -265,7 +265,7 @@ def extract_content_from_xlsx(file_path: str) -> str:
 
             try:
                 # Read the sheet
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
+                df = excel_file.parse(sheet_name)
 
                 # Convert the dataframe to a readable text format
                 # Include column headers
@@ -275,10 +275,8 @@ def extract_content_from_xlsx(file_path: str) -> str:
                     all_text.append(f"Columns: {headers}")
 
                     # Add each row
-                    for index, row in df.iterrows():
-                        row_text = " | ".join(
-                            str(val) for val in row.values if pd.notna(val)
-                        )
+                    for row in df.itertuples(index=False, name=None):
+                        row_text = " | ".join(str(val) for val in row if pd.notna(val))
                         if row_text.strip():  # Only add non-empty rows
                             all_text.append(row_text)
                 else:
@@ -343,10 +341,8 @@ def extract_content_from_xls(file_path: str) -> str:
                     all_text.append(f"Columns: {headers}")
 
                     # Add each row
-                    for index, row in df.iterrows():
-                        row_text = " | ".join(
-                            str(val) for val in row.values if pd.notna(val)
-                        )
+                    for row in df.itertuples(index=False, name=None):
+                        row_text = " | ".join(str(val) for val in row if pd.notna(val))
                         if row_text.strip():  # Only add non-empty rows
                             all_text.append(row_text)
                 else:
