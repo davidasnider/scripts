@@ -262,8 +262,11 @@ def extract_selected_rows(table_state: Any) -> list[int]:
     if table_state is None:
         return []
 
-    # The selection is typically in a dictionary under the 'selection' key from either
-    # the widget state in session state or the returned value of the widget.
+    # The selection is typically in a dictionary under the 'selection' key, either from
+    # the widget state in session state or the returned value of the widget. If
+    # 'table_state' lacks a 'selection' attribute (i.e., is already a dictionary), we
+    # fall back to using 'table_state' itself. This handles both object-with-selection
+    # and plain-dict cases.
     selection = getattr(table_state, "selection", table_state)
 
     if not isinstance(selection, dict):
@@ -1337,13 +1340,13 @@ def build_chroma_filter(filter_state: dict) -> dict:
     return result
 
 
-def get_database_stats(filters: dict | None = None) -> dict:
+def get_database_stats(where_filters: dict | None = None) -> dict:
     """Get statistics about the database contents."""
     try:
-        logger.info("Fetching database stats (filters_applied=%s)", bool(filters))
+        logger.info("Fetching database stats (filters_applied=%s)", bool(where_filters))
         get_kwargs = {"include": ["metadatas"]}
-        if filters:
-            get_kwargs["where"] = filters
+        if where_filters:
+            get_kwargs["where"] = where_filters
         results = collection.get(**get_kwargs)
 
         total_count = len(results["metadatas"])
@@ -1411,11 +1414,11 @@ def get_database_stats(filters: dict | None = None) -> dict:
         return {"total_count": 0, "file_types": {}, "file_list": []}
 
 
-def query_knowledge_base(query_text: str, filters: dict) -> list[dict]:
+def query_knowledge_base(query_text: str, where_filters: dict) -> list[dict]:
     """Query the ChromaDB collection for relevant documents."""
     try:
         preview = query_text[:80] + ("…" if len(query_text) > 80 else "")
-        logger.info("Querying knowledge base (filters_applied=%s)", bool(filters))
+        logger.info("Querying knowledge base (filters_applied=%s)", bool(where_filters))
         logger.debug("Query preview: %s", preview)
         # Generate embedding for the query
         embedding_kwargs = {"model": EMBEDDING_MODEL, "prompt": query_text}
@@ -1429,8 +1432,8 @@ def query_knowledge_base(query_text: str, filters: dict) -> list[dict]:
             "n_results": 3,
             "include": ["documents", "metadatas", "distances"],
         }
-        if filters:
-            query_kwargs["where"] = filters
+        if where_filters:
+            query_kwargs["where"] = where_filters
         results = collection.query(**query_kwargs)
 
         # Format results
