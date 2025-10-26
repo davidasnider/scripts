@@ -6,7 +6,6 @@ from httpx import ConnectError
 from src.ai_analyzer import (
     analyze_financial_document,
     analyze_text_content,
-    detect_passwords,
 )
 
 # A reusable mock for the ollama client to simulate connection errors
