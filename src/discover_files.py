@@ -67,6 +67,37 @@ def _iter_files(root_directory: Path) -> Iterable[Path]:
             yield path
 
 
+def _read_file_list(file_list_path: Path) -> list[Path]:
+    """Read a list of file paths from a text file, one path per line."""
+    paths: list[Path] = []
+    
+    with file_list_path.open("r", encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            stripped = line.strip()
+            
+            # Skip empty lines and comments
+            if not stripped or stripped.startswith("#"):
+                continue
+            
+            path = Path(stripped).expanduser().resolve()
+            
+            if not path.exists():
+                logger.warning(
+                    "Line %d: Path does not exist: %s", line_number, stripped
+                )
+                continue
+            
+            if not path.is_file():
+                logger.warning(
+                    "Line %d: Path is not a file: %s", line_number, stripped
+                )
+                continue
+            
+            paths.append(path)
+    
+    return paths
+
+
 def _create_mime_detector() -> Any:
     if magic is None:
         return None
@@ -254,6 +285,133 @@ def _extract_all_archives(root_directory: Path) -> None:
                 raise
 
 
+def create_file_manifest_from_list(
+    file_list_path: Path, manifest_path: Path, max_files: int = 0
+) -> list[dict[str, object]]:
+    """Create a manifest from a list of file paths provided in a text file."""
+    logger.info("Starting file discovery from list")
+    logger.info("File list: %s", file_list_path)
+    logger.info("Manifest output: %s", manifest_path)
+    
+    file_list_path = file_list_path.expanduser().resolve()
+    if not file_list_path.is_file():
+        raise ValueError(
+            f"File list does not exist or is not a file: {file_list_path}"
+        )
+    
+    manifest_path = manifest_path.expanduser().resolve()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Created manifest directory: %s", manifest_path.parent)
+    
+    logger.info("Phase 1: Reading file list")
+    file_paths = _read_file_list(file_list_path)
+    
+    if not file_paths:
+        logger.warning("No valid files found in list: %s", file_list_path)
+        return []
+    
+    logger.info("Found %d valid files in list", len(file_paths))
+    
+    logger.info("Phase 2: Initializing MIME detector")
+    mime_detector = _create_mime_detector()
+    if mime_detector is not None:
+        logger.info("Using python-magic for MIME type detection")
+    else:
+        logger.info("Using mimetypes fallback for MIME type detection")
+    
+    max_limit = max_files if max_files and max_files > 0 else None
+    if max_limit is None:
+        logger.info("Phase 3: Processing all files (no limit)")
+    else:
+        logger.info("Phase 3: Processing up to %d files", max_limit)
+    
+    start_time = time.time()
+    records = []
+    
+    try:
+        paths_to_process = file_paths
+        
+        if tqdm is not None:
+            paths_to_process = tqdm(
+                paths_to_process,
+                desc="Processing files",
+                unit="files",
+                dynamic_ncols=True,
+            )
+        
+        processed_count = 0
+        error_count = 0
+        
+        for path in paths_to_process:
+            # Check if we've reached the total limit
+            if max_limit is not None and len(records) >= max_limit:
+                logger.info("Reached maximum file limit of %d", max_limit)
+                break
+            
+            try:
+                stat_info = path.stat()
+                mime_type = _detect_mime_type(path, mime_detector)
+                
+                record = FileRecord(
+                    file_path=str(path),
+                    file_name=path.name,
+                    mime_type=mime_type,
+                    file_size=stat_info.st_size,
+                    last_modified=stat_info.st_mtime,
+                    sha256=_calculate_sha256(path),
+                    analysis_tasks=_get_analysis_tasks(mime_type, str(path)),
+                )
+                records.append(record)
+                processed_count += 1
+                
+                if tqdm is None and processed_count % 100 == 0:
+                    logger.info("Processed %d files", processed_count)
+            
+            except Exception as exc:
+                error_count += 1
+                logger.error("Failed to process file %s: %s", path, exc)
+                continue
+    
+    finally:
+        if mime_detector is not None and hasattr(mime_detector, "close"):
+            try:
+                mime_detector.close()
+                logger.debug("Closed MIME detector")
+            except Exception as exc:
+                logger.warning("Failed to close MIME detector: %s", exc)
+    
+    processing_time = time.time() - start_time
+    logger.info("Processed %d files in %.2f seconds", len(records), processing_time)
+    
+    # Log MIME type distribution
+    mime_type_counts = Counter(record.mime_type for record in records)
+    if mime_type_counts:
+        logger.info("File type distribution:")
+        for mime_type, count in sorted(mime_type_counts.items()):
+            logger.info("  %s: %d files", mime_type, count)
+    
+    if error_count > 0:
+        logger.warning("Encountered %d errors during processing", error_count)
+    
+    logger.info("Phase 4: Writing manifest to %s", manifest_path)
+    write_start = time.time()
+    
+    manifest_data = [record.model_dump(mode="json") for record in records]
+    
+    with manifest_path.open("w", encoding="utf-8") as manifest_file:
+        json.dump(manifest_data, manifest_file, indent=2)
+        manifest_file.write("\n")
+    
+    write_time = time.time() - write_start
+    total_time = time.time() - start_time
+    
+    logger.info("Manifest written in %.2f seconds", write_time)
+    logger.info("Total processing time: %.2f seconds", total_time)
+    logger.info("Successfully created manifest with %d entries", len(manifest_data))
+    
+    return manifest_data
+
+
 def create_file_manifest(
     root_directory: Path, manifest_path: Path, max_files: int = 0
 ) -> list[dict[str, object]]:
@@ -383,13 +541,25 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="discover-files",
         description=(
-            "Create a manifest describing files rooted at the specified directory."
+            "Create a manifest describing files rooted at the specified directory "
+            "or from a list of file paths."
         ),
     )
     parser.add_argument(
         "root_directory",
         type=Path,
-        help="Directory to recursively scan for files.",
+        nargs="?",
+        help="Directory to recursively scan for files (required unless --from-list is used).",
+    )
+    parser.add_argument(
+        "--from-list",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "Read file paths from a text file instead of scanning a directory. "
+            "The file should contain one path per line. Lines starting with # "
+            "are treated as comments and ignored."
+        ),
     )
     parser.add_argument(
         "--manifest-path",
@@ -421,6 +591,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    # Validate that either root_directory or --from-list is provided
+    if not args.root_directory and not args.from_list:
+        parser.error("Either root_directory or --from-list must be provided")
+    
+    if args.root_directory and args.from_list:
+        parser.error("Cannot use both root_directory and --from-list at the same time")
+
     if args.debug:
         log_level = logging.DEBUG
     elif args.verbose:
@@ -431,18 +608,32 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(level=log_level, force=True)
 
     try:
-        manifest = create_file_manifest(
-            args.root_directory, args.manifest_path, args.max_files
-        )
-        logger.info(
-            "Successfully wrote %d entries to %s", len(manifest), args.manifest_path
-        )
-
-        if not args.verbose and not args.debug:
-            print(
-                f"Discovered {len(manifest)} files and wrote manifest to "
-                f"{args.manifest_path}"
+        if args.from_list:
+            manifest = create_file_manifest_from_list(
+                args.from_list, args.manifest_path, args.max_files
             )
+            logger.info(
+                "Successfully wrote %d entries to %s", len(manifest), args.manifest_path
+            )
+
+            if not args.verbose and not args.debug:
+                print(
+                    f"Processed {len(manifest)} files from list and wrote manifest to "
+                    f"{args.manifest_path}"
+                )
+        else:
+            manifest = create_file_manifest(
+                args.root_directory, args.manifest_path, args.max_files
+            )
+            logger.info(
+                "Successfully wrote %d entries to %s", len(manifest), args.manifest_path
+            )
+
+            if not args.verbose and not args.debug:
+                print(
+                    f"Discovered {len(manifest)} files and wrote manifest to "
+                    f"{args.manifest_path}"
+                )
 
         return 0
     except Exception as exc:

@@ -306,3 +306,140 @@ def test_main_failure(
         return_code = discover_files.main(argv)
         assert return_code == 1
         assert "Failed to create file manifest: Test error" in caplog.text
+
+
+def test_read_file_list(temp_directory_with_files):
+    """Verify that file paths are read correctly from a list file."""
+    file1 = temp_directory_with_files / "file1.txt"
+    file2 = temp_directory_with_files / "file2.jpg"
+    
+    list_file = temp_directory_with_files / "file_list.txt"
+    with open(list_file, "w") as f:
+        f.write(f"{file1}\n")
+        f.write(f"# This is a comment\n")
+        f.write(f"\n")  # Empty line
+        f.write(f"{file2}\n")
+    
+    paths = discover_files._read_file_list(list_file)
+    
+    assert len(paths) == 2
+    assert file1.resolve() in paths
+    assert file2.resolve() in paths
+
+
+def test_read_file_list_with_nonexistent_paths(temp_directory_with_files, caplog):
+    """Verify that nonexistent paths in the list are skipped with warnings."""
+    file1 = temp_directory_with_files / "file1.txt"
+    nonexistent = temp_directory_with_files / "nonexistent.txt"
+    
+    list_file = temp_directory_with_files / "file_list.txt"
+    with open(list_file, "w") as f:
+        f.write(f"{file1}\n")
+        f.write(f"{nonexistent}\n")
+    
+    with caplog.at_level(logging.WARNING):
+        paths = discover_files._read_file_list(list_file)
+    
+    assert len(paths) == 1
+    assert file1.resolve() in paths
+    assert "does not exist" in caplog.text
+
+
+def test_read_file_list_with_directory(temp_directory_with_files, caplog):
+    """Verify that directories in the list are skipped with warnings."""
+    file1 = temp_directory_with_files / "file1.txt"
+    subdir = temp_directory_with_files / "subdir"
+    
+    list_file = temp_directory_with_files / "file_list.txt"
+    with open(list_file, "w") as f:
+        f.write(f"{file1}\n")
+        f.write(f"{subdir}\n")
+    
+    with caplog.at_level(logging.WARNING):
+        paths = discover_files._read_file_list(list_file)
+    
+    assert len(paths) == 1
+    assert file1.resolve() in paths
+    assert "not a file" in caplog.text
+
+
+def test_create_file_manifest_from_list(temp_directory_with_files):
+    """Verify that a manifest can be created from a file list."""
+    file1 = temp_directory_with_files / "file1.txt"
+    file2 = temp_directory_with_files / "file2.jpg"
+    manifest_path = temp_directory_with_files / "manifest.json"
+    
+    list_file = temp_directory_with_files / "file_list.txt"
+    with open(list_file, "w") as f:
+        f.write(f"{file1}\n")
+        f.write(f"{file2}\n")
+    
+    records = discover_files.create_file_manifest_from_list(
+        list_file, manifest_path
+    )
+    
+    assert len(records) == 2
+    assert manifest_path.exists()
+    
+    # Verify the manifest content
+    with open(manifest_path) as f:
+        manifest_data = json.load(f)
+    
+    assert len(manifest_data) == 2
+    paths = {record["file_path"] for record in manifest_data}
+    assert str(file1.resolve()) in paths
+    assert str(file2.resolve()) in paths
+
+
+def test_create_file_manifest_from_list_with_max_files(temp_directory_with_files):
+    """Verify that max_files limit is respected when creating from list."""
+    file1 = temp_directory_with_files / "file1.txt"
+    file2 = temp_directory_with_files / "file2.jpg"
+    file3 = temp_directory_with_files / "file3.pdf"
+    manifest_path = temp_directory_with_files / "manifest.json"
+    
+    list_file = temp_directory_with_files / "file_list.txt"
+    with open(list_file, "w") as f:
+        f.write(f"{file1}\n")
+        f.write(f"{file2}\n")
+        f.write(f"{file3}\n")
+    
+    records = discover_files.create_file_manifest_from_list(
+        list_file, manifest_path, max_files=2
+    )
+    
+    assert len(records) == 2
+
+
+@patch("src.discover_files.create_file_manifest_from_list")
+@patch("src.discover_files.configure_logging")
+def test_main_with_from_list(
+    mock_configure_logging, mock_create_from_list, temp_directory_with_files
+):
+    """Verify that main function works with --from-list option."""
+    list_file = temp_directory_with_files / "file_list.txt"
+    list_file.touch()
+    
+    argv = ["--from-list", str(list_file)]
+    mock_create_from_list.return_value = [{}, {}]
+    
+    return_code = discover_files.main(argv)
+    
+    assert return_code == 0
+    mock_configure_logging.assert_called_once()
+    mock_create_from_list.assert_called_once()
+
+
+def test_main_requires_either_directory_or_list():
+    """Verify that main function requires either root_directory or --from-list."""
+    with pytest.raises(SystemExit):
+        discover_files.main([])
+
+
+def test_main_rejects_both_directory_and_list(temp_directory_with_files):
+    """Verify that main function rejects both root_directory and --from-list."""
+    list_file = temp_directory_with_files / "file_list.txt"
+    list_file.touch()
+    
+    with pytest.raises(SystemExit):
+        discover_files.main([str(temp_directory_with_files), "--from-list", str(list_file)])
