@@ -333,7 +333,7 @@ def extract_content_from_xls(file_path: str) -> str:
 
             try:
                 # Read the sheet
-                df = pd.read_excel(file_path, sheet_name=sheet_name, engine="xlrd")
+                df = excel_file.parse(sheet_name)
 
                 # Convert the dataframe to a readable text format
                 # Include column headers
