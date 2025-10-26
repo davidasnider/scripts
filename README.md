@@ -80,6 +80,16 @@ uv run python src/discover_files.py /path/to/directory
 This generates `data/manifest.json` with file metadata including paths, MIME
 types, and sizes.
 
+Alternatively, you can create a manifest from a specific list of files:
+
+```bash
+uv run python src/discover_files.py --from-list /path/to/file_list.txt
+```
+
+The file list should contain one file path per line. Lines starting with `#` are
+treated as comments and ignored. This is useful when you want to process a
+specific set of files without scanning an entire directory.
+
 ### Main Processing Pipeline
 
 Run the complete extraction and analysis pipeline:
