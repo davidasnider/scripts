@@ -89,18 +89,14 @@ def query(
                 and passes_completed_analysis_filter
             )
 
-        filtered_records = [
-            record
-            for record in track(
-                records, description="Filtering records...", console=error_console
-            )
-            if matches_criteria(record)
-        ]
+        with error_console.status("[bold green]Filtering records..."):
+            filtered_records = [
+                record for record in records if matches_criteria(record)
+            ]
 
     # Print summary of filtering results
     error_console.print(
-        f"[green]Filtered {len(filtered_records)} of {len(records)} "
-        "records matched criteria.[/green]"
+        f"[green]Filtered to {len(filtered_records)} of {len(records)} records.[/green]"
     )
 
     # Convert Pydantic models to a list of dicts for JSON serialization
