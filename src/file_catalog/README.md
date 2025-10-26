@@ -1,18 +1,25 @@
 # `src/file_catalog/` Directory
 
-This directory serves as the entry point for the command-line interface (CLI) of the file catalog application.
+This directory serves as the entry point for the command-line interface (CLI) of
+the file catalog application.
 
 ## `__main__.py`
 
-The `__main__.py` module is responsible for defining and handling the CLI commands. It uses the `typer` library to create a user-friendly interface for interacting with the application from the command line.
+The `__main__.py` module is responsible for defining and handling the CLI
+commands. It uses the `typer` library to create a user-friendly interface for
+interacting with the application from the command line.
 
 ### Commands
 
 The CLI provides the following commands:
 
--   **`scan`**: This command scans a specified directory, discovers all the files within it, and creates a manifest file in JSON format. The manifest contains metadata for each file, such as its path, size, MIME type, and SHA256 hash.
+- **`scan`**: This command scans a specified directory, discovers all the files
+  within it, and creates a manifest file in JSON format. The manifest contains
+  metadata for each file, such as its path, size, MIME type, and SHA256 hash.
 
--   **`analyze`**: This command runs various analysis tasks on the files listed in the manifest. These tasks can include text extraction, AI-powered summarization, and other forms of content analysis.
+- **`analyze`**: This command runs various analysis tasks on the files listed in
+  the manifest. These tasks can include text extraction, AI-powered
+  summarization, and other forms of content analysis.
 
 ### Usage
 

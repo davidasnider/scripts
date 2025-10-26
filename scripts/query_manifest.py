@@ -38,6 +38,9 @@ def query(
     is_nsfw: bool = typer.Option(
         False, "--is-nsfw", help="Find files flagged as NSFW."
     ),
+    no_text: bool = typer.Option(
+        False, "--no-text", help="Find files with no extracted text."
+    ),
 ):
     """
     Query the manifest for files based on specific criteria.
@@ -51,9 +54,8 @@ def query(
 
     records = [FileRecord(**record) for record in manifest_data]
 
-
     # Early return if no filters are active
-    if not (no_summary or is_nsfw):
+    if not (no_summary or is_nsfw or no_text):
         filtered_records = records
     else:
         # Single-pass filtering using list comprehension
@@ -61,12 +63,12 @@ def query(
             # Check each filter condition
             passes_summary_filter = not no_summary or record.summary is None
             passes_nsfw_filter = not is_nsfw or (record.is_nsfw is True)
+            passes_text_filter = not no_text or not record.extracted_text
 
             # All active filters must match (AND logic)
-            return passes_summary_filter and passes_nsfw_filter
+            return passes_summary_filter and passes_nsfw_filter and passes_text_filter
 
         filtered_records = [record for record in records if matches_criteria(record)]
-
 
     # Convert Pydantic models to a list of dicts for JSON serialization
     output_data: list[dict[str, Any]] = [
