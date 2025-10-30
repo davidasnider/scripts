@@ -22,6 +22,23 @@ from src.config_utils import (
     get_model_config,
     load_config,
 )
+from src.prompts import (
+    ESTATE_MIN_FIELDS_PER_ENTRY,
+    ESTATE_PLACEHOLDER_VALUES,
+    ESTATE_SKIP_BARE_STRING_LOG,
+    JSON_OUTPUT_OPTIONS,
+    JSON_RESPONSE_FORMAT,
+    JSON_SYSTEM_MESSAGE,
+    STRICT_JSON_REMINDER,
+    build_estate_analysis_chunk_prompt,
+    build_estate_analysis_prompt,
+    build_financial_analysis_chunk_prompt,
+    build_financial_analysis_prompt,
+    build_password_chunk_prompt,
+    build_password_prompt,
+    build_text_analysis_chunk_prompt,
+    build_text_analysis_prompt,
+)
 from src.text_utils import chunk_text, count_tokens
 
 logger = logging.getLogger(__name__)
@@ -53,25 +70,6 @@ PASSWORD_DETECTOR_MODEL = password_detector_config["name"]
 PASSWORD_DETECTOR_CONTEXT_WINDOW = password_detector_config.get("context_window")
 PASSWORD_DETECTOR_OPTIONS = build_ollama_options(password_detector_config)
 PROMPT_RESERVE_SAFETY_TOKENS = 128
-JSON_RESPONSE_FORMAT = "json"
-JSON_OUTPUT_OPTIONS = {"temperature": 0}
-STRICT_JSON_REMINDER = (
-    "REMINDER: Reply with strictly valid JSON. Use double quotes for all keys and "
-    "string values, include commas between fields, and do not add commentary."
-)
-JSON_SYSTEM_MESSAGE = (
-    "You are a JSON generation engine. You will be asked to extract information "
-    "from a user's query. Every reply MUST be a single valid JSON object that "
-    "strictly follows the user's schema. Do not add explanations, code fences, "
-    "or any text outside the JSON object. Use double quotes for all keys and "
-    "string values and ensure the JSON is syntactically correct.\n\n"
-    "Example:\n"
-    "user: Extract the user's name and location.\n"
-    "assistant: {\n"
-    '  "name": "John Doe",\n'
-    '  "location": "New York"\n'
-    "}"
-)
 TOKEN_MARGIN_FACTOR = 2.0
 PASSWORD_DETECTOR_MAX_JSON_FAILURES = 5
 LLM_DEFAULT_TIMEOUT = 60.0
@@ -79,247 +77,6 @@ LLM_DEFAULT_TIMEOUT = 60.0
 
 class LLMTimeoutError(RuntimeError):
     """Raised when an LLM request exceeds the configured timeout."""
-
-
-def _build_text_single_prompt(text: str) -> str:
-    return (
-        "You are a document analyst. Analyze the following text and provide a "
-        "JSON response with exactly two keys:\n\n"
-        '- "summary": a concise paragraph summarizing the main points of the '
-        "text.\n"
-        '- "mentioned_people": a list of names of people mentioned in the text. '
-        "These should be actual names, like 'John Smith' or 'Maria Garcia', "
-        "not usernames like 'user123'.\n\n"
-        "Example response:\n"
-        "{\n"
-        '  "summary": "Concise paragraph here.",\n'
-        '  "mentioned_people": ["Alice Johnson", "Robert Smith"]\n'
-        "}\n\n"
-        f"Text: {text}\n\n"
-        "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-        "backticks. Return only the raw JSON object."
-    )
-
-
-def _build_text_chunk_prompt(*, chunk: str, index: int, chunk_count: int) -> str:
-    return (
-        f"You are a document analyst. Analyze chunk {index}/{chunk_count} of the "
-        "following text and provide a JSON response with exactly two keys:\n\n"
-        '- "summary": a concise paragraph summarizing the main points of this '
-        "chunk.\n"
-        '- "mentioned_people": a list of names of people mentioned in this '
-        "chunk. These should be actual names, like 'John Smith' or "
-        "'Maria Garcia', not usernames like 'user123'.\n\n"
-        "Example response:\n"
-        "{\n"
-        '  "summary": "Concise paragraph for this chunk.",\n'
-        '  "mentioned_people": ["Alice Johnson"]\n'
-        "}\n\n"
-        f"Text chunk: {chunk}\n\n"
-        "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-        "backticks. Return only the raw JSON object."
-    )
-
-
-PASSWORD_DETECTOR_PROMPT_TEMPLATE = (
-    "You are a security auditor. Your task is to find any string that "
-    "functions as a password, secret, token, or key for authentication or "
-    "access.\n"
-    "Base your decision on contextual keywords like 'password', 'secret', "
-    "'token', 'key', 'login', or 'authentication'. Credentials can be simple "
-    "strings or complex machine-generated ones. "
-    "Ignore strings that are clearly not credentials, like product IDs or "
-    "transaction numbers.\n\n"
-    "Respond with a JSON object with a 'passwords' field, which is a list of "
-    "objects. Each object must have 'context' and 'password' string keys.\n\n"
-    "CRITICAL REMINDER: The JSON example is for structure only. Do NOT include "
-    "the example data in your response. Your response must only contain "
-    "information from the provided text.\n\n"
-    "Example response:\n"
-    "{\n"
-    '  "passwords": [\n'
-    "    {\n"
-    '      "context": "Login credential for example.com",\n'
-    '      "password": "user_password123"\n'
-    "    }\n"
-    "  ]\n"
-    "}\n\n"
-    "If no credentials are found, return a JSON object with an empty "
-    "'passwords' list: {\"passwords\": []}.\n"
-    "Respond with raw JSON only. Do not add explanations or code fences."
-)
-
-
-def _build_password_single_prompt(text: str) -> str:
-    return f"{PASSWORD_DETECTOR_PROMPT_TEMPLATE}\n\nText:\n{text}"
-
-
-def _build_password_chunk_prompt(*, chunk: str, index: int, chunk_count: int) -> str:
-    return (
-        f"{PASSWORD_DETECTOR_PROMPT_TEMPLATE}\n\n"
-        f"This is chunk {index} of {chunk_count}:\n{chunk}"
-    )
-
-
-ESTATE_CATEGORY_KEYS = [
-    "Legal",
-    "Financial",
-    "Insurance",
-    "Digital",
-    "Medical",
-    "Personal",
-]
-
-
-ESTATE_PLACEHOLDER_VALUES = {
-    "",
-    "details",
-    "detail",
-    "unknown",
-    "n/a",
-    "na",
-    "none",
-    "placeholder",
-}
-
-ESTATE_MIN_FIELDS_PER_ENTRY = 2  # Require "item" plus at least one supporting field.
-ESTATE_SKIP_BARE_STRING_LOG = (
-    "Skipping estate entry emitted as bare string; expected structured object."
-)
-
-
-ESTATE_ANALYSIS_INSTRUCTIONS = (
-    "You are an assistant triaging documents to help loved ones settle a "
-    "deceased person's estate. Review the supplied text and record details "
-    "only when the passage explicitly mentions something an executor could act "
-    "on: legal directives (wills, trusts, POA), financial or insurance "
-    "accounts, titled property, debts to resolve, medical directives, digital "
-    "logins, or instructions on where to find records.\n\n"
-    "Ignore personal narratives, biographies, hobbies, memberships, awards, "
-    "and generic life history unless the text clearly ties them to a legal, "
-    "financial, or administrative obligation. Do not infer assets—cite only "
-    "information that is stated or quoted from the text.\n\n"
-    "CRITICAL REMINDER: The JSON examples are for structure only. Do NOT include "
-    "data from the examples in your response. Your response must only contain "
-    "information from the provided text.\n\n"
-    "Return a JSON object. Use only these top-level keys when relevant: "
-    f"{', '.join(ESTATE_CATEGORY_KEYS)}.\n"
-    "Each present key must map to an array of objects. For every entry include:\n"
-    '  - "item": a concise label (e.g., "Living Will", "Chase savings account").\n'
-    '  - "why_it_matters": how this helps settle the estate.\n'
-    '  - "details": the exact facts or faithful paraphrase from the text such as '
-    "institution names, account numbers, storage locations, instructions, or "
-    "contact details.\n"
-    'Add optional keys like "location", "contact", or "reference" when the text '
-    "supplies them. Skip any entry if you cannot provide meaningful text for "
-    '"item", "why_it_matters", and "details"; never output filler strings like '
-    '"details", "unknown", "N/A", or "none". If the passage lacks actionable '
-    "estate information, return an empty JSON object {}.\n"
-    "Respond only with raw JSON (no code fences)."
-)
-
-
-def _build_estate_single_prompt(text: str) -> str:
-    return (
-        f"{ESTATE_ANALYSIS_INSTRUCTIONS}\n\n"
-        "Example response:\n"
-        "{\n"
-        '  "Legal": [\n'
-        "    {\n"
-        '      "item": "Last will and testament",\n'
-        '      "why_it_matters": "Names executor and divides property",\n'
-        '      "details": "Stored in the safe at 123 Main St., combination 1965"\n'
-        "    }\n"
-        "  ],\n"
-        '  "Financial": [\n'
-        "    {\n"
-        '      "item": "Chase savings account",\n'
-        '      "why_it_matters": "Funds available for estate expenses",\n'
-        '      "details": "Account ending 1234, branch on 5th Ave"\n'
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        f"Text:\n{text}"
-    )
-
-
-def _build_estate_chunk_prompt(
-    *, chunk: str, index: int, chunk_count: int, source_name: str
-) -> str:
-    return (
-        f"{ESTATE_ANALYSIS_INSTRUCTIONS}\n\n"
-        "Example response:\n"
-        "{\n"
-        '  "Legal": [\n'
-        "    {\n"
-        '      "item": "Last will and testament",\n'
-        '      "why_it_matters": "Names executor and divides property",\n'
-        '      "details": "Stored in the safe at 123 Main St., combination 1965"\n'
-        "    }\n"
-        "  ],\n"
-        '  "Financial": [\n'
-        "    {\n"
-        '      "item": "Chase savings account",\n'
-        '      "why_it_matters": "Funds available for estate expenses",\n'
-        '      "details": "Account ending 1234, branch on 5th Ave"\n'
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        f"This is chunk {index} of {chunk_count} from {source_name}:\n{chunk}"
-    )
-
-
-FINANCIAL_ANALYSIS_PROMPT_TEMPLATE = (
-    "You are a meticulous forensic accountant. Analyze the following "
-    "financial document text and provide a JSON response with exactly "
-    "four keys:\n\n"
-    '- "summary": a concise paragraph summarizing the document.\n'
-    '- "potential_red_flags": a list of potential red flags or irregularities.\n'
-    '- "incriminating_items": a list of items that could be incriminating.\n'
-    '- "confidence_score": a numerical score from 0 to 100 indicating '
-    "confidence in the analysis.\n\n"
-    "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-    "backticks. Return only the raw JSON object."
-)
-
-
-def _build_financial_single_prompt(text: str) -> str:
-    return (
-        f"{FINANCIAL_ANALYSIS_PROMPT_TEMPLATE}\n\n"
-        "Example response:\n"
-        "{\n"
-        '  "summary": "Overall summary of the document.",\n'
-        '  "potential_red_flags": ["Late payment noted"],\n'
-        '  "incriminating_items": ["Unreported cash deposit"],\n'
-        '  "confidence_score": 78\n'
-        "}\n\n"
-        f"Text:\n{text}"
-    )
-
-
-def _build_financial_chunk_prompt(*, chunk: str, index: int, chunk_count: int) -> str:
-    return (
-        f"You are a meticulous forensic accountant. "
-        f"Analyze chunk {index}/{chunk_count} of the following financial document "
-        "text and provide a JSON response with exactly four keys:\n\n"
-        '- "summary": a concise paragraph summarizing this chunk.\n'
-        '- "potential_red_flags": a list of potential red flags or irregularities '
-        "in this chunk.\n"
-        '- "incriminating_items": a list of items that could be incriminating in '
-        "this chunk.\n"
-        '- "confidence_score": a numerical score from 0 to 100 indicating '
-        "confidence in the analysis of this chunk.\n\n"
-        "Example response:\n"
-        "{\n"
-        '  "summary": "Chunk-specific summary.",\n'
-        '  "potential_red_flags": [],\n'
-        '  "incriminating_items": [],\n'
-        '  "confidence_score": 60\n'
-        "}\n\n"
-        f"Text chunk: {chunk}\n\n"
-        "Respond only with valid JSON. Do not wrap the JSON in code blocks or "
-        "backticks. Return only the raw JSON object."
-    )
 
 
 def _prepare_chunks(
@@ -374,14 +131,16 @@ def _prepare_chunks(
 
 
 _TEXT_CHUNK_PROMPT_BASE_TOKENS = count_tokens(
-    _build_text_chunk_prompt(chunk="", index=1, chunk_count=1)
+    "".join(build_text_analysis_chunk_prompt(chunk="", index=1, chunk_count=1))
 )
 _ESTATE_CHUNK_PROMPT_BASE_TOKENS = count_tokens(
-    _build_estate_chunk_prompt(
-        chunk="",
-        index=1,
-        chunk_count=1,
-        source_name="example.txt",
+    "".join(
+        build_estate_analysis_chunk_prompt(
+            chunk="",
+            index=1,
+            chunk_count=1,
+            source_name="example.txt",
+        )
     )
 )
 TEXT_ANALYZER_PROMPT_RESERVE = (
@@ -394,7 +153,7 @@ TEXT_ANALYZER_CHUNK_TOKENS = compute_chunk_size(
 )
 
 _PASSWORD_CHUNK_PROMPT_BASE_TOKENS = count_tokens(
-    _build_password_chunk_prompt(chunk="", index=1, chunk_count=1)
+    "".join(build_password_chunk_prompt(chunk="", index=1, chunk_count=1))
 )
 PASSWORD_DETECTOR_PROMPT_RESERVE = (
     _PASSWORD_CHUNK_PROMPT_BASE_TOKENS + PROMPT_RESERVE_SAFETY_TOKENS
@@ -405,7 +164,7 @@ PASSWORD_DETECTOR_CHUNK_TOKENS = compute_chunk_size(
 )
 
 _FINANCIAL_CHUNK_PROMPT_BASE_TOKENS = count_tokens(
-    _build_financial_chunk_prompt(chunk="", index=1, chunk_count=1)
+    "".join(build_financial_analysis_chunk_prompt(chunk="", index=1, chunk_count=1))
 )
 CODE_ANALYZER_PROMPT_RESERVE = (
     _FINANCIAL_CHUNK_PROMPT_BASE_TOKENS + PROMPT_RESERVE_SAFETY_TOKENS
@@ -600,7 +359,8 @@ def _run_with_timeout(func: Callable[[], Any], timeout: float | None) -> Any:
 def _request_json_response(
     *,
     model: str,
-    prompt: str,
+    system_prompt: str,
+    user_prompt: str,
     options: dict[str, Any] | None,
     should_abort: AbortCallback | None,
     context: str,
@@ -608,11 +368,11 @@ def _request_json_response(
     max_duration: float | None = None,
 ) -> Any:
     """Send a chat request expecting JSON and retry with stricter instructions."""
-
-    base_prompt = prompt
-    prompt_to_send = prompt
-
     timeout_budget = max(max_duration or 0, LLM_DEFAULT_TIMEOUT)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
     for attempt in range(1, max_attempts + 1):
         _maybe_abort(should_abort)
@@ -621,10 +381,7 @@ def _request_json_response(
             try:
                 return _ollama_chat(
                     model,
-                    [
-                        {"role": "system", "content": JSON_SYSTEM_MESSAGE},
-                        {"role": "user", "content": prompt_to_send},
-                    ],
+                    messages,
                     options=options,
                     response_format=JSON_RESPONSE_FORMAT,
                     timeout=timeout_budget,
@@ -666,8 +423,7 @@ def _request_json_response(
                 max_attempts,
                 exc,
             )
-            prompt_to_send = f"{base_prompt}\n\n{STRICT_JSON_REMINDER}"
-            continue
+            messages[0]["content"] = f"{system_prompt}\n\n{STRICT_JSON_REMINDER}"
 
 
 def _limit_chunk_list(
@@ -718,9 +474,11 @@ def analyze_text_content(
         _maybe_abort(should_abort)
         logger.info("Text analysis processing single chunk for %s", source_display_name)
         # Single chunk processing
-        prompt = _build_text_single_prompt(text)
+        system_prompt, user_prompt = build_text_analysis_prompt(text)
 
-        prompt_token_estimate = int(count_tokens(prompt) * TOKEN_MARGIN_FACTOR)
+        prompt_token_estimate = int(
+            count_tokens(system_prompt + user_prompt) * TOKEN_MARGIN_FACTOR
+        )
         if (
             TEXT_ANALYZER_CONTEXT_WINDOW
             and prompt_token_estimate > TEXT_ANALYZER_CONTEXT_WINDOW
@@ -740,11 +498,12 @@ def analyze_text_content(
                 logger.debug(
                     "Sending Ollama text analysis request (single chunk), "
                     "prompt length: %d",
-                    len(prompt),
+                    len(system_prompt) + len(user_prompt),
                 )
                 result = _request_json_response(
                     model=TEXT_ANALYZER_MODEL,
-                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
                     options=_combine_options(
                         TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS
                     ),
@@ -777,8 +536,10 @@ def analyze_text_content(
         text,
         initial_limit=chunk_token_limit,
         context_window=TEXT_ANALYZER_CONTEXT_WINDOW,
-        prompt_factory=lambda chunk, idx, total: _build_text_chunk_prompt(
-            chunk=chunk, index=idx, chunk_count=total
+        prompt_factory=lambda chunk, idx, total: "".join(
+            build_text_analysis_chunk_prompt(
+                chunk=chunk, index=idx, chunk_count=total
+            )
         ),
     )
     chunks = _limit_chunk_list(
@@ -815,7 +576,7 @@ def analyze_text_content(
             source_display_name,
             remaining_chunks,
         )
-        prompt = _build_text_chunk_prompt(
+        system_prompt, user_prompt = build_text_analysis_chunk_prompt(
             chunk=chunk,
             index=i + 1,
             chunk_count=chunk_count,
@@ -829,11 +590,12 @@ def analyze_text_content(
                 i + 1,
                 chunk_count,
                 source_display_name,
-                len(prompt),
+                len(system_prompt) + len(user_prompt),
             )
             chunk_result = _request_json_response(
                 model=TEXT_ANALYZER_MODEL,
-                prompt=prompt,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
                 should_abort=should_abort,
                 context=(f"text chunk {i + 1}/{chunk_count} for {source_display_name}"),
@@ -961,8 +723,10 @@ def detect_passwords(
         }
 
     if text_bytes <= 3000:
-        prompt = _build_password_single_prompt(text)
-        prompt_token_estimate = int(count_tokens(prompt) * TOKEN_MARGIN_FACTOR)
+        system_prompt, user_prompt = build_password_prompt(text)
+        prompt_token_estimate = int(
+            count_tokens(system_prompt + user_prompt) * TOKEN_MARGIN_FACTOR
+        )
         if (
             PASSWORD_DETECTOR_CONTEXT_WINDOW
             and prompt_token_estimate > PASSWORD_DETECTOR_CONTEXT_WINDOW
@@ -982,7 +746,8 @@ def detect_passwords(
                 )
                 raw_result = _request_json_response(
                     model=PASSWORD_DETECTOR_MODEL,
-                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
                     options=_combine_options(
                         PASSWORD_DETECTOR_OPTIONS, JSON_OUTPUT_OPTIONS
                     ),
@@ -1015,8 +780,8 @@ def detect_passwords(
         text,
         initial_limit=PASSWORD_DETECTOR_CHUNK_TOKENS,
         context_window=PASSWORD_DETECTOR_CONTEXT_WINDOW,
-        prompt_factory=lambda chunk, idx, total: _build_password_chunk_prompt(
-            chunk=chunk, index=idx, chunk_count=total
+        prompt_factory=lambda chunk, idx, total: "".join(
+            build_password_chunk_prompt(chunk=chunk, index=idx, chunk_count=total)
         ),
     )
     chunks = _limit_chunk_list(
@@ -1050,7 +815,7 @@ def detect_passwords(
             source_display_name,
             remaining_chunks,
         )
-        prompt = _build_password_chunk_prompt(
+        system_prompt, user_prompt = build_password_chunk_prompt(
             chunk=chunk,
             index=i + 1,
             chunk_count=chunk_count,
@@ -1080,7 +845,8 @@ def detect_passwords(
         try:
             raw_result = _request_json_response(
                 model=PASSWORD_DETECTOR_MODEL,
-                prompt=prompt,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 options=_combine_options(
                     PASSWORD_DETECTOR_OPTIONS, JSON_OUTPUT_OPTIONS
                 ),
@@ -1346,7 +1112,7 @@ def _is_document_estate_related(
     if not summary or not summary.strip():
         return False
 
-    prompt = (
+    system_prompt = (
         "You are a document triaging assistant. Based on the following summary, "
         "determine if the document is likely to contain information relevant to "
         "settling a person's estate, such as wills, trusts, financial accounts, "
@@ -1361,9 +1127,9 @@ def _is_document_estate_related(
         "covering setup, features, and troubleshooting.'\n"
         "Your response for the above summary would be:\n"
         '{\n  "is_estate_related": false\n}\n\n'
-        f"Document Summary:\n{summary}\n\n"
         "Respond only with raw JSON."
     )
+    user_prompt = f"Document Summary:\n{summary}"
 
     context = f"estate relevance check for {source_display_name}"
     logger.debug("Checking estate relevance for %s", source_display_name)
@@ -1371,7 +1137,8 @@ def _is_document_estate_related(
     try:
         result = _request_json_response(
             model=TEXT_ANALYZER_MODEL,
-            prompt=prompt,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
             should_abort=should_abort,
             context=context,
@@ -1445,14 +1212,16 @@ def analyze_estate_relevant_information(
     )
 
     def _call_model(
-        payload: str,
+        system_prompt: str,
+        user_prompt: str,
         *,
         context: str,
         max_duration: float | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         parsed = _request_json_response(
             model=TEXT_ANALYZER_MODEL,
-            prompt=payload,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             options=_combine_options(TEXT_ANALYZER_OPTIONS, JSON_OUTPUT_OPTIONS),
             should_abort=should_abort,
             context=context,
@@ -1461,8 +1230,10 @@ def analyze_estate_relevant_information(
         return _normalize_estate_response(parsed)
 
     if text_bytes <= 3000:
-        prompt = _build_estate_single_prompt(text)
-        prompt_token_estimate = int(count_tokens(prompt) * TOKEN_MARGIN_FACTOR)
+        system_prompt, user_prompt = build_estate_analysis_prompt(text)
+        prompt_token_estimate = int(
+            count_tokens(system_prompt + user_prompt) * TOKEN_MARGIN_FACTOR
+        )
         if (
             TEXT_ANALYZER_CONTEXT_WINDOW
             and prompt_token_estimate > TEXT_ANALYZER_CONTEXT_WINDOW
@@ -1481,7 +1252,8 @@ def analyze_estate_relevant_information(
                     source_display_name,
                 )
                 normalized = _call_model(
-                    prompt,
+                    system_prompt,
+                    user_prompt,
                     context=f"estate analysis single chunk for {source_display_name}",
                 )
                 has_info = bool(normalized)
@@ -1515,11 +1287,13 @@ def analyze_estate_relevant_information(
         text,
         initial_limit=TEXT_ANALYZER_CHUNK_TOKENS,
         context_window=TEXT_ANALYZER_CONTEXT_WINDOW,
-        prompt_factory=lambda chunk, idx, total: _build_estate_chunk_prompt(
-            chunk=chunk,
-            index=idx,
-            chunk_count=total,
-            source_name=source_display_name,
+        prompt_factory=lambda chunk, idx, total: "".join(
+            build_estate_analysis_chunk_prompt(
+                chunk=chunk,
+                index=idx,
+                chunk_count=total,
+                source_name=source_display_name,
+            )
         ),
     )
     chunks = _limit_chunk_list(
@@ -1551,7 +1325,7 @@ def analyze_estate_relevant_information(
             source_display_name,
             remaining,
         )
-        prompt = _build_estate_chunk_prompt(
+        system_prompt, user_prompt = build_estate_analysis_chunk_prompt(
             chunk=chunk,
             index=index,
             chunk_count=chunk_count,
@@ -1567,7 +1341,8 @@ def analyze_estate_relevant_information(
                 source_display_name,
             )
             normalized = _call_model(
-                prompt,
+                system_prompt,
+                user_prompt,
                 context="estate analysis chunk {} for {}".format(
                     chunk_label, source_display_name
                 ),
@@ -1666,8 +1441,10 @@ def analyze_financial_document(
             "Financial analysis processing single chunk for %s", source_display_name
         )
         # Single chunk processing
-        prompt = _build_financial_single_prompt(text)
-        prompt_token_estimate = int(count_tokens(prompt) * TOKEN_MARGIN_FACTOR)
+        system_prompt, user_prompt = build_financial_analysis_prompt(text)
+        prompt_token_estimate = int(
+            count_tokens(system_prompt + user_prompt) * TOKEN_MARGIN_FACTOR
+        )
         if (
             CODE_ANALYZER_CONTEXT_WINDOW
             and prompt_token_estimate > CODE_ANALYZER_CONTEXT_WINDOW
@@ -1684,11 +1461,12 @@ def analyze_financial_document(
                 logger.debug(
                     "Sending Ollama financial analysis request (single chunk), "
                     "prompt length: %d",
-                    len(prompt),
+                    len(system_prompt) + len(user_prompt),
                 )
                 result = _request_json_response(
                     model=CODE_ANALYZER_MODEL,
-                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
                     options=_combine_options(
                         CODE_ANALYZER_OPTIONS, {"raw": True}, JSON_OUTPUT_OPTIONS
                     ),
@@ -1726,10 +1504,12 @@ def analyze_financial_document(
         text,
         initial_limit=CODE_ANALYZER_CHUNK_TOKENS,
         context_window=CODE_ANALYZER_CONTEXT_WINDOW,
-        prompt_factory=lambda chunk, idx, total: _build_financial_chunk_prompt(
-            chunk=chunk,
-            index=idx,
-            chunk_count=total,
+        prompt_factory=lambda chunk, idx, total: "".join(
+            build_financial_analysis_chunk_prompt(
+                chunk=chunk,
+                index=idx,
+                chunk_count=total,
+            )
         ),
     )
     chunks = _limit_chunk_list(
@@ -1765,7 +1545,7 @@ def analyze_financial_document(
             source_display_name,
             remaining_chunks,
         )
-        prompt = _build_financial_chunk_prompt(
+        system_prompt, user_prompt = build_financial_analysis_chunk_prompt(
             chunk=chunk,
             index=i + 1,
             chunk_count=chunk_count,
@@ -1778,11 +1558,12 @@ def analyze_financial_document(
                 "Sending financial chunk %s request for %s (prompt len=%d)",
                 chunk_label,
                 source_display_name,
-                len(prompt),
+                len(system_prompt) + len(user_prompt),
             )
             chunk_result = _request_json_response(
                 model=CODE_ANALYZER_MODEL,
-                prompt=prompt,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 options=_combine_options(
                     CODE_ANALYZER_OPTIONS, {"raw": True}, JSON_OUTPUT_OPTIONS
                 ),
