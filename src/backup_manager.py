@@ -25,7 +25,7 @@ class BackupManager:
         self,
         manifest_path: Path = MANIFEST_PATH,
         backup_dir: Path = MANIFEST_BACKUP_DIR,
-        interval_hours: int = BACKUP_INTERVAL_HOURS,
+        interval_hours: float = BACKUP_INTERVAL_HOURS,
         write_lock: threading.Lock | None = None,
     ):
         """Initializes the BackupManager."""
@@ -147,6 +147,27 @@ class BackupManager:
             if month not in monthly_kept:
                 to_keep.append(backup)
                 monthly_kept.add(month)
+
+        monthly_threshold = timedelta(days=30)
+        monthly_count = sum(
+            1
+            for backup in to_keep
+            if now - datetime.fromtimestamp(backup.stat().st_mtime) > monthly_threshold
+        )
+        if monthly_count < 4:
+            additional_monthly = [
+                backup
+                for backup in backups_to_consider
+                if backup not in to_keep
+                and now - datetime.fromtimestamp(backup.stat().st_mtime)
+                > monthly_threshold
+            ]
+            additional_monthly.sort(key=lambda p: p.stat().st_mtime)
+            for backup in additional_monthly:
+                if monthly_count >= 4:
+                    break
+                to_keep.append(backup)
+                monthly_count += 1
 
         # Final check against MAX_BACKUPS. If we still have too many, remove the oldest.
         if len(to_keep) > self.max_backups:

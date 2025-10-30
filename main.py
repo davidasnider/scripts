@@ -72,6 +72,7 @@ from src.schema import (
     PENDING_EXTRACTION,
     AnalysisName,
     AnalysisStatus,
+    AnalysisTask,
     FileRecord,
 )
 from src.task_utils import ensure_required_tasks
@@ -1421,9 +1422,7 @@ def analysis_worker(
             tasks_for_model = _get_tasks_for_model(file_record.analysis_tasks, model)
             total_tasks = len(tasks_for_model)
             completed_tasks = sum(
-                1
-                for task in tasks_for_model
-                if task.status == AnalysisStatus.COMPLETE
+                1 for task in tasks_for_model if task.status == AnalysisStatus.COMPLETE
             )
             with lock:
                 in_progress_files[correlation_id] = ActiveFileStatus(
@@ -1592,13 +1591,16 @@ def analysis_worker(
                                     try:
                                         ensure_text_analysis_ran()
                                         if text_analysis_result is None:
-                                            raise ValueError("text_analysis_result is None after ensure_text_analysis_ran()")
+                                            raise ValueError(
+                                                "Missing text_analysis_result after "
+                                                "ensure_text_analysis_ran()"
+                                            )
                                         summary = text_analysis_result.get("summary")
                                     except Exception as e:
                                         worker_logger.error(
-                                            "Failed to run text analysis for estate analysis on %s: %s",
+                                            "Failed estate analysis on %s: %s",
                                             file_record.file_path,
-                                            str(e),
+                                            e,
                                         )
                                         task.status = AnalysisStatus.FAILED
                                         _refresh_task_progress()
