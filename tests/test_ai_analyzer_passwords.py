@@ -1,11 +1,13 @@
 import json
 from unittest.mock import patch
 
-from src.ai_analyzer import detect_passwords, DEFAULT_PASSWORD_RESULT
+from src.ai_analyzer import DEFAULT_PASSWORD_RESULT, detect_passwords
+
 
 # Common mock for a successful ollama chat response
 def mock_ollama_chat_response(content: dict):
     return {"message": {"content": json.dumps(content)}}
+
 
 def test_detect_passwords_returns_default_for_empty_text():
     """Empty or whitespace-only text should yield a negative password result."""
@@ -27,9 +29,10 @@ def test_detect_passwords_handles_clean_json_response(mock_ollama_chat):
     assert result["contains_password"] is True
     assert result["passwords"] == [{"context": "user login", "password": "password123"}]
 
+
 @patch("src.ai_analyzer._ollama_chat")
 def test_detect_passwords_handles_malformed_json_response(mock_ollama_chat):
-    """Test that _normalize_result filters out malformed entries from the AI response."""
+    """Ensure malformed password entries are filtered out."""
     mock_response = {
         "passwords": [
             {"context": "user login", "password": "password123"},
@@ -45,9 +48,10 @@ def test_detect_passwords_handles_malformed_json_response(mock_ollama_chat):
     assert result["contains_password"] is True
     assert result["passwords"] == [{"context": "user login", "password": "password123"}]
 
+
 @patch("src.ai_analyzer._ollama_chat")
 def test_detect_passwords_identifies_complex_password(mock_ollama_chat):
-    """Test that a complex, password-manager-style string is correctly identified."""
+    """Confirm complex manager-style passwords are accepted."""
     mock_response = {
         "passwords": [
             {"context": "Password Manager", "password": "aBc-123-!@#"},
@@ -59,7 +63,10 @@ def test_detect_passwords_identifies_complex_password(mock_ollama_chat):
     result = detect_passwords(text)
 
     assert result["contains_password"] is True
-    assert result["passwords"] == [{"context": "Password Manager", "password": "aBc-123-!@#"}]
+    assert result["passwords"] == [
+        {"context": "Password Manager", "password": "aBc-123-!@#"}
+    ]
+
 
 @patch("src.ai_analyzer._ollama_chat")
 def test_detect_passwords_identifies_api_key(mock_ollama_chat):
@@ -75,4 +82,6 @@ def test_detect_passwords_identifies_api_key(mock_ollama_chat):
     result = detect_passwords(text)
 
     assert result["contains_password"] is True
-    assert result["passwords"] == [{"context": "API Key", "password": "xyz-apikey-12345"}]
+    assert result["passwords"] == [
+        {"context": "API Key", "password": "xyz-apikey-12345"}
+    ]

@@ -91,13 +91,13 @@ class FileRecord(BaseModel):
     incriminating_items: list[str] = Field(default_factory=list)
     confidence_score: int | None = None
     contains_password: bool | None = None
-    passwords: list[dict[str, str]] = Field(default_factory=list)
+    passwords: list[dict[str, Any]] = Field(default_factory=list)
     has_estate_relevant_info: bool | None = None
     estate_information: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
     @field_validator("passwords", mode="before")
     @classmethod
-    def _coerce_passwords_to_list(cls, value: Any) -> list[dict[str, str]]:
+    def _coerce_passwords_to_list(cls, value: Any) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             return [
                 {"context": str(key), "password": str(password)}
