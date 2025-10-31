@@ -28,7 +28,6 @@ from src.prompts import (
     ESTATE_SKIP_BARE_STRING_LOG,
     JSON_OUTPUT_OPTIONS,
     JSON_RESPONSE_FORMAT,
-    JSON_SYSTEM_MESSAGE,
     STRICT_JSON_REMINDER,
     build_estate_analysis_chunk_prompt,
     build_estate_analysis_prompt,
@@ -537,9 +536,7 @@ def analyze_text_content(
         initial_limit=chunk_token_limit,
         context_window=TEXT_ANALYZER_CONTEXT_WINDOW,
         prompt_factory=lambda chunk, idx, total: "".join(
-            build_text_analysis_chunk_prompt(
-                chunk=chunk, index=idx, chunk_count=total
-            )
+            build_text_analysis_chunk_prompt(chunk=chunk, index=idx, chunk_count=total)
         ),
     )
     chunks = _limit_chunk_list(
