@@ -51,15 +51,19 @@ def build_text_analysis_chunk_prompt(
 
 # --- Password Detection Prompts ---
 
-PASSWORD_DETECTOR_SYSTEM_PROMPT = """You are a security auditor. Find passwords, 
-secrets, tokens, or keys in the text. Base your decision on context ('password', 
-'secret', etc.).
+PASSWORD_DETECTOR_SYSTEM_PROMPT = """You are a security auditor. Find passwords,
+secrets, tokens, or keys in the text. Base your decision on context ('password',
+'secret', 'token', 'key', 'login', 'authentication').
 
-Respond with a JSON object with a 'passwords' field, a list of objects each with 
+- Look for machine-generated credentials, API keys, and other secrets.
+- Ignore strings that are likely product IDs, transaction numbers, or other
+  non-credentials.
+
+Respond with a JSON object with a 'passwords' field, a list of objects each with
 'context' and 'password' keys.
 
-CRITICAL REMINDER: The JSON example is for structure only. Do NOT include the 
-example data in your response. Your response must only contain information from 
+CRITICAL REMINDER: The JSON example is for structure only. Do NOT include the
+example data in your response. Your response must only contain information from
 the provided text.
 
 Example response:
@@ -87,7 +91,10 @@ def build_password_chunk_prompt(
     system_prompt = (
         "You are a security auditor. Find passwords, secrets, tokens, or keys in "
         f"chunk {index}/{chunk_count} of the provided text. Base your decision on "
-        "context ('password', 'secret', etc.).\n\n"
+        "context ('password', 'secret', 'token', 'key', 'login', 'authentication').\n\n"
+        "- Look for machine-generated credentials, API keys, and other secrets.\n"
+        "- Ignore strings that are likely product IDs, transaction numbers, or other "
+        "non-credentials.\n\n"
         "Respond with a JSON object with a 'passwords' field, a list of objects "
         "each with 'context' and 'password' keys.\n\n"
         "CRITICAL REMINDER: The JSON example is for structure only. Do NOT include "
@@ -118,17 +125,27 @@ ESTATE_CATEGORY_KEYS = [
     "Medical",
     "Personal",
 ]
-ESTATE_ANALYSIS_SYSTEM_PROMPT = f"""You are an estate planning assistant. 
-Extract actionable information for an executor from the text. 
+ESTATE_ANALYSIS_SYSTEM_PROMPT = f"""You are an estate planning assistant.
+Extract actionable information for an executor from the text.
 Focus on legal documents, financial accounts, property, debts, and digital assets.
 
-CRITICAL REMINDER: The JSON examples are for structure only. 
-Do NOT include data from the examples in your response. 
+- Do not infer assets or relationships.
+- Ignore personal narratives, biographies, and hobbies unless they directly relate
+  to an asset or liability.
+- Field-level documentation:
+  - "item": The specific asset, liability, or document.
+  - "why_it_matters": A brief explanation of why this item is important for the
+    estate.
+  - "details": Specific details about the item, such as account numbers,
+    locations, or contact information.
+
+CRITICAL REMINDER: The JSON examples are for structure only.
+Do NOT include data from the examples in your response.
 Your response must only contain information from the provided text.
 
-Return a JSON object with these top-level keys: {', '.join(ESTATE_CATEGORY_KEYS)}. 
-Each key must map to a list of objects with "item", "why_it_matters", and 
-"details" keys. Omit entries with placeholder values. If no information is found, 
+Return a JSON object with these top-level keys: {', '.join(ESTATE_CATEGORY_KEYS)}.
+Each key must map to a list of objects with "item", "why_it_matters", and
+"details" keys. Omit entries with placeholder values. If no information is found,
 return an empty JSON object {{}}.
 
 Example response:
@@ -180,6 +197,15 @@ def build_estate_analysis_chunk_prompt(
         f"You are an estate planning assistant. Extract actionable information for an "
         f"executor from chunk {index}/{chunk_count} of {source_name}. Focus on legal "
         "documents, financial accounts, property, debts, and digital assets.\n\n"
+        "- Do not infer assets or relationships.\n"
+        "- Ignore personal narratives, biographies, and hobbies unless they directly "
+        "relate to an asset or liability.\n"
+        "- Field-level documentation:\n"
+        '  - "item": The specific asset, liability, or document.\n'
+        '  - "why_it_matters": A brief explanation of why this item is important for '
+        "the estate.\n"
+        '  - "details": Specific details about the item, such as account numbers, '
+        "locations, or contact information.\n\n"
         "CRITICAL REMINDER: The JSON examples are for structure only. Do NOT "
         "include data from the examples in your response. Your response must "
         "only contain information from the provided text.\n\n"
@@ -187,7 +213,7 @@ def build_estate_analysis_chunk_prompt(
         f"{', '.join(ESTATE_CATEGORY_KEYS)}. Each key must map to a list of "
         'objects with "item", "why_it_matters", and "details" keys. Omit entries '
         "with placeholder values. If no information is found, return an empty JSON "
-        "object {}.\n\n"
+        "object {{}}.\n\n"
         "Example response:\n"
         "{\n"
         '  "Legal": [\n'
@@ -212,9 +238,16 @@ def build_estate_analysis_chunk_prompt(
 
 # --- Financial Analysis Prompts ---
 
-FINANCIAL_ANALYSIS_SYSTEM_PROMPT = """You are a forensic accountant. 
-Analyze the financial text and return a JSON response with "summary", 
+FINANCIAL_ANALYSIS_SYSTEM_PROMPT = """You are a meticulous forensic accountant.
+Analyze the financial text and return a JSON response with "summary",
 "potential_red_flags", "incriminating_items", and "confidence_score" (0-100).
+
+- "summary": A concise paragraph summarizing the document.
+- "potential_red_flags": A list of items that are suspicious but not confirmed
+  to be incriminating.
+- "incriminating_items": A list of items that are clearly incriminating.
+- "confidence_score": An integer from 0 to 100 indicating the confidence in the
+  analysis.
 
 Example response:
 {
@@ -237,10 +270,17 @@ def build_financial_analysis_chunk_prompt(
 ) -> tuple[str, str]:
     """Builds the system and user prompts for chunked financial analysis."""
     system_prompt = (
-        f"You are a forensic accountant. Analyze chunk {index}/{chunk_count} of the "
-        'financial text and return a JSON response with "summary", '
+        f"You are a meticulous forensic accountant. "
+        f"Analyze chunk {index}/{chunk_count} "
+        'of the financial text and return a JSON response with "summary", '
         '"potential_red_flags", "incriminating_items", and "confidence_score" '
         "(0-100).\n\n"
+        '- "summary": A concise paragraph summarizing the document.\n'
+        '- "potential_red_flags": A list of items that are suspicious but not '
+        "confirmed to be incriminating.\n"
+        '- "incriminating_items": A list of items that are clearly incriminating.\n'
+        '- "confidence_score": An integer from 0 to 100 indicating the confidence in '
+        "the analysis.\n\n"
         "Example response:\n"
         "{\n"
         '  "summary": "Chunk-specific summary.",\n'
