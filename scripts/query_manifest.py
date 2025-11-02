@@ -46,6 +46,9 @@ def query(
     completed_analysis: bool = typer.Option(
         False, "--completed-analysis", help="Find files with completed analysis."
     ),
+    mime_type: str = typer.Option(
+        None, "--mime-type", "-m", help="Filter by MIME type."
+    ),
 ):
     """
     Query the manifest for files based on specific criteria.
@@ -68,7 +71,7 @@ def query(
     ]
 
     # Early return if no filters are active
-    if not (no_summary or is_nsfw or no_text or completed_analysis):
+    if not (no_summary or is_nsfw or no_text or completed_analysis or mime_type):
         filtered_records = records
     else:
         # Single-pass filtering using list comprehension
@@ -80,6 +83,9 @@ def query(
             passes_completed_analysis_filter = (
                 not completed_analysis or record.status == "complete"
             )
+            passes_mime_type_filter = (
+                not mime_type or record.mime_type == mime_type
+            )
 
             # All active filters must match (AND logic)
             return (
@@ -87,6 +93,7 @@ def query(
                 and passes_nsfw_filter
                 and passes_text_filter
                 and passes_completed_analysis_filter
+                and passes_mime_type_filter
             )
 
         with error_console.status("[bold green]Filtering records..."):
