@@ -443,8 +443,12 @@ def extract_content_from_rtf(file_path: str) -> str:
         return "RTF extraction unavailable - striprtf not installed"
 
     try:
-        with open(file_path, "r", encoding="latin-1") as f:
-            rtf_content = f.read()
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                rtf_content = f.read()
+        except UnicodeDecodeError:
+            with open(file_path, "r", encoding="latin-1") as f:
+                rtf_content = f.read()
         return rtf_to_text(rtf_content)
     except Exception as e:
         logger.error("Error extracting text from RTF %s: %s", file_path, e)
