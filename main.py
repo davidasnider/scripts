@@ -2343,7 +2343,7 @@ def main(
     if reprocess_file and target_filename:
         message = "Cannot use --reprocess-file and --file-name simultaneously."
         run_logger.error(message)
-        typer.echo(f"[bold red]{message}[/bold red]")
+        typer.secho(message, fg=typer.colors.RED, bold=True)
         return 1
 
     reset_count = reset_outdated_analysis_tasks(full_manifest)
@@ -2377,7 +2377,7 @@ def main(
         except (json.JSONDecodeError, IOError) as e:
             message = f"Error reading reprocess file: {e}"
             run_logger.error(message)
-            typer.echo(f"[bold red]{message}[/bold red]")
+            typer.secho(message, fg=typer.colors.RED, bold=True)
             return 1
 
         manifest_map = {record.file_path: record for record in full_manifest}
@@ -2468,7 +2468,7 @@ def main(
             len(processing_manifest),
             target_filename,
         )
-    elif not reprocess_file:
+    else:
         run_logger.info(
             "Found %d unprocessed files.",
             len(candidate_manifest),
