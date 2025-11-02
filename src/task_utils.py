@@ -26,48 +26,38 @@ def _create_tasks(*names: AnalysisName) -> list[AnalysisTask]:
     return [_create_task(name) for name in names]
 
 
-def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[AnalysisTask]:
+def determine_analysis_tasks(
+    mime_type: str, file_path: str = "", has_extracted_text: bool = False
+) -> list[AnalysisTask]:
     """Return the list of analysis tasks appropriate for the given MIME type."""
 
     tasks: list[AnalysisTask] = []
     normalized_mime = mime_type.lower()
 
+    if has_extracted_text:
+        tasks.extend(
+            _create_tasks(
+                AnalysisName.TEXT_ANALYSIS,
+                AnalysisName.PEOPLE_ANALYSIS,
+                AnalysisName.ESTATE_ANALYSIS,
+                AnalysisName.PASSWORD_DETECTION,
+                AnalysisName.FINANCIAL_ANALYSIS,
+            )
+        )
+
     if normalized_mime == "application/x-msaccess":
         tasks.extend(
             _create_tasks(
                 AnalysisName.ACCESS_DB_ANALYSIS,
-                AnalysisName.TEXT_ANALYSIS,
-                AnalysisName.PEOPLE_ANALYSIS,
-                AnalysisName.ESTATE_ANALYSIS,
-                AnalysisName.PASSWORD_DETECTION,
             )
         )
         return tasks
 
-    if (
-        mime_type.startswith("text/")
-        or mime_type == "application/pdf"
-        or mime_type.endswith("document")
-        or mime_type.endswith("sheet")
-        or mime_type == "application/rtf"
-    ):
-        tasks.extend(
-            _create_tasks(
-                AnalysisName.TEXT_ANALYSIS,
-                AnalysisName.PEOPLE_ANALYSIS,
-                AnalysisName.ESTATE_ANALYSIS,
-                AnalysisName.PASSWORD_DETECTION,
-            )
-        )
     if mime_type.startswith("image/"):
         tasks.extend(
             _create_tasks(
                 AnalysisName.IMAGE_DESCRIPTION,
                 AnalysisName.NSFW_CLASSIFICATION,
-                AnalysisName.TEXT_ANALYSIS,
-                AnalysisName.PEOPLE_ANALYSIS,
-                AnalysisName.ESTATE_ANALYSIS,
-                AnalysisName.PASSWORD_DETECTION,
             )
         )
     if mime_type.startswith("video/") and not file_path.lower().endswith(".asx"):
@@ -85,7 +75,11 @@ def ensure_required_tasks(file_record: FileRecord) -> None:
     """Add any missing analysis tasks to the record based on its MIME type."""
 
     existing = {task.name for task in file_record.analysis_tasks}
-    required = determine_analysis_tasks(file_record.mime_type, file_record.file_path)
+    required = determine_analysis_tasks(
+        file_record.mime_type,
+        file_record.file_path,
+        has_extracted_text=bool(file_record.extracted_text),
+    )
 
     for task in required:
         if task.name not in existing:

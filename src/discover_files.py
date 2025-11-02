@@ -42,8 +42,10 @@ def _calculate_sha256(file_path: Path) -> str:
     return sha256_hash.hexdigest()
 
 
-def _get_analysis_tasks(mime_type: str, file_path: str = "") -> list[AnalysisTask]:
-    return determine_analysis_tasks(mime_type, file_path)
+def _get_analysis_tasks(
+    mime_type: str, file_path: str = "", has_extracted_text: bool = False
+) -> list[AnalysisTask]:
+    return determine_analysis_tasks(mime_type, file_path, has_extracted_text)
 
 
 def _count_files(root_directory: Path) -> int:

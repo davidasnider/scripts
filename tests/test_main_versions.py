@@ -23,6 +23,7 @@ def _build_file_record(
     task_status: AnalysisStatus = AnalysisStatus.COMPLETE,
     task_version_delta: int = -1,
     task_name: AnalysisName = AnalysisName.TEXT_ANALYSIS,
+    extracted_text: str | None = None,
 ):
     expected_version = ANALYSIS_TASK_VERSIONS[task_name]
     task_version = max(0, expected_version + task_version_delta)
@@ -41,6 +42,7 @@ def _build_file_record(
         last_modified=0.0,
         sha256="hash",
         status=status,
+        extracted_text=extracted_text,
         analysis_tasks=[
             AnalysisTask(
                 name=task_name,
@@ -53,13 +55,15 @@ def _build_file_record(
 
 def test_reset_outdated_analysis_tasks_updates_text_analysis():
     record = _build_file_record(
-        task_version_delta=-1, task_name=AnalysisName.TEXT_ANALYSIS
+        task_version_delta=-1,
+        task_name=AnalysisName.TEXT_ANALYSIS,
+        extracted_text="some text",
     )
     manifest = [record]
 
     reset_count = reset_outdated_analysis_tasks(manifest)
 
-    assert reset_count == 4
+    assert reset_count == 5
     task_lookup = {task.name: task for task in record.analysis_tasks}
     assert task_lookup[AnalysisName.TEXT_ANALYSIS].status == AnalysisStatus.PENDING
     assert (
@@ -71,19 +75,22 @@ def test_reset_outdated_analysis_tasks_updates_text_analysis():
         AnalysisName.PEOPLE_ANALYSIS,
         AnalysisName.ESTATE_ANALYSIS,
         AnalysisName.PASSWORD_DETECTION,
+        AnalysisName.FINANCIAL_ANALYSIS,
     } == set(task_lookup)
     assert record.status == PENDING_ANALYSIS
 
 
 def test_reset_outdated_analysis_tasks_updates_image_description():
     record = _build_file_record(
-        task_version_delta=-1, task_name=AnalysisName.IMAGE_DESCRIPTION
+        task_version_delta=-1,
+        task_name=AnalysisName.IMAGE_DESCRIPTION,
+        extracted_text="some text",
     )
     manifest = [record]
 
     reset_count = reset_outdated_analysis_tasks(manifest)
 
-    assert reset_count == 6
+    assert reset_count == 7
     task_lookup = {task.name: task for task in record.analysis_tasks}
     assert task_lookup[AnalysisName.IMAGE_DESCRIPTION].status == AnalysisStatus.PENDING
     assert (
@@ -97,6 +104,7 @@ def test_reset_outdated_analysis_tasks_updates_image_description():
         AnalysisName.PEOPLE_ANALYSIS,
         AnalysisName.ESTATE_ANALYSIS,
         AnalysisName.PASSWORD_DETECTION,
+        AnalysisName.FINANCIAL_ANALYSIS,
     } == set(task_lookup)
     assert record.status == PENDING_ANALYSIS
 
@@ -109,19 +117,14 @@ def test_reset_outdated_analysis_tasks_updates_people_analysis():
 
     reset_count = reset_outdated_analysis_tasks(manifest)
 
-    assert reset_count == 4
+    assert reset_count == 1
     task_lookup = {task.name: task for task in record.analysis_tasks}
     assert task_lookup[AnalysisName.PEOPLE_ANALYSIS].status == AnalysisStatus.PENDING
     assert (
         task_lookup[AnalysisName.PEOPLE_ANALYSIS].version
         == ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS]
     )
-    assert {
-        AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
-        AnalysisName.PASSWORD_DETECTION,
-    } == set(task_lookup)
+    assert {AnalysisName.PEOPLE_ANALYSIS} == set(task_lookup)
     assert record.status == PENDING_ANALYSIS
 
 
@@ -206,7 +209,7 @@ def test_reset_outdated_analysis_tasks_updates_failed_records():
 
     reset_count = reset_outdated_analysis_tasks(manifest)
 
-    assert reset_count == 4
+    assert reset_count == 1
     for task in record.analysis_tasks:
         assert task.status == AnalysisStatus.PENDING
         assert task.error_message is None
@@ -223,12 +226,9 @@ def test_reset_outdated_analysis_tasks_resets_password_fields():
 
     reset_count = reset_outdated_analysis_tasks(manifest)
 
-    assert reset_count == 4
+    assert reset_count == 1
     task_lookup = {task.name: task for task in record.analysis_tasks}
     assert {
-        AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
         AnalysisName.PASSWORD_DETECTION,
     } == set(task_lookup)
     assert task_lookup[AnalysisName.PASSWORD_DETECTION].status == AnalysisStatus.PENDING
@@ -276,12 +276,13 @@ def test_reset_file_record_for_rescan_clears_previous_analysis():
     assert record.incriminating_items == []
     assert record.confidence_score is None
     task_names = [task.name for task in record.analysis_tasks]
-    assert task_names == [
+    assert set(task_names) == {
         AnalysisName.TEXT_ANALYSIS,
         AnalysisName.PEOPLE_ANALYSIS,
         AnalysisName.ESTATE_ANALYSIS,
         AnalysisName.PASSWORD_DETECTION,
-    ]
+        AnalysisName.FINANCIAL_ANALYSIS,
+    }
     assert all(task.status == AnalysisStatus.PENDING for task in record.analysis_tasks)
 
 
@@ -308,9 +309,5 @@ def test_reset_file_record_for_rescan_drops_access_analysis_tasks():
     task_names = [task.name for task in record.analysis_tasks]
     assert task_names == [
         AnalysisName.ACCESS_DB_ANALYSIS,
-        AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
-        AnalysisName.PASSWORD_DETECTION,
     ]
     assert all(task.status == AnalysisStatus.PENDING for task in record.analysis_tasks)

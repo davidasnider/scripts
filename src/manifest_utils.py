@@ -26,7 +26,9 @@ def reset_outdated_analysis_tasks(manifest: list[FileRecord]) -> int:
         record_updated = False
         existing_tasks = {task.name: task for task in file_record.analysis_tasks}
         required_tasks = determine_analysis_tasks(
-            file_record.mime_type, file_record.file_path
+            file_record.mime_type,
+            file_record.file_path,
+            file_record.extracted_text is not None,
         )
 
         for required_task in required_tasks:
@@ -89,7 +91,11 @@ def reset_outdated_analysis_tasks(manifest: list[FileRecord]) -> int:
 def reset_file_record_for_rescan(file_record: FileRecord) -> None:
     """Clear previous analysis state so the file is treated as freshly discovered."""
 
-    tasks = determine_analysis_tasks(file_record.mime_type, file_record.file_path)
+    tasks = determine_analysis_tasks(
+        file_record.mime_type,
+        file_record.file_path,
+        file_record.extracted_text is not None,
+    )
 
     file_record.status = PENDING_EXTRACTION
     file_record.extracted_text = None
