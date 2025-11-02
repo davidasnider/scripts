@@ -2214,6 +2214,18 @@ def main(
         ),
     ] = 0,
     debug: Annotated[bool, typer.Option(help="Enable debug logging.")] = False,
+    reprocess_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--reprocess-file",
+            help="Path to a JSON file containing records to reprocess.",
+            rich_help_panel="Filtering",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ] = None,
 ) -> int:
     """Run the main threaded pipeline."""
     console_logging = target_filename != "" or debug
@@ -2328,6 +2340,12 @@ def main(
         return 1
     run_logger.info("Loaded %d files from manifest", len(full_manifest))
 
+    if reprocess_file and target_filename:
+        message = "Cannot use --reprocess-file and --file-name simultaneously."
+        run_logger.error(message)
+        typer.secho(message, fg=typer.colors.RED, bold=True)
+        return 1
+
     reset_count = reset_outdated_analysis_tasks(full_manifest)
     if reset_count:
         run_logger.info("Reset %d analysis tasks due to version changes", reset_count)
@@ -2338,7 +2356,61 @@ def main(
     run_logger.debug("Manifest reference stored for shutdown handling")
 
     candidate_manifest = [f for f in full_manifest if f.status != COMPLETE]
-    if target_filename:
+    if reprocess_file:
+        run_logger.info("Reprocessing files from %s", reprocess_file)
+        try:
+            with reprocess_file.open("r", encoding="utf-8") as f:
+                reprocess_data = json.load(f)
+
+            reprocess_records = []
+            for item in reprocess_data:
+                try:
+                    reprocess_records.append(FileRecord.model_validate(item))
+                except Exception as e:
+                    run_logger.warning(
+                        "Skipping invalid record in reprocess file: %s", e
+                    )
+
+            run_logger.info(
+                "Loaded %d valid records to reprocess", len(reprocess_records)
+            )
+        except (json.JSONDecodeError, IOError) as e:
+            message = f"Error reading reprocess file: {e}"
+            run_logger.error(message)
+            typer.secho(message, fg=typer.colors.RED, bold=True)
+            return 1
+
+        manifest_map = {record.file_path: record for record in full_manifest}
+        processing_manifest = []
+        for reprocess_record in reprocess_records:
+            if reprocess_record.file_path in manifest_map:
+                target_record = manifest_map[reprocess_record.file_path]
+                reset_file_record_for_rescan(target_record)
+                try:
+                    with lock:
+                        collection.delete(ids=[target_record.file_path])
+                    run_logger.debug(
+                        "Cleared previous database entry for %s",
+                        target_record.file_path,
+                    )
+                except Exception as exc:
+                    run_logger.debug(
+                        "No existing database entry to clear for %s: %s",
+                        target_record.file_path,
+                        exc,
+                    )
+                processing_manifest.append(target_record)
+            else:
+                run_logger.warning(
+                    "Skipping file not found in main manifest: %s",
+                    reprocess_record.file_path,
+                )
+        typer.echo(
+            f"Reprocessing {len(processing_manifest)} files from "
+            f"{reprocess_file.name}."
+        )
+
+    elif target_filename:
         filtered_manifest = filter_records_by_search_term(
             candidate_manifest, target_filename
         )
@@ -2409,33 +2481,25 @@ def main(
         typer.echo(message)
         return 0
 
-    if not target_filename and batch_size > 0:
-        processing_manifest = candidate_manifest[:batch_size]
-        run_logger.info(
-            "Processing batch of %d file(s) from %d available.",
-            len(processing_manifest),
-            len(candidate_manifest),
-        )
+    if batch_size > 0:
+        total_before_batching = len(processing_manifest)
+        if total_before_batching > batch_size:
+            run_logger.info(
+                "Processing batch of %d file(s) from %d available.",
+                batch_size,
+                total_before_batching,
+            )
+            processing_manifest = processing_manifest[:batch_size]
+        else:
+            run_logger.info(
+                "Processing all %d remaining files (batch size %d).",
+                total_before_batching,
+                batch_size,
+            )
     else:
         run_logger.info(
             "Processing all remaining files (%d).", len(processing_manifest)
         )
-
-    if batch_size > 0 and target_filename:
-        limited_manifest = processing_manifest[:batch_size]
-        if not limited_manifest:
-            run_logger.warning(
-                "Batch size %d left no files to process after filtering.",
-                batch_size,
-            )
-            return 0
-        if len(limited_manifest) < len(processing_manifest):
-            run_logger.info(
-                "Batch size limit reduced targeted set to %d file(s) (from %d).",
-                len(limited_manifest),
-                len(processing_manifest),
-            )
-        processing_manifest = limited_manifest
 
     if per_mime_limit > 0:
         mime_counts: dict[str, int] = {}
