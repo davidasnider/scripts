@@ -37,4 +37,4 @@ repos:
         args:
           - --cov=src
           - --cov-report=term-missing
-          - --cov-fail-under=64
+          - --cov-fail-under=65
