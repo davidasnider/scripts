@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src import discover_files
-from src.schema import ANALYSIS_TASK_VERSIONS, AnalysisName
+from src.schema import AnalysisName
 
 
 @pytest.fixture
@@ -46,13 +46,7 @@ def test_calculate_sha256(temp_directory_with_files):
 def test_get_analysis_tasks_for_text_file():
     """Verify text analysis task is assigned for text MIME types."""
     tasks = discover_files._get_analysis_tasks("text/plain", "file.txt")
-    expected = {
-        AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
-        AnalysisName.PASSWORD_DETECTION,
-    }
-    assert {task.name for task in tasks} == expected
+    assert {task.name for task in tasks} == set()
 
 
 def test_get_analysis_tasks_include_versions():
@@ -60,34 +54,13 @@ def test_get_analysis_tasks_include_versions():
 
     tasks = discover_files._get_analysis_tasks("text/plain", "file.txt")
     versions = {task.name: task.version for task in tasks}
-    assert (
-        versions[AnalysisName.TEXT_ANALYSIS]
-        == ANALYSIS_TASK_VERSIONS[AnalysisName.TEXT_ANALYSIS]
-    )
-    assert (
-        versions[AnalysisName.PEOPLE_ANALYSIS]
-        == ANALYSIS_TASK_VERSIONS[AnalysisName.PEOPLE_ANALYSIS]
-    )
-    assert (
-        versions[AnalysisName.ESTATE_ANALYSIS]
-        == ANALYSIS_TASK_VERSIONS[AnalysisName.ESTATE_ANALYSIS]
-    )
-    assert (
-        versions[AnalysisName.PASSWORD_DETECTION]
-        == ANALYSIS_TASK_VERSIONS[AnalysisName.PASSWORD_DETECTION]
-    )
+    assert versions == {}
 
 
 def test_get_analysis_tasks_for_pdf_file():
     """Verify text analysis task is assigned for PDF MIME types."""
     tasks = discover_files._get_analysis_tasks("application/pdf", "file.pdf")
-    expected = {
-        AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
-        AnalysisName.PASSWORD_DETECTION,
-    }
-    assert {task.name for task in tasks} == expected
+    assert {task.name for task in tasks} == set()
 
 
 def test_get_analysis_tasks_for_access_file():
@@ -97,10 +70,6 @@ def test_get_analysis_tasks_for_access_file():
     )
     expected = {
         AnalysisName.ACCESS_DB_ANALYSIS,
-        AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
-        AnalysisName.PASSWORD_DETECTION,
     }
     assert {task.name for task in tasks} == expected
 
@@ -111,10 +80,6 @@ def test_get_analysis_tasks_for_image_file():
     expected = {
         AnalysisName.IMAGE_DESCRIPTION,
         AnalysisName.NSFW_CLASSIFICATION,
-        AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
-        AnalysisName.PASSWORD_DETECTION,
     }
     assert {task.name for task in tasks} == expected
 
@@ -123,6 +88,21 @@ def test_get_analysis_tasks_for_video_file():
     """Verify correct tasks are assigned for video MIME types."""
     tasks = discover_files._get_analysis_tasks("video/mp4", "video.mp4")
     expected = {AnalysisName.VIDEO_SUMMARY, AnalysisName.NSFW_CLASSIFICATION}
+    assert {task.name for task in tasks} == expected
+
+
+def test_get_analysis_tasks_with_extracted_text():
+    """Verify that correct tasks are assigned when has_extracted_text is True."""
+    tasks = discover_files._get_analysis_tasks(
+        "application/octet-stream", "file.bin", has_extracted_text=True
+    )
+    expected = {
+        AnalysisName.TEXT_ANALYSIS,
+        AnalysisName.PEOPLE_ANALYSIS,
+        AnalysisName.ESTATE_ANALYSIS,
+        AnalysisName.PASSWORD_DETECTION,
+        AnalysisName.FINANCIAL_ANALYSIS,
+    }
     assert {task.name for task in tasks} == expected
 
 

@@ -27,7 +27,17 @@ def _make_record(status: str = COMPLETE) -> FileRecord:
                 name=AnalysisName.TEXT_ANALYSIS,
                 status=AnalysisStatus.COMPLETE,
                 version=0,
-            )
+            ),
+            AnalysisTask(
+                name=AnalysisName.PASSWORD_DETECTION,
+                status=AnalysisStatus.COMPLETE,
+                version=0,
+            ),
+            AnalysisTask(
+                name=AnalysisName.ESTATE_ANALYSIS,
+                status=AnalysisStatus.COMPLETE,
+                version=0,
+            ),
         ],
         contains_password=True,
         passwords=[{"old": "value"}],
@@ -43,9 +53,6 @@ def test_reset_outdated_analysis_tasks_updates_versions_and_adds_missing():
     task_names = {task.name for task in record.analysis_tasks}
     expected_tasks = {
         AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
-        AnalysisName.PASSWORD_DETECTION,
     }
     assert expected_tasks.issubset(task_names)
     assert reset_count >= 1  # at least one update occurred
@@ -73,6 +80,6 @@ def test_reset_file_record_for_rescan_clears_state():
 
     assert record.status == "pending_extraction"
     assert record.extracted_text is None
-    assert record.analysis_tasks
+    assert not record.analysis_tasks
     assert all(task.status == AnalysisStatus.PENDING for task in record.analysis_tasks)
     assert all(task.error_message is None for task in record.analysis_tasks)

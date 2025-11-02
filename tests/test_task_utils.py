@@ -19,12 +19,7 @@ def _make_record(mime: str, path: str = "/tmp/file") -> FileRecord:
 def test_determine_analysis_tasks_handles_various_formats():
     text_tasks = determine_analysis_tasks("text/plain")
     text_names = {task.name for task in text_tasks}
-    assert {
-        AnalysisName.TEXT_ANALYSIS,
-        AnalysisName.PEOPLE_ANALYSIS,
-        AnalysisName.ESTATE_ANALYSIS,
-        AnalysisName.PASSWORD_DETECTION,
-    }.issubset(text_names)
+    assert not text_names
 
     image_tasks = determine_analysis_tasks("image/png")
     image_names = {task.name for task in image_tasks}
@@ -42,6 +37,7 @@ def test_determine_analysis_tasks_handles_various_formats():
 
 def test_ensure_required_tasks_adds_missing_entries():
     record = _make_record("text/plain")
+    record.extracted_text = "This is a test"
     preexisting = AnalysisTask(
         name=AnalysisName.TEXT_ANALYSIS, status=AnalysisStatus.COMPLETE
     )

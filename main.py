@@ -1313,9 +1313,12 @@ def extraction_worker(worker_id: int) -> None:
                     )
                     file_record.extracted_frames = extracted_frames
 
-                elif file_record.mime_type == "application/x-msaccess":
-                    _check_for_shutdown()
-                    ensure_required_tasks(file_record)
+                _check_for_shutdown()
+                ensure_required_tasks(file_record)
+
+                if file_record.mime_type == "application/x-msaccess":
+                    # The text extraction is now handled by the access_db_analysis task
+                    pass
 
                 _check_for_shutdown()
                 extraction_duration = time.time() - stage_start
