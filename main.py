@@ -2592,6 +2592,7 @@ def main(
                 or file_record.mime_type == "image/svg+xml"
                 or file_record.mime_type.endswith("document")
                 or file_record.mime_type.endswith("sheet")
+                or file_record.mime_type == "application/vnd.ms-excel"
             )
 
         if not should_process:
