@@ -2390,7 +2390,8 @@ def main(
                     with lock:
                         collection.delete(ids=[target_record.file_path])
                     run_logger.debug(
-                        "Cleared previous database entry for %s", target_record.file_path
+                        "Cleared previous database entry for %s",
+                        target_record.file_path,
                     )
                 except Exception as exc:
                     run_logger.debug(
@@ -2480,33 +2481,25 @@ def main(
         typer.echo(message)
         return 0
 
-    if not target_filename and batch_size > 0:
-        processing_manifest = candidate_manifest[:batch_size]
-        run_logger.info(
-            "Processing batch of %d file(s) from %d available.",
-            len(processing_manifest),
-            len(candidate_manifest),
-        )
+    if batch_size > 0:
+        total_before_batching = len(processing_manifest)
+        if total_before_batching > batch_size:
+            run_logger.info(
+                "Processing batch of %d file(s) from %d available.",
+                batch_size,
+                total_before_batching,
+            )
+            processing_manifest = processing_manifest[:batch_size]
+        else:
+            run_logger.info(
+                "Processing all %d remaining files (batch size %d).",
+                total_before_batching,
+                batch_size,
+            )
     else:
         run_logger.info(
             "Processing all remaining files (%d).", len(processing_manifest)
         )
-
-    if batch_size > 0 and target_filename:
-        limited_manifest = processing_manifest[:batch_size]
-        if not limited_manifest:
-            run_logger.warning(
-                "Batch size %d left no files to process after filtering.",
-                batch_size,
-            )
-            return 0
-        if len(limited_manifest) < len(processing_manifest):
-            run_logger.info(
-                "Batch size limit reduced targeted set to %d file(s) (from %d).",
-                len(limited_manifest),
-                len(processing_manifest),
-            )
-        processing_manifest = limited_manifest
 
     if per_mime_limit > 0:
         mime_counts: dict[str, int] = {}

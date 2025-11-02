@@ -26,3 +26,4 @@ file_catalog.log
 processed.csv
 .coverage
 streamlit_errors.log
+*.json
