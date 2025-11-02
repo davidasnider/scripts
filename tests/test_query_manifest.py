@@ -44,6 +44,7 @@ def test_query_mime_type_filter(tmp_path: Path):
     output = result.output
     json_start = output.find("[")
     json_end = output.rfind("]") + 1
+    assert json_start != -1, "No JSON array found in output"
     json_output = output[json_start:json_end]
     assert json_output, "No JSON output found"
     output_data = json.loads(json_output)
