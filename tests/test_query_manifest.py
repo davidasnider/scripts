@@ -3,13 +3,13 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from scripts.query_manifest import app
-
-runner = CliRunner()
-
 
 def test_query_mime_type_filter(tmp_path: Path):
     """Verify that the --mime-type filter works correctly."""
+    from scripts.query_manifest import app
+
+    runner = CliRunner()
+
     manifest_data = [
         {
             "file_path": "/test/file1.txt",
