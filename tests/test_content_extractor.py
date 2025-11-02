@@ -9,6 +9,7 @@ from PIL import Image
 from src.content_extractor import (
     extract_content_from_docx,
     extract_content_from_image,
+    extract_content_from_rtf,
     extract_content_from_xlsx,
     extract_frames_from_video,
     extract_text_from_svg,
@@ -154,3 +155,16 @@ class TestContentExtractor(unittest.TestCase):
 
         self.assertEqual(len(frames), 1)
         self.assertIn("frame_000000.jpg", frames[0])
+
+    def test_extract_content_from_rtf(self):
+        """Test text extraction from an RTF file."""
+        rtf_content = "{\\rtf1\\ansi{\\fonttbl\\f0\\fswiss Helvetica;}\\f0\\pard This is some {\\b bold} text.\\par}"
+        with patch("builtins.open", unittest.mock.mock_open(read_data=rtf_content)):
+            text = extract_content_from_rtf("dummy.rtf")
+        self.assertEqual(text, "This is some bold text.\n")
+
+    def test_extract_content_from_rtf_no_striprtf(self):
+        """Test that RTF extraction fails gracefully if striprtf is not installed."""
+        with patch("src.content_extractor.rtf_to_text", None):
+            text = extract_content_from_rtf("dummy.rtf")
+        self.assertIn("unavailable", text)

@@ -21,6 +21,12 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     pd = None  # type: ignore[assignment]
 
+try:
+    from striprtf.striprtf import rtf_to_text
+except ImportError:
+    rtf_to_text = None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -417,3 +423,29 @@ def extract_frames_from_video(
 
     cap.release()
     return saved_frames
+
+
+def extract_content_from_rtf(file_path: str) -> str:
+    """Extract all text content from an RTF (.rtf) file.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .rtf file.
+
+    Returns
+    -------
+    str
+        The extracted text from the RTF file.
+    """
+    if rtf_to_text is None:
+        logger.error("striprtf library not available for RTF extraction")
+        return "RTF extraction unavailable - striprtf not installed"
+
+    try:
+        with open(file_path, "r", encoding="latin-1") as f:
+            rtf_content = f.read()
+        return rtf_to_text(rtf_content)
+    except Exception as e:
+        logger.error("Error extracting text from RTF %s: %s", file_path, e)
+        return ""

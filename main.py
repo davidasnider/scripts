@@ -54,6 +54,7 @@ from src.content_extractor import (
     extract_content_from_docx,
     extract_content_from_image,
     extract_content_from_pdf,
+    extract_content_from_rtf,
     extract_content_from_xls,
     extract_content_from_xlsx,
     extract_frames_from_video,
@@ -1286,6 +1287,11 @@ def extraction_worker(worker_id: int) -> None:
                 elif file_record.mime_type == "application/vnd.ms-excel":
                     _check_for_shutdown()
                     extracted_text = extract_content_from_xls(file_record.file_path)
+                    file_record.extracted_text = extracted_text
+
+                elif file_record.mime_type == "application/rtf":
+                    _check_for_shutdown()
+                    extracted_text = extract_content_from_rtf(file_record.file_path)
                     file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type == "image/svg+xml":
