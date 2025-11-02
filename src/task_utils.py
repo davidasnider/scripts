@@ -49,6 +49,7 @@ def determine_analysis_tasks(mime_type: str, file_path: str = "") -> list[Analys
         or mime_type == "application/pdf"
         or mime_type.endswith("document")
         or mime_type.endswith("sheet")
+        or mime_type == "application/rtf"
     ):
         tasks.extend(
             _create_tasks(
