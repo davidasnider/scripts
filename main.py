@@ -1289,7 +1289,7 @@ def extraction_worker(worker_id: int) -> None:
                     extracted_text = extract_content_from_xls(file_record.file_path)
                     file_record.extracted_text = extracted_text
 
-                elif file_record.mime_type == "application/rtf":
+                elif file_record.mime_type in ("text/rtf", "application/rtf"):
                     _check_for_shutdown()
                     extracted_text = extract_content_from_rtf(file_record.file_path)
                     file_record.extracted_text = extracted_text
