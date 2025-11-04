@@ -133,7 +133,6 @@ def generate_stats(
     # --- Sorting Logic ---
     mime_type_items = completed_stats["files_by_mime_type"].items()
     if sort_by:
-        sort_by = sort_by.lower()
         if sort_by == "mime type":
             mime_type_items = sorted(mime_type_items, key=lambda item: item[0])
         elif sort_by == "total":
@@ -148,13 +147,6 @@ def generate_stats(
             mime_type_items = sorted(
                 mime_type_items, key=lambda item: item[1]["without_text"], reverse=True
             )
-        else:
-            console.print(
-                f"[bold red]Invalid sort column: {sort_by}. "
-                "Valid columns are 'mime type', 'total', 'with text', "
-                "'without text'.[/bold red]"
-            )
-            raise typer.Exit(code=1)
 
     mime_table = Table(title="Files by MIME Type")
     mime_table.add_column("MIME Type", style="cyan")
