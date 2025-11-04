@@ -35,6 +35,16 @@ def generate_stats(
         dir_okay=False,
         readable=True,
     ),
+    sort_by: str = typer.Option(
+        None,
+        "--sort-by",
+        "-s",
+        help="Sort the MIME type table by a specific column.",
+        case_sensitive=False,
+        show_choices=True,
+        choices=["mime type", "total", "with text", "without text"],
+        rich_help_panel="Sorting Options",
+    ),
 ):
     """
     Generate statistics from the manifest file.
@@ -120,12 +130,30 @@ def generate_stats(
         f"\n[bold]Statistics for {completed_stats['total']} completed files:[/bold]"
     )
 
+    # --- Sorting Logic ---
+    mime_type_items = completed_stats["files_by_mime_type"].items()
+    if sort_by:
+        if sort_by == "mime type":
+            mime_type_items = sorted(mime_type_items, key=lambda item: item[0])
+        elif sort_by == "total":
+            mime_type_items = sorted(
+                mime_type_items, key=lambda item: item[1]["total"], reverse=True
+            )
+        elif sort_by == "with text":
+            mime_type_items = sorted(
+                mime_type_items, key=lambda item: item[1]["with_text"], reverse=True
+            )
+        elif sort_by == "without text":
+            mime_type_items = sorted(
+                mime_type_items, key=lambda item: item[1]["without_text"], reverse=True
+            )
+
     mime_table = Table(title="Files by MIME Type")
     mime_table.add_column("MIME Type", style="cyan")
     mime_table.add_column("Total", style="magenta")
     mime_table.add_column("With Text", style="green")
     mime_table.add_column("Without Text", style="red")
-    for mime_type, mime_stats in completed_stats["files_by_mime_type"].items():
+    for mime_type, mime_stats in mime_type_items:
         mime_table.add_row(
             mime_type,
             str(mime_stats["total"]),
