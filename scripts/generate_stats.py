@@ -42,6 +42,7 @@ def generate_stats(
         help="Sort the MIME type table by a specific column.",
         case_sensitive=False,
         show_choices=True,
+        choices=["mime type", "total", "with text", "without text"],
         rich_help_panel="Sorting Options",
     ),
 ):
@@ -150,9 +151,10 @@ def generate_stats(
         else:
             console.print(
                 f"[bold red]Invalid sort column: {sort_by}. "
-                "Valid columns are 'MIME Type', 'Total', 'With Text', "
-                "'Without Text'.[/bold red]"
+                "Valid columns are 'mime type', 'total', 'with text', "
+                "'without text'.[/bold red]"
             )
+            raise typer.Exit(code=1)
 
     mime_table = Table(title="Files by MIME Type")
     mime_table.add_column("MIME Type", style="cyan")
