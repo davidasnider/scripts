@@ -5,7 +5,9 @@
 import json
 import sys
 from collections import defaultdict
+from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -23,6 +25,13 @@ console = Console()
 error_console = Console(stderr=True)
 
 
+class SortOptions(str, Enum):
+    mime_type = "mime type"
+    total = "total"
+    with_text = "with text"
+    without_text = "without text"
+
+
 @app.command()
 def generate_stats(
     manifest_path: Path = typer.Option(
@@ -35,14 +44,13 @@ def generate_stats(
         dir_okay=False,
         readable=True,
     ),
-    sort_by: str = typer.Option(
+    sort_by: Optional[SortOptions] = typer.Option(
         None,
         "--sort-by",
         "-s",
         help="Sort the MIME type table by a specific column.",
         case_sensitive=False,
         show_choices=True,
-        choices=["mime type", "total", "with text", "without text"],
         rich_help_panel="Sorting Options",
     ),
 ):

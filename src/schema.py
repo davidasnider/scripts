@@ -95,6 +95,26 @@ class FileRecord(BaseModel):
     has_estate_relevant_info: bool | None = None
     estate_information: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
 
+    @staticmethod
+    def _normalize_string_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            cleaned: list[str] = []
+            for item in value:
+                if item is None:
+                    continue
+                cleaned.append(item if isinstance(item, str) else str(item))
+            return cleaned
+        if isinstance(value, str):
+            return [value]
+        return [str(value)]
+
+    @field_validator("incriminating_items", "potential_red_flags", mode="before")
+    @classmethod
+    def _normalize_string_list_fields(cls, value: Any) -> list[str]:
+        return cls._normalize_string_list(value)
+
     @field_validator("passwords", mode="before")
     @classmethod
     def _coerce_passwords_to_list(cls, value: Any) -> list[dict[str, Any]]:
