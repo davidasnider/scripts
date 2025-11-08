@@ -110,14 +110,9 @@ class FileRecord(BaseModel):
             return [value]
         return [str(value)]
 
-    @field_validator("incriminating_items", mode="before")
+    @field_validator("incriminating_items", "potential_red_flags", mode="before")
     @classmethod
-    def _normalize_incriminating_items(cls, value: Any) -> list[str]:
-        return cls._normalize_string_list(value)
-
-    @field_validator("potential_red_flags", mode="before")
-    @classmethod
-    def _normalize_potential_red_flags(cls, value: Any) -> list[str]:
+    def _normalize_string_list_fields(cls, value: Any) -> list[str]:
         return cls._normalize_string_list(value)
 
     @field_validator("passwords", mode="before")
