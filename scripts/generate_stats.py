@@ -2,10 +2,10 @@
 # scripts/generate_stats.py
 """A script to generate statistics from the manifest file."""
 
-import enum
 import json
 import sys
 from collections import defaultdict
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -25,7 +25,7 @@ console = Console()
 error_console = Console(stderr=True)
 
 
-class SortOptions(str, enum.Enum):
+class SortOptions(str, Enum):
     mime_type = "mime type"
     total = "total"
     with_text = "with text"
