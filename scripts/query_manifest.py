@@ -5,9 +5,9 @@
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 import typer
+from pydantic import TypeAdapter
 from rich.console import Console
 from rich.progress import track
 
@@ -83,9 +83,7 @@ def query(
             passes_completed_analysis_filter = (
                 not completed_analysis or record.status == "complete"
             )
-            passes_mime_type_filter = (
-                not mime_type or record.mime_type == mime_type
-            )
+            passes_mime_type_filter = not mime_type or record.mime_type == mime_type
 
             # All active filters must match (AND logic)
             return (
@@ -106,18 +104,17 @@ def query(
         f"[green]Filtered to {len(filtered_records)} of {len(records)} records.[/green]"
     )
 
-    # Convert Pydantic models to a list of dicts for JSON serialization
-    output_data: list[dict[str, Any]] = [
-        record.model_dump()
-        for record in track(
-            filtered_records, description="Formatting output...", console=error_console
-        )
-    ]
-
     with error_console.status("[bold green]Serializing to JSON..."):
-        json_output = json.dumps(output_data, indent=2)
+        json_output = (
+            TypeAdapter(list[FileRecord])
+            .dump_json(
+                filtered_records,
+                indent=2,
+            )
+            .decode()
+        )
 
-    console.print(json_output)
+    console.out(f"{json_output}\n")
 
 
 if __name__ == "__main__":
