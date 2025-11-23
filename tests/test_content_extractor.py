@@ -158,7 +158,10 @@ class TestContentExtractor(unittest.TestCase):
 
     def test_extract_content_from_rtf(self):
         """Test text extraction from an RTF file."""
-        rtf_content = "{\\rtf1\\ansi{\\fonttbl\\f0\\fswiss Helvetica;}\\f0\\pard This is some {\\b bold} text.\\par}"
+        rtf_content = (
+            "{\\rtf1\\ansi{\\fonttbl\\f0\\fswiss Helvetica;}"
+            "\\f0\\pard This is some {\\b bold} text.\\par}"
+        )
         with patch("builtins.open", unittest.mock.mock_open(read_data=rtf_content)):
             text = extract_content_from_rtf("dummy.rtf")
         self.assertEqual(text, "This is some bold text.\n")
