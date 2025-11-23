@@ -456,3 +456,36 @@ def extract_content_from_rtf(file_path: str) -> str:
     except Exception as e:
         logger.error("Error extracting text from RTF %s: %s", file_path, e)
         return ""
+
+
+def extract_content_from_doc(file_path: str) -> str:
+    """Extract text content from a legacy Word (.doc) file using strings.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the .doc file.
+
+    Returns
+    -------
+    str
+        The extracted text from the document.
+    """
+    import subprocess
+
+    try:
+        # Use strings to extract printable characters
+        # -n 6: Only print sequences of at least 6 characters
+        result = subprocess.run(
+            ["strings", "-n", "6", file_path],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        logger.error("Error running strings on %s: %s", file_path, e)
+        return ""
+    except Exception as e:
+        logger.error("Error extracting content from doc %s: %s", file_path, e)
+        return ""

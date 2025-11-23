@@ -51,6 +51,7 @@ from src.ai_analyzer import (
 )
 from src.backup_manager import BackupManager
 from src.content_extractor import (
+    extract_content_from_doc,
     extract_content_from_docx,
     extract_content_from_image,
     extract_content_from_pdf,
@@ -1266,6 +1267,11 @@ def extraction_worker(worker_id: int) -> None:
                         extracted_text = _read_text_file_best_effort(
                             file_record.file_path
                         )
+                    file_record.extracted_text = extracted_text
+
+                elif file_record.mime_type == "application/msword":
+                    _check_for_shutdown()
+                    extracted_text = extract_content_from_doc(file_record.file_path)
                     file_record.extracted_text = extracted_text
 
                 elif file_record.mime_type == (
