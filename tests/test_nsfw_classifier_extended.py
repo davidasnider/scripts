@@ -44,7 +44,7 @@ def test_classify_image_unidentified_error(mock_get_pipeline):
 
 @patch("src.nsfw_classifier._get_pipeline")
 def test_classify_image_pipeline_error(mock_get_pipeline):
-    """Test handling of UnidentifiedImageError during pipeline execution."""
+    """Test handling of pipeline errors when UnidentifiedImageError is raised during classification."""
     mock_pipeline = MagicMock()
     mock_pipeline.side_effect = UnidentifiedImageError("Pipeline failed")
     mock_get_pipeline.return_value = mock_pipeline
